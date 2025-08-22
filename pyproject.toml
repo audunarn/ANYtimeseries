@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "anytimes"
+version = "0.1.0"
+description = "PySide6-based interface for exploring and editing time-series data."
+readme = "README.md"
+authors = [{name = "AnyTimes Developers"}]
+license = {file = "LICENSE"}
+requires-python = ">=3.8"
+dependencies = [
+    "numpy",
+    "pandas",
+    "scipy",
+    "qats",
+    "PySide6",
+    "matplotlib"
+]
+
+[project.urls]
+Homepage = "https://github.com/example/anytimes"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["anytimes*"]
