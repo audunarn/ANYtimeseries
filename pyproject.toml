@@ -14,7 +14,6 @@ dependencies = [
     "numpy",
     "pandas",
     "scipy",
-    "qats",
     "PySide6",
     "matplotlib",
 ]
@@ -27,4 +26,4 @@ Homepage = "https://github.com/example/anytimes"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["anytimes*"]
+include = ["anytimes*", "anyqats*"]

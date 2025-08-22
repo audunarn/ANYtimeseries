@@ -16,8 +16,8 @@ from .app.gui import LOGGING_LEVELS, Qats
 
 def link_app():
     """
-    Create start menu item and desktop shortcut to `qats` desktop app
-    (by invoking pythonw.exe with the necessary arguments, not the 
+    Create start menu item and desktop shortcut to `anyqats` desktop app
+    (by invoking pythonw.exe with the necessary arguments, not the
     previous entry point qats-app.exe (or .cmd)).
     """
     if not sys.platform == "win32":
@@ -26,8 +26,8 @@ def link_app():
 
     from win32com.client import Dispatch
 
-    pkg_name = "qats"
-    ico_ref = resources.files("qats.app") / "qats.ico"
+    pkg_name = "anyqats"
+    ico_ref = resources.files("anyqats.app") / "qats.ico"
     lnk_name = pkg_name.upper() + ".lnk"
 
     # define target as pythonw.exe (or python.exe if needed)
@@ -40,7 +40,7 @@ def link_app():
         target = python_exec_path
 
     # define arguments to target
-    # (relies on invoking qats.__main__, not the entry point executable)
+    # (relies on invoking anyqats.__main__, not the entry point executable)
     arguments = f"-m {pkg_name} app"
     
     # open shell
@@ -62,7 +62,7 @@ def link_app():
 
 def unlink_app():
     """
-    Remove start menu item and desktop shortcut to `qats` desktop application.
+    Remove start menu item and desktop shortcut to `anyqats` desktop application.
     """
     if not sys.platform == "win32":
         print(f"Unable to remove links to app on {sys.platform} OS.")
@@ -70,7 +70,7 @@ def unlink_app():
 
     from win32com.client import Dispatch
 
-    pkg_name = "qats"
+    pkg_name = "anyqats"
     lnk_name = pkg_name.upper() + ".lnk"
 
     shell = Dispatch("WScript.Shell")
@@ -113,9 +113,9 @@ def main():
     Launch desktop application from command line with parameters.
     """
     # top-level parser
-    parser = argparse.ArgumentParser(prog="qats",
-                                     description="qats is a library and desktop application for time series analysis")
-    parser.add_argument("--version", action="version", version=f"qats {__version__}", help="Package version")
+    parser = argparse.ArgumentParser(prog="anyqats",
+                                     description="anyqats is a library and desktop application for time series analysis")
+    parser.add_argument("--version", action="version", version=f"anyqats {__version__}", help="Package version")
     subparsers = parser.add_subparsers(title="Commands", dest="command")
 
     # app parser

@@ -15,8 +15,8 @@ import pandas as pd
 import scipy.io
 import json
 import subprocess
-import qats
-from qats import TimeSeries, TsDB
+import anyqats as qats
+from anyqats import TimeSeries, TsDB
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QGridLayout,
     QListWidget, QTabWidget, QLabel, QLineEdit, QCheckBox, QRadioButton,
@@ -45,7 +45,7 @@ Supports generic (csv, mat, h5, etc) and OrcaFlex .sim files with Qt-based varia
 
 
 # You should provide these in your app context:
-# from qats import TsDB, TimeSeries
+# from anyqats import TsDB, TimeSeries
 # import OrcFxAPI (for .sim files)
 class SortableTableWidgetItem(QTableWidgetItem):
     def __lt__(self, other):
@@ -271,7 +271,7 @@ class TimeSeriesEditorQt(QMainWindow):
         # =======================
         # DATA STRUCTURES
         # =======================
-        self.tsdbs = []                # List of qats.TsDB instances (one per file)
+        self.tsdbs = []                # List of anyqats.TsDB instances (one per file)
         self.file_paths = []           # List of file paths (order matches tsdbs)
         self.user_variables = set()    # User-defined/calculated variables
 
@@ -531,7 +531,7 @@ class TimeSeriesEditorQt(QMainWindow):
         # ---- Tools (EVA + QATS) ----
         self.tools_group = QGroupBox("Tools")
         tools_layout = QHBoxLayout(self.tools_group)
-        self.launch_qats_btn = QPushButton("Open in QATS")
+        self.launch_qats_btn = QPushButton("Open in AnyQATS")
         self.evm_tool_btn = QPushButton("Open Extreme Value Statistics Tool")
         tools_layout.addWidget(self.launch_qats_btn)
         tools_layout.addWidget(self.evm_tool_btn)
@@ -1324,7 +1324,7 @@ class TimeSeriesEditorQt(QMainWindow):
         """
         import os
         from PySide6.QtCore import QTimer
-        from qats import TimeSeries
+        from anyqats import TimeSeries
 
         self.rebuild_var_lookup()
         made = []
@@ -1450,7 +1450,7 @@ class TimeSeriesEditorQt(QMainWindow):
           gets exactly one result (the filename part is already unique).
         """
         import numpy as np, os, re
-        from qats import TimeSeries
+        from anyqats import TimeSeries
         from PySide6.QtCore import QTimer
         from PySide6.QtWidgets import QMessageBox
 
@@ -1594,7 +1594,7 @@ class TimeSeriesEditorQt(QMainWindow):
           distinguishes them, so no extra suffix is added.)
         """
         import numpy as np, os, re
-        from qats import TimeSeries
+        from anyqats import TimeSeries
         from PySide6.QtWidgets import QMessageBox
 
         sel_keys = [k for k, ck in self.var_checkboxes.items() if ck.isChecked()]
@@ -2400,10 +2400,10 @@ class TimeSeriesEditorQt(QMainWindow):
 
         self.rebuild_var_lookup()
 
-        import numpy as np, qats, os
+        import numpy as np, anyqats as qats, os
         from PySide6.QtWidgets import QMessageBox
         import matplotlib.pyplot as plt
-        from qats import TimeSeries
+        from anyqats import TimeSeries
 
         roll_window = 1
         if hasattr(self, "rolling_window"):
@@ -2651,7 +2651,7 @@ class TimeSeriesEditorQt(QMainWindow):
             start, stop = stop, start
 
         try:
-            import qats, numpy as _np
+            import anyqats as qats, numpy as _np
 
             try:
                 # Preferred when available
@@ -2700,7 +2700,7 @@ class TimeSeriesEditorQt(QMainWindow):
         import pandas as pd
         import plotly.express as px
         from PySide6.QtWidgets import QMessageBox as mb
-        from qats import TimeSeries
+        from anyqats import TimeSeries
 
         # ──────────────────────────────────────────────────────────────────
         # helper: filter + resample ONE series and return a *new* TimeSeries
@@ -3381,7 +3381,7 @@ class TimeSeriesEditorQt(QMainWindow):
 
     def launch_qats(self):
         if not getattr(self, "work_dir", None):
-            self.work_dir = QFileDialog.getExistingDirectory(self, "Select Work Folder for QATS Export")
+            self.work_dir = QFileDialog.getExistingDirectory(self, "Select Work Folder for AnyQATS Export")
             if not self.work_dir:
                 return
         ts_paths = []
@@ -3391,9 +3391,9 @@ class TimeSeriesEditorQt(QMainWindow):
             tsdb.export(ts_path, names=list(tsdb.getm().keys()), force_common_time=True)
             ts_paths.append(ts_path)
         try:
-            subprocess.Popen([sys.executable, "-m", "qats", "app", "-f"] + ts_paths)
+            subprocess.Popen([sys.executable, "-m", "anyqats", "app", "-f"] + ts_paths)
         except FileNotFoundError:
-            QMessageBox.critical(self, "Error", "QATS could not be launched using the current Python environment.")
+            QMessageBox.critical(self, "Error", "AnyQATS could not be launched using the current Python environment.")
 
     def open_evm_tool(self):
         """Launch the Extreme Value Analysis tool for the first checked variable."""
