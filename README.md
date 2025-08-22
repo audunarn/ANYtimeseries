@@ -69,7 +69,7 @@ anytimes_gui.main()
 
 Another approach is to make some_file.bat and put it on your desktop. The contents should look something like this:
 
-```python
+```batch
 @echo off
 REM Run script with specific Python interpreter
 
