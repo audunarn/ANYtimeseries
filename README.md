@@ -4,7 +4,7 @@
 
 # AnytimeSeries
 
-AnytimeSeries provides a PySide6-based interface for exploring and editing time-series data. 
+ANYtimeSeries provides a PySide6-based interface for exploring and editing time-series data. 
 
 The application integrates with the bundled anyqats package and supports various file formats for loading and visualising time-series information.
 
