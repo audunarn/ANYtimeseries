@@ -5,7 +5,7 @@ AnytimeSeries Qt provides a PySide6-based interface for exploring and editing ti
 ## Installation
 
 ```bash
-pip install anytimeseries-qt
+pip install anytimes
 ```
 
 ## Requirements
@@ -22,7 +22,7 @@ pip install anytimeseries-qt
 After installation, import the module in your Python project:
 
 ```python
-import anytimeseries_qt
+from anytimes import qt
 ```
 
 The module exposes Qt widgets for building custom time-series exploration tools.
