@@ -61,6 +61,25 @@ from anytimes import anytimes_gui
 
 The module exposes Qt widgets for building custom time-series exploration tools. You can also launch the GUI from the command line using the `anytimes` entry point.
 
+You can start the GUI by typing:
+
+```python
+anytimes_gui.main()
+```
+
+Another approach is to make some_file.bat and put it on your desktop. The contents should look something like this:
+
+```python
+@echo off
+REM Run script with specific Python interpreter
+
+C:\Python\Python313\python.exe C:\Github\ANYtimeseries\anytimes\anytimes_gui.py
+pause
+```
+
+Update it with the correct location of you Python environment.
+
+
 ## License
 
 Released under the MIT License. See [LICENSE](LICENSE) for details.
