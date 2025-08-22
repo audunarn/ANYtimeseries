@@ -1,4 +1,4 @@
-# ANYtimeseries PySide6 with universal FileLoader
+# AnytimeSeries PySide6 with universal FileLoader
 import sys
 import os
 
@@ -254,7 +254,7 @@ class VariableRowWidget(QWidget):
 class TimeSeriesEditorQt(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("ANYtimes - time series editor (Qt/PySide6)")
+        self.setWindowTitle("AnytimeSeries - time series editor (Qt/PySide6)")
 
 
 
@@ -5827,9 +5827,14 @@ def get_object_available_vars(obj, orcaflex_varmap=None):
 
 
 
-if __name__ == "__main__":
+def main():
+    """Launch the AnytimeSeries GUI."""
     app = QApplication(sys.argv)
     window = TimeSeriesEditorQt()
     window.resize(1400, 800)
     window.show()
     sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()

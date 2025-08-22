@@ -16,8 +16,11 @@ dependencies = [
     "scipy",
     "qats",
     "PySide6",
-    "matplotlib"
+    "matplotlib",
 ]
+
+[project.scripts]
+anytimes = "anytimes.anytimes_gui:main"
 
 [project.urls]
 Homepage = "https://github.com/example/anytimes"
