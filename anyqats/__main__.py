@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-from anytimes.anytimes_gui import main
+from anyqats import cli
 
 if __name__ == '__main__':
-    main()
+    cli.launch_app()
