@@ -33,7 +33,7 @@ Some of the features of ANYtimes
 
 
 <p align="center">
-  <"statistics_table.png" alt="AnytimeSeries statstics" width="700"/>
+  <img src="statistics_table.png" alt="AnytimeSeries statistics" width="700"/>
 </p>
 
 ## Installation
