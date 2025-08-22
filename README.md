@@ -67,7 +67,7 @@ You can start the GUI by typing:
 anytimes_gui.main()
 ```
 
-Another approach is to make some_file.bat and put it on your desktop. The contents should look something like this:
+Another approach is to make <b>some_file.bat</b> and put it on your desktop. The contents should look something like this:
 
 ```batch
 @echo off
