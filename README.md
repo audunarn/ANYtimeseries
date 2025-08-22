@@ -23,17 +23,17 @@ Some of the features of ANYtimes
 
 
 <p align="center">
-  <img src="dark_mode.png" alt="AnytimeSeries dark mode" width="500"/>
+  <img src="dark_mode.png" alt="AnytimeSeries dark mode" width="700"/>
 </p>
 
 
 <p align="center">
-  <img src="light_mode.png" alt="AnytimeSeries light mode" width="500"/>
+  <img src="light_mode.png" alt="AnytimeSeries light mode" width="700"/>
 </p>
 
 
 <p align="center">
-  <statistics_table.png" alt="AnytimeSeries statstics" width="500"/>
+  <"statistics_table.png" alt="AnytimeSeries statstics" width="700"/>
 </p>
 
 ## Installation
