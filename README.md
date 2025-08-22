@@ -4,7 +4,7 @@
 
 # AnytimeSeries
 
-AnytimeSeries provides a PySide6-based interface for exploring and editing time-series data. The application integrates with the [qats](https://pypi.org/project/qats/) package and supports various file formats for loading and visualising time-series information.
+AnytimeSeries provides a PySide6-based interface for exploring and editing time-series data. The application integrates with the bundled anyqats package and supports various file formats for loading and visualising time-series information.
 
 ## Installation
 
@@ -17,7 +17,7 @@ pip install anytimes
 - numpy
 - pandas
 - scipy
-- qats
+- anyqats
 - PySide6
 - matplotlib
 

@@ -1,6 +1,6 @@
-"""Module entry point for :mod:`qats.app`.
+"""Module entry point for :mod:`anyqats.app`.
 
-Executing ``python -m qats.app`` will invoke :func:`qats.app.main` and
+Executing ``python -m anyqats.app`` will invoke :func:`anyqats.app.main` and
 start the graphical user interface.
 """
 

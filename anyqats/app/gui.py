@@ -66,15 +66,15 @@ LOGGING_LEVELS = dict(
 )
 # define path to settings file
 if sys.platform == "win32":
-    SETTINGS_FILE = os.path.join(os.getenv("APPDATA", os.getenv("USERPROFILE", "")), "qats.settings")
+    SETTINGS_FILE = os.path.join(os.getenv("APPDATA", os.getenv("USERPROFILE", "")), "anyqats.settings")
 else:
-    SETTINGS_FILE = os.path.join("~", ".config", "qats.settings")
+    SETTINGS_FILE = os.path.join("~", ".config", "anyqats.settings")
 
 # create icon file handle
 # ref. https://importlib-resources.readthedocs.io/en/latest/migration.html#pkg-resources-resource-filename
 icofile_manager = contextlib.ExitStack()
 atexit.register(icofile_manager.close)
-icoref = resources.files("qats.app") / "qats.ico"
+icoref = resources.files("anyqats.app") / "qats.ico"
 ICON_PATH = icofile_manager.enter_context(resources.as_file(icoref))
 ICON_FILE = str(ICON_PATH.absolute())
 
@@ -122,14 +122,14 @@ STATS_LABELS_TOOLTIPS = {
 
 class Qats(QMainWindow):
     """
-    Main window for the QATS application.
+    Main window for the AnyQATS application.
 
     Contain widgets for plotting time series, power spectra and statistics.
 
     Series of data are loaded from a time series file (e.g., .ts), and their names are displayed in a checkable 
     list view. The user can select the series it wants from the list and plot them on a matplotlib canvas. The 
-    base library is used to load time series from file (`qats.io`), perform signal processing (`qats.signal`), 
-    calculating power spectra and statistics (`qats.stats`) and plotting.
+    base library is used to load time series from file (`anyqats.io`), perform signal processing (`anyqats.signal`),
+    calculating power spectra and statistics (`anyqats.stats`) and plotting.
     """
 
     def __init__(self, parent=None, files_on_init=None, logging_level="info"):
@@ -707,7 +707,7 @@ class Qats(QMainWindow):
         """
         msg = "This is a low threshold tool for inspection of time series, power spectra and statistics. " \
               "Its main objective is to ease self-check, quality assurance and reporting.<br><br>" \
-              "Import qats Python package and use the <a href='https://qats.readthedocs.io/en/latest/'>API</a> " \
+              "Import anyqats Python package and use the <a href='https://qats.readthedocs.io/en/latest/'>API</a> " \
               "when you need advanced features or want to extend it's functionality.<br><br>" \
               "Please send feature requests, technical queries and bug reports to the developers on " \
               "<a href='https://github.com/dnvgl/qats/issues'>Github</a>.<br><br>" \

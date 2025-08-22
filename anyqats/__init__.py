@@ -2,8 +2,8 @@
 """
 Library for efficient processing and visualization of time series.
 """
-from qats.ts import TimeSeries
-from qats.tsdb import TsDB
+from .ts import TimeSeries
+from .tsdb import TsDB
 
 # version
 try:
