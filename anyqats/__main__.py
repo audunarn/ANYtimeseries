@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-from . import cli
+from anytimes.anytimes_gui import main
 
 if __name__ == '__main__':
-    cli.main()
+    main()
