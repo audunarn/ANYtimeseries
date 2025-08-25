@@ -4,9 +4,11 @@
 
 # ANYtimeSeries
 
-ANYtimeSeries provides a QT-based interface for exploring and editing time-series data. 
+ANYtimeSeries provides a QT-based interface for exploring and editing time-series data.
 
 The application integrates with the bundled anyqats package and supports various file formats for loading and visualising time-series information.
+
+For a more comprehensive guide, including workflow examples and screenshots, see the [documentation](docs/README.md).
 
 Some of the features of ANYtimes
 - loading of multiple files
