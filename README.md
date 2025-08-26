@@ -49,7 +49,6 @@ pip install anytimes
 - numpy
 - pandas
 - scipy
-- anyqats
 - PySide6
 - matplotlib
 
@@ -79,7 +78,7 @@ C:\Python\Python313\python.exe C:\Github\ANYtimeseries\anytimes\anytimes_gui.py
 pause
 ```
 
-Update it with the correct location of you Python environment.
+Update it with the correct location of you Python environment and location of .py file.
 
 
 ## License
