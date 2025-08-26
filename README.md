@@ -94,6 +94,6 @@ Update it with the correct location of you Python environment and location of .p
 
 Released under the MIT License. See [LICENSE](LICENSE) for details.
 
-[1]: <https://www.orcina.com/orcaflex/demo/> "Demo version of Orcaflex"'
-[2]: <https://github.com/audunarn/ANYtimeseries/releases> "ANYtimes releases"'
+[1]: <https://www.orcina.com/orcaflex/demo/> "Demo version of Orcaflex"
+[2]: <https://github.com/audunarn/ANYtimeseries/releases> "ANYtimes releases"
 
