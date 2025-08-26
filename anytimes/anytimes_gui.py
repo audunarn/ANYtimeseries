@@ -2607,10 +2607,155 @@ class TimeSeriesEditorQt(QMainWindow):
                     "No series matched the selection.",
                 )
                 return
-            import matplotlib.pyplot as plt
+
+            engine = (
+                self.plot_engine_combo.currentText()
+                if hasattr(self, "plot_engine_combo")
+                else ""
+            ).lower()
+
             n = len(grid_traces)
             ncols = int(np.ceil(np.sqrt(n)))
             nrows = int(np.ceil(n / ncols))
+
+            # ───────────────────────── 1.  Bokeh branch ──────────────────────────
+            if engine == "bokeh":
+                from bokeh.plotting import figure, show
+                from bokeh.layouts import gridplot
+                from bokeh.models import HoverTool, ColumnDataSource
+                from bokeh.palettes import Category10_10
+                from bokeh.io import curdoc
+                from bokeh.embed import file_html
+                from bokeh.resources import INLINE
+                import itertools, tempfile
+
+                curdoc().theme = (
+                    "dark_minimal" if self.theme_switch.isChecked() else "light_minimal"
+                )
+
+                figs = []
+                color_cycle = itertools.cycle(Category10_10)
+                for lbl, curves in grid_traces.items():
+                    p = figure(
+                        width=450,
+                        height=300,
+                        title=lbl,
+                        x_axis_label="Time",
+                        y_axis_label=self.yaxis_label.text() or "Value",
+                        tools="pan,wheel_zoom,box_zoom,reset,save",
+                        sizing_mode="stretch_both",
+                    )
+                    if self.theme_switch.isChecked():
+                        p.background_fill_color = "#2b2b2b"
+                        p.border_fill_color = "#2b2b2b"
+                    hover = HoverTool(
+                        tooltips=[("Series", "@label"), ("Time", "@x"), ("Value", "@y")]
+                    )
+                    p.add_tools(hover)
+                    for c in curves:
+                        color = next(color_cycle)
+                        cds = ColumnDataSource(
+                            dict(x=c["t"], y=c["y"], label=[c["label"]] * len(c["t"]))
+                        )
+                        p.line(
+                            "x",
+                            "y",
+                            source=cds,
+                            line_alpha=c.get("alpha", 1.0),
+                            color=color,
+                            legend_label=c["label"],
+                            muted_alpha=0.0,
+                        )
+                    p.legend.click_policy = "mute"
+                    p.add_layout(p.legend[0], "right")
+                    figs.append(p)
+
+                layout = gridplot(figs, ncols=ncols, sizing_mode="stretch_both")
+                if self.theme_switch.isChecked():
+                    layout.background = "#2b2b2b"
+
+                if getattr(self, "embed_plot_cb", None) and self.embed_plot_cb.isChecked():
+                    html = file_html(layout, INLINE, "Time-series Grid", theme=curdoc().theme)
+                    if self.theme_switch.isChecked():
+                        html = html.replace(
+                            "<body>",
+                            "<body style=\"background-color:#2b2b2b;\">",
+                        )
+                    if self._temp_plot_file and os.path.exists(self._temp_plot_file):
+                        try:
+                            os.remove(self._temp_plot_file)
+                        except Exception:
+                            pass
+                    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".html")
+                    with open(tmp.name, "w", encoding="utf-8") as fh:
+                        fh.write(html)
+                    self._temp_plot_file = tmp.name
+                    self.plot_view.load(QUrl.fromLocalFile(tmp.name))
+                    self.plot_view.show()
+                else:
+                    self.plot_view.hide()
+                    show(layout)
+                return
+
+            # ───────────────────────── 2.  Plotly branch ─────────────────────────
+            if engine == "plotly":
+                import plotly.graph_objects as go
+                from plotly.subplots import make_subplots
+                from plotly.io import to_html
+                import tempfile
+
+                fig = make_subplots(
+                    rows=nrows,
+                    cols=ncols,
+                    subplot_titles=list(grid_traces.keys()),
+                )
+                for idx, (lbl, curves) in enumerate(grid_traces.items(), start=1):
+                    r = (idx - 1) // ncols + 1
+                    c = (idx - 1) % ncols + 1
+                    for curve in curves:
+                        fig.add_trace(
+                            go.Scatter(
+                                x=curve["t"],
+                                y=curve["y"],
+                                mode="lines",
+                                name=curve["label"],
+                                opacity=curve.get("alpha", 1.0),
+                            ),
+                            row=r,
+                            col=c,
+                        )
+
+                fig.update_layout(
+                    title="Time-series Grid",
+                    showlegend=True,
+                    template="plotly_dark" if self.theme_switch.isChecked() else "plotly",
+                )
+                if self.theme_switch.isChecked():
+                    fig.update_layout(
+                        paper_bgcolor="#2b2b2b",
+                        plot_bgcolor="#2b2b2b",
+                    )
+
+                if getattr(self, "embed_plot_cb", None) and self.embed_plot_cb.isChecked():
+                    if self._temp_plot_file and os.path.exists(self._temp_plot_file):
+                        try:
+                            os.remove(self._temp_plot_file)
+                        except Exception:
+                            pass
+                    html = to_html(fig, include_plotlyjs=True, full_html=True)
+                    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".html")
+                    with open(tmp.name, "w", encoding="utf-8") as fh:
+                        fh.write(html)
+                    self._temp_plot_file = tmp.name
+                    self.plot_view.load(QUrl.fromLocalFile(tmp.name))
+                    self.plot_view.show()
+                else:
+                    self.plot_view.hide()
+                    fig.show(renderer="browser")
+                return
+
+            # ───────────────────────── 3.  Matplotlib branch ─────────────────────
+            import matplotlib.pyplot as plt
             fig, axes = plt.subplots(nrows, ncols, squeeze=False)
             same_axes = (
                 hasattr(self, "plot_same_axes_cb") and self.plot_same_axes_cb.isChecked()
@@ -2632,7 +2777,25 @@ class TimeSeriesEditorQt(QMainWindow):
                 ax.set_visible(False)
             fig.suptitle("Time-series Grid")
             fig.tight_layout()
-            fig.show()
+
+            if getattr(self, "embed_plot_cb", None) and self.embed_plot_cb.isChecked():
+                if self._mpl_canvas is not None:
+                    self.right_outer_layout.removeWidget(self._mpl_canvas)
+                    self._mpl_canvas.setParent(None)
+                from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+
+                self._mpl_canvas = FigureCanvasQTAgg(fig)
+                self._mpl_canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+                self.right_outer_layout.addWidget(self._mpl_canvas)
+                self._mpl_canvas.show()
+                self.plot_view.hide()
+            else:
+                if self._mpl_canvas is not None:
+                    self.right_outer_layout.removeWidget(self._mpl_canvas)
+                    self._mpl_canvas.setParent(None)
+                    self._mpl_canvas = None
+                self.plot_view.hide()
+                fig.show()
             return
         if mode in ("time", "rolling"):
             if not traces:
