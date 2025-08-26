@@ -2618,11 +2618,21 @@ class TimeSeriesEditorQt(QMainWindow):
             ncols = int(np.ceil(np.sqrt(n)))
             nrows = int(np.ceil(n / ncols))
 
+            same_axes = (
+                hasattr(self, "plot_same_axes_cb")
+                and self.plot_same_axes_cb.isChecked()
+            )
+            if same_axes:
+                x_min = min(min(c["t"]) for v in grid_traces.values() for c in v)
+                x_max = max(max(c["t"]) for v in grid_traces.values() for c in v)
+                y_min = min(np.min(c["y"]) for v in grid_traces.values() for c in v)
+                y_max = max(np.max(c["y"]) for v in grid_traces.values() for c in v)
+
             # ───────────────────────── 1.  Bokeh branch ──────────────────────────
             if engine == "bokeh":
                 from bokeh.plotting import figure, show
                 from bokeh.layouts import gridplot
-                from bokeh.models import HoverTool, ColumnDataSource
+                from bokeh.models import HoverTool, ColumnDataSource, Range1d
                 from bokeh.palettes import Category10_10
                 from bokeh.io import curdoc
                 from bokeh.embed import file_html
@@ -2666,6 +2676,9 @@ class TimeSeriesEditorQt(QMainWindow):
                             legend_label=c["label"],
                             muted_alpha=0.0,
                         )
+                    if same_axes:
+                        p.x_range = Range1d(x_min, x_max)
+                        p.y_range = Range1d(y_min, y_max)
                     p.legend.click_policy = "mute"
                     p.add_layout(p.legend[0], "right")
                     figs.append(p)
@@ -2725,6 +2738,9 @@ class TimeSeriesEditorQt(QMainWindow):
                             col=c,
                         )
 
+                if same_axes:
+                    fig.update_xaxes(range=[x_min, x_max])
+                    fig.update_yaxes(range=[y_min, y_max])
                 fig.update_layout(
                     title="Time-series Grid",
                     showlegend=True,
@@ -2757,14 +2773,6 @@ class TimeSeriesEditorQt(QMainWindow):
             # ───────────────────────── 3.  Matplotlib branch ─────────────────────
             import matplotlib.pyplot as plt
             fig, axes = plt.subplots(nrows, ncols, squeeze=False)
-            same_axes = (
-                hasattr(self, "plot_same_axes_cb") and self.plot_same_axes_cb.isChecked()
-            )
-            if same_axes:
-                x_min = min(min(c["t"]) for v in grid_traces.values() for c in v)
-                x_max = max(max(c["t"]) for v in grid_traces.values() for c in v)
-                y_min = min(np.min(c["y"]) for v in grid_traces.values() for c in v)
-                y_max = max(np.max(c["y"]) for v in grid_traces.values() for c in v)
             for ax, (lbl, curves) in zip(axes.flat, grid_traces.items()):
                 for c in curves:
                     ax.plot(c["t"], c["y"], alpha=c.get("alpha", 1.0), label=c["label"])
