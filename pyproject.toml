@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "anytimes"
-version = "0.1.0"
+version = "0.2.0"
 description = "PySide6-based interface for exploring and editing time-series data."
 readme = "README.md"
 authors = [{name = "AnyTimes Developers"}]
