@@ -560,7 +560,13 @@ class TimeSeriesEditorQt(QMainWindow):
         self.plot_mean_btn = QPushButton("Plot Mean")
         self.plot_rolling_btn = QPushButton("Rolling Mean")
         self.animate_xyz_btn = QPushButton("Animate XYZ scatter (all points)")
-        plot_btn_row.addWidget(self.plot_selected_btn)
+
+        selected_col = QVBoxLayout()
+        selected_col.addWidget(self.plot_selected_btn)
+        self.plot_extrema_cb = QCheckBox("Mark max/min")
+        selected_col.addWidget(self.plot_extrema_cb)
+
+        plot_btn_row.addLayout(selected_col)
         plot_btn_row.addLayout(grid_col)
         plot_btn_row.addWidget(self.plot_mean_btn)
         plot_btn_row.addWidget(self.plot_rolling_btn)
@@ -2430,6 +2436,10 @@ class TimeSeriesEditorQt(QMainWindow):
 
         self.rebuild_var_lookup()
 
+        mark_extrema = (
+            hasattr(self, "plot_extrema_cb") and self.plot_extrema_cb.isChecked()
+        )
+
         import numpy as np, anyqats as qats, os
         from PySide6.QtWidgets import QMessageBox
         import matplotlib.pyplot as plt
@@ -2676,6 +2686,7 @@ class TimeSeriesEditorQt(QMainWindow):
                 from bokeh.embed import file_html
                 from bokeh.resources import INLINE
                 import itertools, tempfile
+                import numpy as np
 
                 curdoc().theme = (
                     "dark_minimal" if self.theme_switch.isChecked() else "light_minimal"
@@ -2716,6 +2727,13 @@ class TimeSeriesEditorQt(QMainWindow):
                             legend_label=c["label"],
                             muted_alpha=0.0,
                         )
+                    if mark_extrema and curves:
+                        all_t = np.concatenate([np.asarray(c["t"]) for c in curves])
+                        all_y = np.concatenate([np.asarray(c["y"]) for c in curves])
+                        max_idx = np.argmax(all_y)
+                        min_idx = np.argmin(all_y)
+                        p.circle([all_t[max_idx]], [all_y[max_idx]], size=6, color="red")
+                        p.circle([all_t[min_idx]], [all_y[min_idx]], size=6, color="blue")
                     if same_axes:
                         p.x_range = Range1d(x_min, x_max)
                         p.y_range = Range1d(y_min, y_max)
@@ -2756,6 +2774,7 @@ class TimeSeriesEditorQt(QMainWindow):
                 from plotly.subplots import make_subplots
                 from plotly.io import to_html
                 import tempfile
+                import numpy as np
 
                 fig = make_subplots(
                     rows=nrows,
@@ -2774,6 +2793,33 @@ class TimeSeriesEditorQt(QMainWindow):
                                 mode="lines",
                                 name=curve["label"],
                                 opacity=curve.get("alpha", 1.0),
+                            ),
+                            row=r,
+                            col=c,
+                        )
+                    if mark_extrema and curves:
+                        all_t = np.concatenate([np.asarray(curve["t"]) for curve in curves])
+                        all_y = np.concatenate([np.asarray(curve["y"]) for curve in curves])
+                        max_idx = np.argmax(all_y)
+                        min_idx = np.argmin(all_y)
+                        fig.add_trace(
+                            go.Scatter(
+                                x=[all_t[max_idx]],
+                                y=[all_y[max_idx]],
+                                mode="markers",
+                                marker=dict(color="red", size=8),
+                                showlegend=False,
+                            ),
+                            row=r,
+                            col=c,
+                        )
+                        fig.add_trace(
+                            go.Scatter(
+                                x=[all_t[min_idx]],
+                                y=[all_y[min_idx]],
+                                mode="markers",
+                                marker=dict(color="blue", size=8),
+                                showlegend=False,
                             ),
                             row=r,
                             col=c,
@@ -2813,12 +2859,20 @@ class TimeSeriesEditorQt(QMainWindow):
 
             # ───────────────────────── 3.  Matplotlib branch ─────────────────────
             import matplotlib.pyplot as plt
+            import numpy as np
             fig, axes = plt.subplots(nrows, ncols, squeeze=False)
             for ax, (_, data) in zip(axes.flat, items):
                 lbl = data["label"]
                 curves = data["curves"]
                 for c in curves:
                     ax.plot(c["t"], c["y"], alpha=c.get("alpha", 1.0), label=c["label"])
+                if mark_extrema and curves:
+                    all_t = np.concatenate([np.asarray(c["t"]) for c in curves])
+                    all_y = np.concatenate([np.asarray(c["y"]) for c in curves])
+                    max_idx = np.argmax(all_y)
+                    min_idx = np.argmin(all_y)
+                    ax.scatter(all_t[max_idx], all_y[max_idx], color="red", label="Max")
+                    ax.scatter(all_t[min_idx], all_y[min_idx], color="blue", label="Min")
                 ax.set_title(lbl)
                 ax.legend()
                 if same_axes:
@@ -2860,6 +2914,7 @@ class TimeSeriesEditorQt(QMainWindow):
                 traces,
                 title="Rolling Mean" if mode == "rolling" else "Time-series Plot",
                 y_label=self.yaxis_label.text() or "Value",
+                mark_extrema=mark_extrema,
             )
             return
 
@@ -3118,7 +3173,7 @@ class TimeSeriesEditorQt(QMainWindow):
             fig.write_html(tmp)
             webbrowser.open(str(tmp))
 
-    def _plot_lines(self, traces, title, y_label):
+    def _plot_lines(self, traces, title, y_label, *, mark_extrema=False):
         """
         traces → list of dicts with keys
                  't', 'y', 'label', 'alpha', 'is_mean'
@@ -3174,7 +3229,6 @@ class TimeSeriesEditorQt(QMainWindow):
 
             for tr in traces:
                 color = next(color_cycle)
-                #color = "#000000" if tr.get("is_mean") else next(color_cycle)
                 cds = ColumnDataSource(
                     dict(x=tr["t"], y=tr["y"], label=[tr["label"]] * len(tr["t"]))
                 )
@@ -3189,6 +3243,16 @@ class TimeSeriesEditorQt(QMainWindow):
                     muted_alpha=0.0,
                 )
                 renderers.append(r)
+
+            if mark_extrema and traces:
+                import numpy as np
+                all_t = np.concatenate([np.asarray(tr["t"]) for tr in traces])
+                all_y = np.concatenate([np.asarray(tr["y"]) for tr in traces])
+                max_idx = np.argmax(all_y)
+                min_idx = np.argmin(all_y)
+                r_max = p.circle([all_t[max_idx]], [all_y[max_idx]], size=6, color="red", legend_label="Max")
+                r_min = p.circle([all_t[min_idx]], [all_y[min_idx]], size=6, color="blue", legend_label="Min")
+                renderers.extend([r_max, r_min])
 
             p.legend.click_policy = "mute"
             p.add_layout(p.legend[0], "right")
@@ -3240,16 +3304,38 @@ class TimeSeriesEditorQt(QMainWindow):
 
             fig = go.Figure()
             for tr in traces:
-                #color = "black" if tr.get("is_mean") else None
-
                 fig.add_trace(
                     go.Scatter(
                         x=tr["t"],
                         y=tr["y"],
                         mode="lines",
                         name=tr["label"],
-                        line=dict(width=2 if tr.get("is_mean") else 1), #color=color),
+                        line=dict(width=2 if tr.get("is_mean") else 1),
                         opacity=tr.get("alpha", 1.0),
+                    )
+                )
+            if mark_extrema and traces:
+                import numpy as np
+                all_t = np.concatenate([np.asarray(tr["t"]) for tr in traces])
+                all_y = np.concatenate([np.asarray(tr["y"]) for tr in traces])
+                max_idx = np.argmax(all_y)
+                min_idx = np.argmin(all_y)
+                fig.add_trace(
+                    go.Scatter(
+                        x=[all_t[max_idx]],
+                        y=[all_y[max_idx]],
+                        mode="markers",
+                        marker=dict(color="red", size=8),
+                        name="Max",
+                    )
+                )
+                fig.add_trace(
+                    go.Scatter(
+                        x=[all_t[min_idx]],
+                        y=[all_y[min_idx]],
+                        mode="markers",
+                        marker=dict(color="blue", size=8),
+                        name="Min",
                     )
                 )
             fig.update_layout(
@@ -3291,6 +3377,7 @@ class TimeSeriesEditorQt(QMainWindow):
         # ───────────────────────── 3.  Matplotlib fallback ────────────────────
         import matplotlib.pyplot as plt
         from itertools import cycle
+        import numpy as np
 
         fig, ax = plt.subplots(figsize=(10, 5))
         palette = cycle(plt.rcParams["axes.prop_cycle"].by_key()["color"])
@@ -3304,6 +3391,13 @@ class TimeSeriesEditorQt(QMainWindow):
                 alpha=tr.get("alpha", 1.0),
                 color=color,
             )
+        if mark_extrema and traces:
+            all_t = np.concatenate([np.asarray(tr["t"]) for tr in traces])
+            all_y = np.concatenate([np.asarray(tr["y"]) for tr in traces])
+            max_idx = np.argmax(all_y)
+            min_idx = np.argmin(all_y)
+            ax.scatter(all_t[max_idx], all_y[max_idx], color="red", label="Max")
+            ax.scatter(all_t[min_idx], all_y[min_idx], color="blue", label="Min")
 
         ax.set_title(title)
         ax.set_xlabel("Time")
