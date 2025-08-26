@@ -545,15 +545,24 @@ class TimeSeriesEditorQt(QMainWindow):
 
         plot_layout = QVBoxLayout(self.plot_group)
         plot_btn_row = QHBoxLayout()
-        self.plot_selected_btn = QPushButton("Plot Selected")
+        self.plot_selected_btn = QPushButton("Plot Selected (one graph)")
+        self.plot_selected_btn.setStyleSheet("background-color:#e6ffe6;")
+        self.plot_side_by_side_btn = QPushButton("Plot Selected (side-by-side)")
+        self.plot_side_by_side_btn.setStyleSheet("background-color:#ffe6e6;")
+        grid_col = QVBoxLayout()
+        grid_col.addWidget(self.plot_side_by_side_btn)
+        self.plot_same_axes_cb = QCheckBox("Same axes")
+        grid_col.addWidget(self.plot_same_axes_cb)
         self.plot_mean_btn = QPushButton("Plot Mean")
         self.plot_rolling_btn = QPushButton("Rolling Mean")
         self.animate_xyz_btn = QPushButton("Animate XYZ scatter (all points)")
         plot_btn_row.addWidget(self.plot_selected_btn)
+        plot_btn_row.addLayout(grid_col)
         plot_btn_row.addWidget(self.plot_mean_btn)
         plot_btn_row.addWidget(self.plot_rolling_btn)
         plot_btn_row.addWidget(self.animate_xyz_btn)
         self.plot_selected_btn.clicked.connect(self.plot_selected)
+        self.plot_side_by_side_btn.clicked.connect(lambda: self.plot_selected(grid=True))
         self.plot_mean_btn.clicked.connect(self.plot_mean)
         self.plot_rolling_btn.clicked.connect(lambda: self.plot_selected(mode="rolling"))
         self.animate_xyz_btn.clicked.connect(self.animate_xyz_scatter_many)
@@ -2382,7 +2391,7 @@ class TimeSeriesEditorQt(QMainWindow):
         dlg = StatsDialog(series_info, self)
         dlg.exec()
 
-    def plot_selected(self, *, mode: str = "time"):
+    def plot_selected(self, *, mode: str = "time", grid: bool = False):
         """
         Plot all ticked variables.
 
@@ -2432,6 +2441,7 @@ class TimeSeriesEditorQt(QMainWindow):
         #  MAIN LOOP   (file ⨯ selected key)
         # =======================================================================
         traces = []  # for the time-domain case
+        grid_traces = {}
         left, right = self.label_trim_left.value(), self.label_trim_right.value()
 
         from collections import Counter
@@ -2475,48 +2485,43 @@ class TimeSeriesEditorQt(QMainWindow):
                 # 3) optional pre-filtering for time-domain plot
                 if mode == "time":
                     dt = np.median(np.diff(ts.t))
+                    label_base = self._trim_label(
+                        f"{fname_disp}: {var}", left, right
+                    )
+                    curves = grid_traces.setdefault(label_base, [])
                     if want_raw:
-                        traces.append(
-                            dict(
-                                t=ts_win.t,
-                                y=ts_win.x,
-                                label=self._trim_label(
-                                    f"{fname_disp}: {var}", left, right
-                                )
-                                + " [raw]",
-                                alpha=1.0,
-                            )
+                        tr = dict(
+                            t=ts_win.t,
+                            y=ts_win.x,
+                            label=label_base + " [raw]",
+                            alpha=1.0,
                         )
+                        traces.append(tr)
+                        curves.append(dict(t=ts_win.t, y=ts_win.x, label="Raw", alpha=1.0))
                     if want_lp:
                         fc = float(self.lowpass_cutoff.text() or 0)
                         if fc > 0:
                             y_lp = qats.signal.lowpass(ts_win.x, dt, fc)
-                            traces.append(
-                                dict(
-                                    t=ts_win.t,
-                                    y=y_lp,
-                                    label=self._trim_label(
-                                        f"{fname_disp}: {var}", left, right
-                                    )
-                                    + f" [LP {fc} Hz]",
-                                    alpha=1.0,
-                                )
+                            tr = dict(
+                                t=ts_win.t,
+                                y=y_lp,
+                                label=label_base + f" [LP {fc} Hz]",
+                                alpha=1.0,
                             )
+                            traces.append(tr)
+                            curves.append(dict(t=ts_win.t, y=y_lp, label=f"LP {fc} Hz", alpha=1.0))
                     if want_hp:
                         fc = float(self.highpass_cutoff.text() or 0)
                         if fc > 0:
                             y_hp = qats.signal.highpass(ts_win.x, dt, fc)
-                            traces.append(
-                                dict(
-                                    t=ts_win.t,
-                                    y=y_hp,
-                                    label=self._trim_label(
-                                        f"{fname_disp}: {var}", left, right
-                                    )
-                                    + f" [HP {fc} Hz]",
-                                    alpha=1.0,
-                                )
+                            tr = dict(
+                                t=ts_win.t,
+                                y=y_hp,
+                                label=label_base + f" [HP {fc} Hz]",
+                                alpha=1.0,
                             )
+                            traces.append(tr)
+                            curves.append(dict(t=ts_win.t, y=y_hp, label=f"HP {fc} Hz", alpha=1.0))
                     continue  # nothing else to do for time-domain loop
                 elif mode == "rolling":
                     y_roll = pd.Series(ts_win.x).rolling(window=roll_window, min_periods=1).mean().to_numpy()
@@ -2592,6 +2597,41 @@ class TimeSeriesEditorQt(QMainWindow):
         # ======================================================================
         import matplotlib.pyplot as plt  # make sure this import is at top
 
+        if mode == "time" and grid:
+            if not grid_traces:
+                QMessageBox.warning(
+                    self,
+                    "Nothing to plot",
+                    "No series matched the selection.",
+                )
+                return
+            import matplotlib.pyplot as plt
+            n = len(grid_traces)
+            ncols = int(np.ceil(np.sqrt(n)))
+            nrows = int(np.ceil(n / ncols))
+            fig, axes = plt.subplots(nrows, ncols, squeeze=False)
+            same_axes = (
+                hasattr(self, "plot_same_axes_cb") and self.plot_same_axes_cb.isChecked()
+            )
+            if same_axes:
+                x_min = min(min(c["t"]) for v in grid_traces.values() for c in v)
+                x_max = max(max(c["t"]) for v in grid_traces.values() for c in v)
+                y_min = min(np.min(c["y"]) for v in grid_traces.values() for c in v)
+                y_max = max(np.max(c["y"]) for v in grid_traces.values() for c in v)
+            for ax, (lbl, curves) in zip(axes.flat, grid_traces.items()):
+                for c in curves:
+                    ax.plot(c["t"], c["y"], alpha=c.get("alpha", 1.0), label=c["label"])
+                ax.set_title(lbl)
+                ax.legend()
+                if same_axes:
+                    ax.set_xlim(x_min, x_max)
+                    ax.set_ylim(y_min, y_max)
+            for ax in axes.flat[n:]:
+                ax.set_visible(False)
+            fig.suptitle("Time-series Grid")
+            fig.tight_layout()
+            fig.show()
+            return
         if mode in ("time", "rolling"):
             if not traces:
                 QMessageBox.warning(
