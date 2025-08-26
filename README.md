@@ -69,7 +69,12 @@ After installation, import the GUI module in your Python project:
 from anytimes import anytimes_gui
 ```
 
-The module exposes Qt widgets for building custom time-series exploration tools. You can also launch the GUI from the command line using the `anytimes` entry point.
+The module exposes Qt widgets for building custom time-series exploration tools. 
+
+You can also launch the GUI from the command line using the `anytimes` entry point:
+```batch
+C:\Python\Python313\Scripts>anytimes
+```
 
 You can start the GUI by typing:
 
