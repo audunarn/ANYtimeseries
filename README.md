@@ -52,6 +52,11 @@ pip install anytimes
 - PySide6
 - matplotlib
 
+## Optional Requirements
+- plotly
+- bokeh
+- OrcFxAPI and Orcaflex (licenced or Demo)
+
 ## Usage
 
 After installation, import the GUI module in your Python project:
