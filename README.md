@@ -57,7 +57,7 @@ pip install anytimes
 ## Optional Requirements
 - plotly
 - bokeh
-- OrcFxAPI and Orcaflex (licenced or Demo)
+- OrcFxAPI and Orcaflex (licenced or [Demo][1])
 
 ## Usage
 
@@ -91,4 +91,6 @@ Update it with the correct location of you Python environment and location of .p
 ## License
 
 Released under the MIT License. See [LICENSE](LICENSE) for details.
+
+[1]: <https://www.orcina.com/orcaflex/demo/> "Demo version of Orcaflex"
 
