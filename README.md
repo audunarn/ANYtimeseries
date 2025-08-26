@@ -73,7 +73,7 @@ The module exposes Qt widgets for building custom time-series exploration tools.
 
 You can also launch the GUI from the command line using the `anytimes` entry point:
 ```cmd
-C:\Python\Python313\Scripts>anytimes
+C:\Python\Python313\Scripts\anytimes
 ```
 
 You can start the GUI by typing:
