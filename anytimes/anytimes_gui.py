@@ -366,8 +366,14 @@ class TimeSeriesEditorQt(QMainWindow):
         self.file_ctrls_layout.addWidget(self.clear_orcaflex_btn)
         self.file_ctrls_layout.addWidget(self.reselect_orcaflex_btn)
         self.file_ctrls_layout.addStretch(1)
+
+        self.theme_embed_widget = QWidget()
+        self.theme_embed_layout = QVBoxLayout(self.theme_embed_widget)
         self.theme_switch = QCheckBox("Dark Theme")
-        self.file_ctrls_layout.addWidget(self.theme_switch)
+        self.embed_plot_cb = QCheckBox("Embed Plot")
+        self.theme_embed_layout.addWidget(self.theme_switch)
+        self.theme_embed_layout.addWidget(self.embed_plot_cb)
+        self.file_ctrls_layout.addWidget(self.theme_embed_widget)
         self.controls_layout.addLayout(self.file_ctrls_layout)
 
         # Progress bar
@@ -609,8 +615,6 @@ class TimeSeriesEditorQt(QMainWindow):
         self.rolling_window.setValue(1)
         rolling_row.addWidget(self.rolling_window)
         plot_layout.addLayout(rolling_row)
-        self.embed_plot_cb = QCheckBox("Embed Plot")
-        plot_layout.addWidget(self.embed_plot_cb)
 
         self.controls_layout.addWidget(self.plot_group)
         self.controls_layout.addWidget(self.transform_group)
@@ -3613,7 +3617,7 @@ class TimeSeriesEditorQt(QMainWindow):
                 self.progress_transform_row.removeWidget(self.progress)
             if self.file_ctrls_layout.indexOf(self.progress) == -1:
 
-                idx = self.file_ctrls_layout.indexOf(self.theme_switch)
+                idx = self.file_ctrls_layout.indexOf(self.theme_embed_widget)
                 if idx == -1:
                     self.file_ctrls_layout.addWidget(self.progress)
                 else:
