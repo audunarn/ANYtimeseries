@@ -2320,6 +2320,12 @@ class TimeSeriesEditorQt(QMainWindow):
             right = int(right_chars)
         except Exception:
             left, right = 10, 50  # fallback defaults
+        if left <= 0 and right <= 0:
+            return label
+        if left <= 0:
+            return label if len(label) <= right else label[-right:]
+        if right <= 0:
+            return label if len(label) <= left else label[:left]
         if len(label) <= left + right + 3:
             return label
         return f"{label[:left]}...{label[-right:]}"
@@ -2456,6 +2462,9 @@ class TimeSeriesEditorQt(QMainWindow):
         #  MAIN LOOP   (file ⨯ selected key)
         # =======================================================================
         traces = []  # for the time-domain case
+        # ``grid_traces`` keeps the original, untrimmed label as key to avoid
+        # accidental merging when two trimmed labels become identical.  Each
+        # value stores the display label and the collected curve data.
         grid_traces = {}
         left, right = self.label_trim_left.value(), self.label_trim_right.value()
 
@@ -2500,15 +2509,17 @@ class TimeSeriesEditorQt(QMainWindow):
                 # 3) optional pre-filtering for time-domain plot
                 if mode == "time":
                     dt = np.median(np.diff(ts.t))
-                    label_base = self._trim_label(
-                        f"{fname_disp}: {var}", left, right
+                    raw_label = f"{fname_disp}: {var}"
+                    disp_label = self._trim_label(raw_label, left, right)
+                    entry = grid_traces.setdefault(
+                        raw_label, {"label": disp_label, "curves": []}
                     )
-                    curves = grid_traces.setdefault(label_base, [])
+                    curves = entry["curves"]
                     if want_raw:
                         tr = dict(
                             t=ts_win.t,
                             y=ts_win.x,
-                            label=label_base + " [raw]",
+                            label=disp_label + " [raw]",
                             alpha=1.0,
                         )
                         traces.append(tr)
@@ -2520,11 +2531,13 @@ class TimeSeriesEditorQt(QMainWindow):
                             tr = dict(
                                 t=ts_win.t,
                                 y=y_lp,
-                                label=label_base + f" [LP {fc} Hz]",
+                                label=disp_label + f" [LP {fc} Hz]",
                                 alpha=1.0,
                             )
                             traces.append(tr)
-                            curves.append(dict(t=ts_win.t, y=y_lp, label=f"LP {fc} Hz", alpha=1.0))
+                            curves.append(
+                                dict(t=ts_win.t, y=y_lp, label=f"LP {fc} Hz", alpha=1.0)
+                            )
                     if want_hp:
                         fc = float(self.highpass_cutoff.text() or 0)
                         if fc > 0:
@@ -2532,11 +2545,13 @@ class TimeSeriesEditorQt(QMainWindow):
                             tr = dict(
                                 t=ts_win.t,
                                 y=y_hp,
-                                label=label_base + f" [HP {fc} Hz]",
+                                label=disp_label + f" [HP {fc} Hz]",
                                 alpha=1.0,
                             )
                             traces.append(tr)
-                            curves.append(dict(t=ts_win.t, y=y_hp, label=f"HP {fc} Hz", alpha=1.0))
+                            curves.append(
+                                dict(t=ts_win.t, y=y_hp, label=f"HP {fc} Hz", alpha=1.0)
+                            )
                     continue  # nothing else to do for time-domain loop
                 elif mode == "rolling":
                     y_roll = pd.Series(ts_win.x).rolling(window=roll_window, min_periods=1).mean().to_numpy()
@@ -2636,10 +2651,20 @@ class TimeSeriesEditorQt(QMainWindow):
                 and self.plot_same_axes_cb.isChecked()
             )
             if same_axes:
-                x_min = min(min(c["t"]) for v in grid_traces.values() for c in v)
-                x_max = max(max(c["t"]) for v in grid_traces.values() for c in v)
-                y_min = min(np.min(c["y"]) for v in grid_traces.values() for c in v)
-                y_max = max(np.max(c["y"]) for v in grid_traces.values() for c in v)
+                x_min = min(
+                    min(c["t"]) for v in grid_traces.values() for c in v["curves"]
+                )
+                x_max = max(
+                    max(c["t"]) for v in grid_traces.values() for c in v["curves"]
+                )
+                y_min = min(
+                    np.min(c["y"]) for v in grid_traces.values() for c in v["curves"]
+                )
+                y_max = max(
+                    np.max(c["y"]) for v in grid_traces.values() for c in v["curves"]
+                )
+
+            items = list(grid_traces.items())
 
             # ───────────────────────── 1.  Bokeh branch ──────────────────────────
             if engine == "bokeh":
@@ -2658,7 +2683,9 @@ class TimeSeriesEditorQt(QMainWindow):
 
                 figs = []
                 color_cycle = itertools.cycle(Category10_10)
-                for lbl, curves in grid_traces.items():
+                for _, data in items:
+                    lbl = data["label"]
+                    curves = data["curves"]
                     p = figure(
                         width=450,
                         height=300,
@@ -2733,9 +2760,10 @@ class TimeSeriesEditorQt(QMainWindow):
                 fig = make_subplots(
                     rows=nrows,
                     cols=ncols,
-                    subplot_titles=list(grid_traces.keys()),
+                    subplot_titles=[data["label"] for _, data in items],
                 )
-                for idx, (lbl, curves) in enumerate(grid_traces.items(), start=1):
+                for idx, (_, data) in enumerate(items, start=1):
+                    curves = data["curves"]
                     r = (idx - 1) // ncols + 1
                     c = (idx - 1) % ncols + 1
                     for curve in curves:
@@ -2786,7 +2814,9 @@ class TimeSeriesEditorQt(QMainWindow):
             # ───────────────────────── 3.  Matplotlib branch ─────────────────────
             import matplotlib.pyplot as plt
             fig, axes = plt.subplots(nrows, ncols, squeeze=False)
-            for ax, (lbl, curves) in zip(axes.flat, grid_traces.items()):
+            for ax, (_, data) in zip(axes.flat, items):
+                lbl = data["label"]
+                curves = data["curves"]
                 for c in curves:
                     ax.plot(c["t"], c["y"], alpha=c.get("alpha", 1.0), label=c["label"])
                 ax.set_title(lbl)
