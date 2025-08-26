@@ -72,7 +72,7 @@ from anytimes import anytimes_gui
 The module exposes Qt widgets for building custom time-series exploration tools. 
 
 You can also launch the GUI from the command line using the `anytimes` entry point:
-```batch
+```cmd
 C:\Python\Python313\Scripts>anytimes
 ```
 
