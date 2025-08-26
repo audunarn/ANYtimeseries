@@ -566,7 +566,10 @@ class TimeSeriesEditorQt(QMainWindow):
         plot_btn_row.addWidget(self.plot_rolling_btn)
         plot_btn_row.addWidget(self.animate_xyz_btn)
         self.plot_selected_btn.clicked.connect(self.plot_selected)
-        self.plot_side_by_side_btn.clicked.connect(lambda: self.plot_selected(grid=True))
+        # Use an explicit slot for side-by-side plotting so that the optional
+        # ``checked`` argument emitted by QPushButton.clicked() is ignored and
+        # the ``grid`` flag is always forwarded correctly.
+        self.plot_side_by_side_btn.clicked.connect(self.plot_selected_side_by_side)
         self.plot_mean_btn.clicked.connect(self.plot_mean)
         self.plot_rolling_btn.clicked.connect(lambda: self.plot_selected(mode="rolling"))
         self.animate_xyz_btn.clicked.connect(self.animate_xyz_scatter_many)
@@ -2392,6 +2395,16 @@ class TimeSeriesEditorQt(QMainWindow):
 
         dlg = StatsDialog(series_info, self)
         dlg.exec()
+
+    def plot_selected_side_by_side(self, checked: bool = False):
+        """Plot all selected series in a grid of subplots.
+
+        This wrapper slot is used for the "Plot Selected (side-by-side)" button
+        to ensure the ``grid`` argument is always passed with ``True`` even
+        though ``QPushButton.clicked`` emits a boolean ``checked`` parameter.
+        """
+        # Forward the call to ``plot_selected`` with ``grid`` enabled.
+        self.plot_selected(grid=True)
 
     def plot_selected(self, *, mode: str = "time", grid: bool = False):
         """
