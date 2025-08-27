@@ -9,7 +9,6 @@ os.environ.setdefault("QTWEBENGINE_DISABLE_GPU", "1")
 os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu")
 os.environ.setdefault("QT_QUICK_BACKEND", "software")
 
-
 import re
 import numpy as np
 import pandas as pd
@@ -6179,7 +6178,12 @@ class FileLoader:
                             v = list(v)
                         values.append(v)
                     # consider only non-null entries when checking for list-like values
-                    non_null = [v for v in values if not pd.isna(v)]
+                    non_null = []
+                    for v in values:
+                        if isinstance(v, Sequence) and not isinstance(v, (str, bytes)):
+                            non_null.append(v)
+                        elif not pd.isna(v):
+                            non_null.append(v)
                     if non_null and all(
                         isinstance(v, Sequence) and not isinstance(v, (str, bytes))
                         for v in non_null
@@ -6242,7 +6246,12 @@ class FileLoader:
                         v = list(v)
                     values.append(v)
                 # Consider only non-null entries when checking for list-like values
-                non_null = [v for v in values if not pd.isna(v)]
+                non_null = []
+                for v in values:
+                    if isinstance(v, Sequence) and not isinstance(v, (str, bytes)):
+                        non_null.append(v)
+                    elif not pd.isna(v):
+                        non_null.append(v)
                 if non_null and all(
                     isinstance(v, Sequence) and not isinstance(v, (str, bytes))
                     for v in non_null
