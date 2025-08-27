@@ -6144,7 +6144,10 @@ class FileLoader:
             for c in df.columns
             if c != time_col
             and pd.api.types.is_string_dtype(df[c])
-            and df[c].map(lambda x: isinstance(x, str) or pd.isna(x)).all()
+            and df[c].map(
+                lambda x: isinstance(x, str)
+                or (not hasattr(x, "__iter__") and pd.isna(x))
+            ).all()
         ]
 
         for sc in string_cols:
@@ -6176,6 +6179,8 @@ class FileLoader:
                             v = v.to_pylist()
                         elif isinstance(v, array):
                             v = list(v)
+                        elif isinstance(v, np.ndarray):
+                            v = v.tolist()
                         values.append(v)
                     # consider only non-null entries when checking for list-like values
                     non_null = []
@@ -6244,6 +6249,8 @@ class FileLoader:
                         v = v.to_pylist()
                     elif isinstance(v, array):
                         v = list(v)
+                    elif isinstance(v, np.ndarray):
+                        v = v.tolist()
                     values.append(v)
                 # Consider only non-null entries when checking for list-like values
                 non_null = []
