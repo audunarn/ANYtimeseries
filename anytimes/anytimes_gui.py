@@ -6164,6 +6164,7 @@ class FileLoader:
             else:
                 skipped.add(sc)
 
+
         if id_col:
             split_columns = {}
             for ident, subdf in df.groupby(id_col):
@@ -6175,6 +6176,7 @@ class FileLoader:
                     # ensure any pyarrow/extension values are converted to
                     # regular Python objects before further inspection
                     values = []
+
                     for v in subdf[col].tolist():
                         if hasattr(v, "to_pylist"):
                             v = v.to_pylist()
@@ -6183,6 +6185,7 @@ class FileLoader:
                         elif isinstance(v, np.ndarray):
                             v = v.tolist()
                         values.append(v)
+
                     if col not in split_columns:
                         # consider only non-null entries when checking for list-like values
                         non_null = []
@@ -6249,6 +6252,7 @@ class FileLoader:
                         tsdb.add(TimeSeries(f"{col}_{ident}", time_vals, numeric_values))
                     except Exception:
                         skipped.add(col)
+
         else:
             for col in df.columns:
                 if col == time_col:
