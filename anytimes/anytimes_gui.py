@@ -6187,7 +6187,16 @@ class FileLoader:
                                 if len(names) != n:
                                     names = [f"{col}_{i+1}" for i in range(n)]
                                 for i in range(n):
-                                    data = np.array([row[i] for row in values], dtype=float)
+
+                                    try:
+                                        data = np.array(
+                                            [np.asarray(row[i]).item() for row in values],
+                                            dtype=float,
+                                        )
+                                    except Exception:
+                                        skipped.add(f"{col}_{i}")
+                                        continue
+
                                     tsdb.add(TimeSeries(f"{names[i]}_{ident}", time_vals, data))
                                 continue
                     if np.issubdtype(values.dtype, np.number) and np.isfinite(values).all():
@@ -6224,7 +6233,16 @@ class FileLoader:
                             if len(names) != n:
                                 names = [f"{col}_{i+1}" for i in range(n)]
                             for i in range(n):
-                                data = np.array([row[i] for row in values], dtype=float)
+
+                                try:
+                                    data = np.array(
+                                        [np.asarray(row[i]).item() for row in values],
+                                        dtype=float,
+                                    )
+                                except Exception:
+                                    skipped.add(f"{col}_{i}")
+                                    continue
+
                                 tsdb.add(TimeSeries(names[i], time, data))
                             continue
                 if np.issubdtype(values.dtype, np.number) and np.isfinite(values).all():
