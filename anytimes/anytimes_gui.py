@@ -17,6 +17,8 @@ import json
 import subprocess
 import anyqats as qats
 from anyqats import TimeSeries, TsDB
+from collections.abc import Sequence
+from array import array
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QGridLayout,
     QListWidget, QTabWidget, QLabel, QLineEdit, QCheckBox, QRadioButton,
@@ -6139,7 +6141,7 @@ class FileLoader:
             c
             for c in df.columns
             if c != time_col
-            and df[c].dtype == object
+            and pd.api.types.is_string_dtype(df[c])
             and df[c].map(lambda x: isinstance(x, str) or pd.isna(x)).all()
         ]
         for sc in string_cols:
@@ -6164,11 +6166,16 @@ class FileLoader:
                         continue
                     # ensure any pyarrow/extension values are converted to
                     # regular Python objects before further inspection
-                    values = [
-                        v.to_pylist() if hasattr(v, "to_pylist") else v
-                        for v in subdf[col].tolist()
-                    ]
-                    if all(isinstance(v, (list, tuple, np.ndarray)) for v in values):
+
+                    values = []
+                    for v in subdf[col].tolist():
+                        if hasattr(v, "to_pylist"):
+                            v = v.to_pylist()
+                        elif isinstance(v, array):
+                            v = list(v)
+                        values.append(v)
+                    if all(isinstance(v, Sequence) and not isinstance(v, (str, bytes)) for v in values):
+
                         lengths = {len(v) for v in values}
                         if len(lengths) == 1:
                             n = lengths.pop()
@@ -6213,12 +6220,17 @@ class FileLoader:
                 if col == time_col:
                     continue
                 # Convert potential extension array values to regular Python
-                values = [
-                    v.to_pylist() if hasattr(v, "to_pylist") else v
-                    for v in df[col].tolist()
-                ]
+
+                values = []
+                for v in df[col].tolist():
+                    if hasattr(v, "to_pylist"):
+                        v = v.to_pylist()
+                    elif isinstance(v, array):
+                        v = list(v)
+                    values.append(v)
                 # Check for columns with list/tuple values of consistent length
-                if all(isinstance(v, (list, tuple, np.ndarray)) for v in values):
+                if all(isinstance(v, Sequence) and not isinstance(v, (str, bytes)) for v in values):
+
                     lengths = {len(v) for v in values}
                     if len(lengths) == 1:
                         n = lengths.pop()
