@@ -17,6 +17,8 @@ import json
 import subprocess
 import anyqats as qats
 from anyqats import TimeSeries, TsDB
+from collections.abc import Sequence
+from array import array
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QGridLayout,
     QListWidget, QTabWidget, QLabel, QLineEdit, QCheckBox, QRadioButton,
@@ -6139,7 +6141,7 @@ class FileLoader:
             c
             for c in df.columns
             if c != time_col
-            and df[c].dtype == object
+            and pd.api.types.is_string_dtype(df[c])
             and df[c].map(lambda x: isinstance(x, str) or pd.isna(x)).all()
         ]
         for sc in string_cols:
@@ -6162,8 +6164,16 @@ class FileLoader:
                 for col in df.columns:
                     if col in (time_col, id_col):
                         continue
-                    values = subdf[col].values
-                    if all(isinstance(v, (list, tuple, np.ndarray)) for v in values):
+                    # ensure any pyarrow/extension values are converted to
+                    # regular Python objects before further inspection
+                    values = []
+                    for v in subdf[col].tolist():
+                        if hasattr(v, "to_pylist"):
+                            v = v.to_pylist()
+                        elif isinstance(v, array):
+                            v = list(v)
+                        values.append(v)
+                    if all(isinstance(v, Sequence) and not isinstance(v, (str, bytes)) for v in values):
                         lengths = {len(v) for v in values}
                         if len(lengths) == 1:
                             n = lengths.pop()
@@ -6187,10 +6197,9 @@ class FileLoader:
                                 if len(names) != n:
                                     names = [f"{col}_{i+1}" for i in range(n)]
                                 for i in range(n):
-
                                     try:
                                         data = np.array(
-                                            [np.asarray(row[i]).item() for row in values],
+                                            [row[i] for row in values],
                                             dtype=float,
                                         )
                                     except Exception:
@@ -6199,17 +6208,25 @@ class FileLoader:
 
                                     tsdb.add(TimeSeries(f"{names[i]}_{ident}", time_vals, data))
                                 continue
-                    if np.issubdtype(values.dtype, np.number) and np.isfinite(values).all():
-                        tsdb.add(TimeSeries(f"{col}_{ident}", time_vals, values))
-                    else:
+                    try:
+                        numeric_values = np.array(values, dtype=float)
+                        tsdb.add(TimeSeries(f"{col}_{ident}", time_vals, numeric_values))
+                    except Exception:
                         skipped.add(col)
         else:
             for col in df.columns:
                 if col == time_col:
                     continue
-                values = df[col].values
+                # Convert potential extension array values to regular Python
+                values = []
+                for v in df[col].tolist():
+                    if hasattr(v, "to_pylist"):
+                        v = v.to_pylist()
+                    elif isinstance(v, array):
+                        v = list(v)
+                    values.append(v)
                 # Check for columns with list/tuple values of consistent length
-                if all(isinstance(v, (list, tuple, np.ndarray)) for v in values):
+                if all(isinstance(v, Sequence) and not isinstance(v, (str, bytes)) for v in values):
                     lengths = {len(v) for v in values}
                     if len(lengths) == 1:
                         n = lengths.pop()
@@ -6233,10 +6250,9 @@ class FileLoader:
                             if len(names) != n:
                                 names = [f"{col}_{i+1}" for i in range(n)]
                             for i in range(n):
-
                                 try:
                                     data = np.array(
-                                        [np.asarray(row[i]).item() for row in values],
+                                        [row[i] for row in values],
                                         dtype=float,
                                     )
                                 except Exception:
@@ -6245,9 +6261,10 @@ class FileLoader:
 
                                 tsdb.add(TimeSeries(names[i], time, data))
                             continue
-                if np.issubdtype(values.dtype, np.number) and np.isfinite(values).all():
-                    tsdb.add(TimeSeries(col, time, values))
-                else:
+                try:
+                    numeric_values = np.array(values, dtype=float)
+                    tsdb.add(TimeSeries(col, time, numeric_values))
+                except Exception:
                     skipped.add(col)
         if len(tsdb.getm()) == 0:
             if 'time' in df.columns or 't' in df.columns:
