@@ -6144,7 +6144,10 @@ class FileLoader:
             for c in df.columns
             if c != time_col
             and pd.api.types.is_string_dtype(df[c])
-            and df[c].map(lambda x: isinstance(x, str) or pd.isna(x)).all()
+            and df[c].map(
+                lambda x: isinstance(x, str)
+                or (not hasattr(x, "__iter__") and pd.isna(x))
+            ).all()
         ]
 
         for sc in string_cols:
@@ -6162,6 +6165,7 @@ class FileLoader:
                 skipped.add(sc)
 
         if id_col:
+            split_columns = {}
             for ident, subdf in df.groupby(id_col):
                 time_vals = subdf[time_col].values
                 for col in df.columns:
@@ -6176,58 +6180,70 @@ class FileLoader:
                             v = v.to_pylist()
                         elif isinstance(v, array):
                             v = list(v)
+                        elif isinstance(v, np.ndarray):
+                            v = v.tolist()
                         values.append(v)
-                    # consider only non-null entries when checking for list-like values
-                    non_null = []
-                    for v in values:
-                        if isinstance(v, Sequence) and not isinstance(v, (str, bytes)):
-                            non_null.append(v)
-                        elif not pd.isna(v):
-                            non_null.append(v)
-                    if non_null and all(
-                        isinstance(v, Sequence) and not isinstance(v, (str, bytes))
-                        for v in non_null
-                    ):
-                        lengths = {len(v) for v in non_null}
-                        if len(lengths) == 1:
-                            n = lengths.pop()
-                            resp = QMessageBox.question(
-                                self.parent_gui,
-                                "Split Column?",
-                                f"Column '{col}' contains list/tuple values of length {n}.\nSplit into {n} columns?",
-                                QMessageBox.Yes | QMessageBox.No,
-                                QMessageBox.Yes,
-                            )
-                            if resp == QMessageBox.Yes:
-                                name_str, ok = QInputDialog.getText(
+                    if col not in split_columns:
+                        # consider only non-null entries when checking for list-like values
+                        non_null = []
+                        for v in values:
+                            if isinstance(v, Sequence) and not isinstance(v, (str, bytes)):
+                                non_null.append(v)
+                            elif not pd.isna(v):
+                                non_null.append(v)
+                        if non_null and all(
+                            isinstance(v, Sequence) and not isinstance(v, (str, bytes))
+                            for v in non_null
+                        ):
+                            lengths = {len(v) for v in non_null}
+                            if len(lengths) == 1:
+                                n = lengths.pop()
+                                resp = QMessageBox.question(
                                     self.parent_gui,
-                                    "Column Names",
-                                    f"Enter {n} comma-separated names for '{col}':",
+                                    "Split Column?",
+                                    f"Column '{col}' contains list/tuple values of length {n}.\nSplit into {n} columns?",
+                                    QMessageBox.Yes | QMessageBox.No,
+                                    QMessageBox.Yes,
                                 )
-                                if ok:
-                                    names = [s.strip() for s in name_str.split(",") if s.strip()]
+                                if resp == QMessageBox.Yes:
+                                    name_str, ok = QInputDialog.getText(
+                                        self.parent_gui,
+                                        "Column Names",
+                                        f"Enter {n} comma-separated names for '{col}':",
+                                    )
+                                    if ok:
+                                        names = [s.strip() for s in name_str.split(",") if s.strip()]
+                                    else:
+                                        names = []
+                                    if len(names) != n:
+                                        names = [f"{col}_{i+1}" for i in range(n)]
+                                    split_columns[col] = names
                                 else:
-                                    names = []
-                                if len(names) != n:
-                                    names = [f"{col}_{i+1}" for i in range(n)]
-                                for i in range(n):
-                                    row_vals = []
-                                    for row in values:
-                                        if isinstance(row, Sequence) and not isinstance(row, (str, bytes)):
-                                            try:
-                                                row_vals.append(row[i])
-                                            except Exception:
-                                                row_vals.append(np.nan)
-                                        else:
-                                            row_vals.append(np.nan)
+                                    split_columns[col] = None
+                            else:
+                                split_columns[col] = None
+                        else:
+                            split_columns[col] = None
+                    names = split_columns.get(col)
+                    if names:
+                        for i in range(len(names)):
+                            row_vals = []
+                            for row in values:
+                                if isinstance(row, Sequence) and not isinstance(row, (str, bytes)):
                                     try:
-                                        data = np.array(row_vals, dtype=float)
+                                        row_vals.append(row[i])
                                     except Exception:
-                                        skipped.add(f"{col}_{i}")
-                                        continue
-
-                                    tsdb.add(TimeSeries(f"{names[i]}_{ident}", time_vals, data))
+                                        row_vals.append(np.nan)
+                                else:
+                                    row_vals.append(np.nan)
+                            try:
+                                data = np.array(row_vals, dtype=float)
+                            except Exception:
+                                skipped.add(f"{col}_{i}")
                                 continue
+
+                            tsdb.add(TimeSeries(f"{names[i]}_{ident}", time_vals, data))
+                        continue
                     try:
                         numeric_values = np.array(values, dtype=float)
                         tsdb.add(TimeSeries(f"{col}_{ident}", time_vals, numeric_values))
@@ -6244,6 +6260,8 @@ class FileLoader:
                         v = v.to_pylist()
                     elif isinstance(v, array):
                         v = list(v)
+                    elif isinstance(v, np.ndarray):
+                        v = v.tolist()
                     values.append(v)
                 # Consider only non-null entries when checking for list-like values
                 non_null = []
