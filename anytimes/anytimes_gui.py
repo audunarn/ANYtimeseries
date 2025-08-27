@@ -6131,43 +6131,106 @@ class FileLoader:
         time_col = next((c for c in df.columns if c.lower() in ["time", "t"]), df.columns[0])
         time = df[time_col].values
         tsdb = TsDB()
-        skipped = []
-        for col in df.columns:
-            if col == time_col:
-                continue
-            values = df[col].values
-            # Check for columns with list/tuple values of consistent length
-            if all(isinstance(v, (list, tuple, np.ndarray)) for v in values):
-                lengths = {len(v) for v in values}
-                if len(lengths) == 1:
-                    n = lengths.pop()
-                    resp = QMessageBox.question(
-                        self.parent_gui,
-                        "Split Column?",
-                        f"Column '{col}' contains list/tuple values of length {n}.\nSplit into {n} columns?",
-                        QMessageBox.Yes | QMessageBox.No,
-                        QMessageBox.Yes,
-                    )
-                    if resp == QMessageBox.Yes:
-                        name_str, ok = QInputDialog.getText(
-                            self.parent_gui,
-                            "Column Names",
-                            f"Enter {n} comma-separated names for '{col}':",
-                        )
-                        if ok:
-                            names = [s.strip() for s in name_str.split(",") if s.strip()]
-                        else:
-                            names = []
-                        if len(names) != n:
-                            names = [f"{col}_{i+1}" for i in range(n)]
-                        for i in range(n):
-                            data = np.array([row[i] for row in values], dtype=float)
-                            tsdb.add(TimeSeries(names[i], time, data))
-                        continue
-            if np.issubdtype(values.dtype, np.number) and np.isfinite(values).all():
-                tsdb.add(TimeSeries(col, time, values))
+        skipped = set()
+
+        # Detect potential identifier columns with string values
+        id_col = None
+        string_cols = [
+            c
+            for c in df.columns
+            if c != time_col
+            and df[c].dtype == object
+            and df[c].map(lambda x: isinstance(x, str) or pd.isna(x)).all()
+        ]
+        for sc in string_cols:
+            resp = QMessageBox.question(
+                self.parent_gui,
+                "Identifier Column?",
+                f"Column '{sc}' contains strings. Use as identifier?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if resp == QMessageBox.Yes:
+                id_col = sc
+                break
             else:
-                skipped.append(col)
+                skipped.add(sc)
+
+        if id_col:
+            for ident, subdf in df.groupby(id_col):
+                time_vals = subdf[time_col].values
+                for col in df.columns:
+                    if col in (time_col, id_col):
+                        continue
+                    values = subdf[col].values
+                    if all(isinstance(v, (list, tuple, np.ndarray)) for v in values):
+                        lengths = {len(v) for v in values}
+                        if len(lengths) == 1:
+                            n = lengths.pop()
+                            resp = QMessageBox.question(
+                                self.parent_gui,
+                                "Split Column?",
+                                f"Column '{col}' contains list/tuple values of length {n}.\nSplit into {n} columns?",
+                                QMessageBox.Yes | QMessageBox.No,
+                                QMessageBox.Yes,
+                            )
+                            if resp == QMessageBox.Yes:
+                                name_str, ok = QInputDialog.getText(
+                                    self.parent_gui,
+                                    "Column Names",
+                                    f"Enter {n} comma-separated names for '{col}':",
+                                )
+                                if ok:
+                                    names = [s.strip() for s in name_str.split(",") if s.strip()]
+                                else:
+                                    names = []
+                                if len(names) != n:
+                                    names = [f"{col}_{i+1}" for i in range(n)]
+                                for i in range(n):
+                                    data = np.array([row[i] for row in values], dtype=float)
+                                    tsdb.add(TimeSeries(f"{names[i]}_{ident}", time_vals, data))
+                                continue
+                    if np.issubdtype(values.dtype, np.number) and np.isfinite(values).all():
+                        tsdb.add(TimeSeries(f"{col}_{ident}", time_vals, values))
+                    else:
+                        skipped.add(col)
+        else:
+            for col in df.columns:
+                if col == time_col:
+                    continue
+                values = df[col].values
+                # Check for columns with list/tuple values of consistent length
+                if all(isinstance(v, (list, tuple, np.ndarray)) for v in values):
+                    lengths = {len(v) for v in values}
+                    if len(lengths) == 1:
+                        n = lengths.pop()
+                        resp = QMessageBox.question(
+                            self.parent_gui,
+                            "Split Column?",
+                            f"Column '{col}' contains list/tuple values of length {n}.\nSplit into {n} columns?",
+                            QMessageBox.Yes | QMessageBox.No,
+                            QMessageBox.Yes,
+                        )
+                        if resp == QMessageBox.Yes:
+                            name_str, ok = QInputDialog.getText(
+                                self.parent_gui,
+                                "Column Names",
+                                f"Enter {n} comma-separated names for '{col}':",
+                            )
+                            if ok:
+                                names = [s.strip() for s in name_str.split(",") if s.strip()]
+                            else:
+                                names = []
+                            if len(names) != n:
+                                names = [f"{col}_{i+1}" for i in range(n)]
+                            for i in range(n):
+                                data = np.array([row[i] for row in values], dtype=float)
+                                tsdb.add(TimeSeries(names[i], time, data))
+                            continue
+                if np.issubdtype(values.dtype, np.number) and np.isfinite(values).all():
+                    tsdb.add(TimeSeries(col, time, values))
+                else:
+                    skipped.add(col)
         if len(tsdb.getm()) == 0:
             if 'time' in df.columns or 't' in df.columns:
                 time_col = next((c for c in df.columns if c.lower() in ["time", "t"]), df.columns[0])
@@ -6176,7 +6239,9 @@ class FileLoader:
                 time = np.arange(len(df))
             tsdb.add(TimeSeries("NO_DATA", time, np.full_like(time, np.nan, dtype=float)))
         if skipped:
-            print(f"Skipped non-numeric columns in {os.path.basename(filepath)}: {', '.join(skipped)}")
+            print(
+                f"Skipped non-numeric columns in {os.path.basename(filepath)}: {', '.join(sorted(skipped))}"
+            )
         return tsdb
 
 def get_object_available_vars(obj, orcaflex_varmap=None):
