@@ -6176,6 +6176,8 @@ class FileLoader:
                             v = v.to_pylist()
                         elif isinstance(v, array):
                             v = list(v)
+                        elif isinstance(v, np.ndarray):
+                            v = v.tolist()
                         values.append(v)
                     # consider only non-null entries when checking for list-like values
                     non_null = []
@@ -6244,6 +6246,8 @@ class FileLoader:
                         v = v.to_pylist()
                     elif isinstance(v, array):
                         v = list(v)
+                    elif isinstance(v, np.ndarray):
+                        v = v.tolist()
                     values.append(v)
                 # Consider only non-null entries when checking for list-like values
                 non_null = []
