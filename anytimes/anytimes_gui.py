@@ -6136,6 +6136,34 @@ class FileLoader:
             if col == time_col:
                 continue
             values = df[col].values
+            # Check for columns with list/tuple values of consistent length
+            if all(isinstance(v, (list, tuple, np.ndarray)) for v in values):
+                lengths = {len(v) for v in values}
+                if len(lengths) == 1:
+                    n = lengths.pop()
+                    resp = QMessageBox.question(
+                        self.parent_gui,
+                        "Split Column?",
+                        f"Column '{col}' contains list/tuple values of length {n}.\nSplit into {n} columns?",
+                        QMessageBox.Yes | QMessageBox.No,
+                        QMessageBox.Yes,
+                    )
+                    if resp == QMessageBox.Yes:
+                        name_str, ok = QInputDialog.getText(
+                            self.parent_gui,
+                            "Column Names",
+                            f"Enter {n} comma-separated names for '{col}':",
+                        )
+                        if ok:
+                            names = [s.strip() for s in name_str.split(",") if s.strip()]
+                        else:
+                            names = []
+                        if len(names) != n:
+                            names = [f"{col}_{i+1}" for i in range(n)]
+                        for i in range(n):
+                            data = np.array([row[i] for row in values], dtype=float)
+                            tsdb.add(TimeSeries(names[i], time, data))
+                        continue
             if np.issubdtype(values.dtype, np.number) and np.isfinite(values).all():
                 tsdb.add(TimeSeries(col, time, values))
             else:
