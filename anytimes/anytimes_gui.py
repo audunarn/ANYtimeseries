@@ -6144,7 +6144,10 @@ class FileLoader:
             for c in df.columns
             if c != time_col
             and pd.api.types.is_string_dtype(df[c])
-            and df[c].map(lambda x: isinstance(x, str) or pd.isna(x)).all()
+            and df[c].map(
+                lambda x: isinstance(x, str)
+                or (not hasattr(x, "__iter__") and pd.isna(x))
+            ).all()
         ]
 
         for sc in string_cols:
