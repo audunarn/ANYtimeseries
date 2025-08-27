@@ -6166,6 +6166,7 @@ class FileLoader:
                         continue
                     # ensure any pyarrow/extension values are converted to
                     # regular Python objects before further inspection
+
                     values = []
                     for v in subdf[col].tolist():
                         if hasattr(v, "to_pylist"):
@@ -6174,6 +6175,7 @@ class FileLoader:
                             v = list(v)
                         values.append(v)
                     if all(isinstance(v, Sequence) and not isinstance(v, (str, bytes)) for v in values):
+
                         lengths = {len(v) for v in values}
                         if len(lengths) == 1:
                             n = lengths.pop()
@@ -6218,6 +6220,7 @@ class FileLoader:
                 if col == time_col:
                     continue
                 # Convert potential extension array values to regular Python
+
                 values = []
                 for v in df[col].tolist():
                     if hasattr(v, "to_pylist"):
@@ -6227,6 +6230,7 @@ class FileLoader:
                     values.append(v)
                 # Check for columns with list/tuple values of consistent length
                 if all(isinstance(v, Sequence) and not isinstance(v, (str, bytes)) for v in values):
+
                     lengths = {len(v) for v in values}
                     if len(lengths) == 1:
                         n = lengths.pop()
