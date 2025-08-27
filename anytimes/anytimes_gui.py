@@ -9,6 +9,7 @@ os.environ.setdefault("QTWEBENGINE_DISABLE_GPU", "1")
 os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu")
 os.environ.setdefault("QT_QUICK_BACKEND", "software")
 
+
 import re
 import numpy as np
 import pandas as pd
@@ -20,6 +21,7 @@ from anyqats import TimeSeries, TsDB
 from collections.abc import Sequence
 from array import array
 from PySide6.QtWidgets import (
+
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QGridLayout,
     QListWidget, QTabWidget, QLabel, QLineEdit, QCheckBox, QRadioButton,
     QFileDialog, QProgressBar, QTextEdit, QGroupBox, QSplitter, QComboBox,
@@ -6137,6 +6139,7 @@ class FileLoader:
 
         # Detect potential identifier columns with string values
         id_col = None
+
         string_cols = [
             c
             for c in df.columns
@@ -6144,6 +6147,7 @@ class FileLoader:
             and pd.api.types.is_string_dtype(df[c])
             and df[c].map(lambda x: isinstance(x, str) or pd.isna(x)).all()
         ]
+
         for sc in string_cols:
             resp = QMessageBox.question(
                 self.parent_gui,
@@ -6162,11 +6166,11 @@ class FileLoader:
             for ident, subdf in df.groupby(id_col):
                 time_vals = subdf[time_col].values
                 for col in df.columns:
+
                     if col in (time_col, id_col):
                         continue
                     # ensure any pyarrow/extension values are converted to
                     # regular Python objects before further inspection
-
                     values = []
                     for v in subdf[col].tolist():
                         if hasattr(v, "to_pylist"):
@@ -6174,9 +6178,13 @@ class FileLoader:
                         elif isinstance(v, array):
                             v = list(v)
                         values.append(v)
-                    if all(isinstance(v, Sequence) and not isinstance(v, (str, bytes)) for v in values):
-
-                        lengths = {len(v) for v in values}
+                    # consider only non-null entries when checking for list-like values
+                    non_null = [v for v in values if not pd.isna(v)]
+                    if non_null and all(
+                        isinstance(v, Sequence) and not isinstance(v, (str, bytes))
+                        for v in non_null
+                    ):
+                        lengths = {len(v) for v in non_null}
                         if len(lengths) == 1:
                             n = lengths.pop()
                             resp = QMessageBox.question(
@@ -6199,11 +6207,17 @@ class FileLoader:
                                 if len(names) != n:
                                     names = [f"{col}_{i+1}" for i in range(n)]
                                 for i in range(n):
+                                    row_vals = []
+                                    for row in values:
+                                        if isinstance(row, Sequence) and not isinstance(row, (str, bytes)):
+                                            try:
+                                                row_vals.append(row[i])
+                                            except Exception:
+                                                row_vals.append(np.nan)
+                                        else:
+                                            row_vals.append(np.nan)
                                     try:
-                                        data = np.array(
-                                            [row[i] for row in values],
-                                            dtype=float,
-                                        )
+                                        data = np.array(row_vals, dtype=float)
                                     except Exception:
                                         skipped.add(f"{col}_{i}")
                                         continue
@@ -6220,7 +6234,6 @@ class FileLoader:
                 if col == time_col:
                     continue
                 # Convert potential extension array values to regular Python
-
                 values = []
                 for v in df[col].tolist():
                     if hasattr(v, "to_pylist"):
@@ -6228,10 +6241,13 @@ class FileLoader:
                     elif isinstance(v, array):
                         v = list(v)
                     values.append(v)
-                # Check for columns with list/tuple values of consistent length
-                if all(isinstance(v, Sequence) and not isinstance(v, (str, bytes)) for v in values):
-
-                    lengths = {len(v) for v in values}
+                # Consider only non-null entries when checking for list-like values
+                non_null = [v for v in values if not pd.isna(v)]
+                if non_null and all(
+                    isinstance(v, Sequence) and not isinstance(v, (str, bytes))
+                    for v in non_null
+                ):
+                    lengths = {len(v) for v in non_null}
                     if len(lengths) == 1:
                         n = lengths.pop()
                         resp = QMessageBox.question(
@@ -6254,11 +6270,17 @@ class FileLoader:
                             if len(names) != n:
                                 names = [f"{col}_{i+1}" for i in range(n)]
                             for i in range(n):
+                                row_vals = []
+                                for row in values:
+                                    if isinstance(row, Sequence) and not isinstance(row, (str, bytes)):
+                                        try:
+                                            row_vals.append(row[i])
+                                        except Exception:
+                                            row_vals.append(np.nan)
+                                    else:
+                                        row_vals.append(np.nan)
                                 try:
-                                    data = np.array(
-                                        [row[i] for row in values],
-                                        dtype=float,
-                                    )
+                                    data = np.array(row_vals, dtype=float)
                                 except Exception:
                                     skipped.add(f"{col}_{i}")
                                     continue
@@ -6270,6 +6292,7 @@ class FileLoader:
                     tsdb.add(TimeSeries(col, time, numeric_values))
                 except Exception:
                     skipped.add(col)
+
         if len(tsdb.getm()) == 0:
             if 'time' in df.columns or 't' in df.columns:
                 time_col = next((c for c in df.columns if c.lower() in ["time", "t"]), df.columns[0])
