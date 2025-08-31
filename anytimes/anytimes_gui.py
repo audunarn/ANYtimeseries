@@ -5588,7 +5588,15 @@ class FileLoader:
         file_group = QGroupBox("Select Sims for this selection")
         file_layout = QVBoxLayout(file_group)
         file_checks = {}
+        select_all_btn = QPushButton("Select All Sims")
+        file_layout.addWidget(select_all_btn)
         status_label = QLabel()
+
+        def select_all_sims():
+            for cb in file_checks.values():
+                cb.setChecked(True)
+
+        select_all_btn.clicked.connect(select_all_sims)
 
         def check_files(*_):
             selected = [fp for fp, cb in file_checks.items() if cb.isChecked()]
