@@ -3744,7 +3744,8 @@ class TimeSeriesEditorQt(QMainWindow):
             tsdb.export(ts_path, names=list(tsdb.getm().keys()), force_common_time=True)
             ts_paths.append(ts_path)
         try:
-            subprocess.Popen([sys.executable, "-m", "anyqats", "app", "-f"] + ts_paths)
+            cmd = [sys.executable, "-m", "anyqats.cli", "app", "-f"] + ts_paths
+            subprocess.Popen(cmd)
         except FileNotFoundError:
             QMessageBox.critical(self, "Error", "AnyQATS could not be launched using the current Python environment.")
 
