@@ -4264,6 +4264,10 @@ class StatsDialog(QDialog):
         self._connect_signals()
         self.update_data()
 
+    def showEvent(self, event: QEvent) -> None:
+        super().showEvent(event)
+        QTimer.singleShot(0, self.update_plots)
+
     def _connect_signals(self):
         for w in [self.filter_none_rb, self.filter_lowpass_rb, self.filter_highpass_rb,
                   self.filter_bandpass_rb, self.filter_bandblock_rb]:
