@@ -4262,6 +4262,7 @@ class StatsDialog(QDialog):
         btn_row.addWidget(self.copy_btn)
         main_layout.addLayout(btn_row)
 
+
         self._connect_signals()
         self.update_data()
 
@@ -4279,6 +4280,7 @@ class StatsDialog(QDialog):
                   self.filter_bandpass_rb, self.filter_bandblock_rb]:
             w.toggled.connect(self.update_data)
         for e in [self.lowpass_cutoff, self.highpass_cutoff,
+
                    self.bandpass_low, self.bandpass_high,
                    self.bandblock_low, self.bandblock_high]:
             e.editingFinished.connect(self.update_data)
@@ -4359,6 +4361,20 @@ class StatsDialog(QDialog):
                 "ignore", message="Tight layout not applied*", category=UserWarning
             )
             fig.tight_layout()
+        canvas.draw()
+
+    @staticmethod
+    def _tight_draw(fig, canvas) -> None:
+        """Redraw canvas with a tight layout.
+
+        Matplotlib requires a draw call before ``tight_layout`` can correctly
+        calculate text bounding boxes when embedded in Qt.  Without this the
+        axes may be misaligned or labels can be clipped.  Drawing once before
+        and after ``tight_layout`` ensures a stable layout across all plots.
+        """
+
+        canvas.draw()
+        fig.tight_layout()
         canvas.draw()
 
     def update_data(self):
@@ -4517,6 +4533,7 @@ class StatsDialog(QDialog):
                 dt = np.median(np.diff(t))
                 fs = 1.0 / dt if dt > 0 else 1.0
                 axp.psd(y, Fs=fs, label=label)
+
         ax.set_xlabel("Time")
         ax.set_ylabel("Value")
         ax.legend()
@@ -4530,6 +4547,7 @@ class StatsDialog(QDialog):
         axp.grid(True)
 
         self._tight_draw(self.psd_fig, self.psd_canvas)
+
 
         self.hist_fig_rows.clear()
         axh = self.hist_fig_rows.add_subplot(111)
@@ -4555,11 +4573,13 @@ class StatsDialog(QDialog):
                             fontsize=8,
                             color="black",
                         )
+
         axh.set_xlabel("Value")
         axh.set_ylabel("Frequency")
         axh.legend()
         axh.grid(True)
         self._tight_draw(self.hist_fig_rows, self.hist_canvas_rows)
+
 
         self.hist_fig_cols.clear()
         axc = self.hist_fig_cols.add_subplot(111)
@@ -4628,6 +4648,7 @@ class StatsDialog(QDialog):
             axc.axhline(v, color="red", linestyle="--")
 
         ylim_top = max([max_y] + hvals) if (max_y or hvals) else None
+
         axc.set_xlabel("Row")
         axc.set_ylabel("Value")
         axc.set_xticks(rows_idx)
@@ -4638,6 +4659,7 @@ class StatsDialog(QDialog):
             axc.set_ylim(top=ylim_top * 1.1)
         axc.grid(True, axis="y")
         self._tight_draw(self.hist_fig_cols, self.hist_canvas_cols)
+
 
 class EVMWindow(QDialog):
     def __init__(self, tsdb, var_name, parent=None):
