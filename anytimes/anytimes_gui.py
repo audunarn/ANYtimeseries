@@ -4266,12 +4266,14 @@ class StatsDialog(QDialog):
 
     def showEvent(self, event: QEvent) -> None:
         super().showEvent(event)
+
         QTimer.singleShot(0, self._refresh_plots)
 
     def _refresh_plots(self) -> None:
         """Process pending events before drawing initial plots."""
         QApplication.processEvents()
         self.update_plots()
+
 
     def _connect_signals(self):
         for w in [self.filter_none_rb, self.filter_lowpass_rb, self.filter_highpass_rb,
