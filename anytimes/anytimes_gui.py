@@ -4230,12 +4230,17 @@ class StatsDialog(QDialog):
         plot_layout = QVBoxLayout()
         self.line_fig = Figure(figsize=(5, 3))
         self.line_canvas = FigureCanvasQTAgg(self.line_fig)
+        self.psd_fig = Figure(figsize=(5, 3))
+        self.psd_canvas = FigureCanvasQTAgg(self.psd_fig)
+        ts_layout = QHBoxLayout()
+        ts_layout.addWidget(self.line_canvas)
+        ts_layout.addWidget(self.psd_canvas)
         hist_layout = QHBoxLayout()
         self.hist_fig_rows = Figure(figsize=(4, 3))
         self.hist_canvas_rows = FigureCanvasQTAgg(self.hist_fig_rows)
         self.hist_fig_cols = Figure(figsize=(4, 3))
         self.hist_canvas_cols = FigureCanvasQTAgg(self.hist_fig_cols)
-        plot_layout.addWidget(self.line_canvas)
+        plot_layout.addLayout(ts_layout)
         hist_layout.addWidget(self.hist_canvas_rows)
         hist_layout.addWidget(self.hist_canvas_cols)
         plot_layout.addLayout(hist_layout)
@@ -4396,9 +4401,13 @@ class StatsDialog(QDialog):
                 self.table.setItem(i, j, item)
 
         self.selected_columns.clear()
-        for col in range(5, self.table.columnCount()):
-            self.selected_columns.add(col)
-            break
+        max_col = next((i for i, h in enumerate(headers) if h.lower() == "max"), None)
+        if max_col is not None:
+            self.selected_columns.add(max_col)
+        else:
+            for col in range(5, self.table.columnCount()):
+                self.selected_columns.add(col)
+                break
         self.update_plots()
 
         # Restore previous sorting state after table population
@@ -4454,6 +4463,8 @@ class StatsDialog(QDialog):
 
         self.line_fig.clear()
         ax = self.line_fig.add_subplot(111)
+        self.psd_fig.clear()
+        axp = self.psd_fig.add_subplot(111)
         for r in sel_rows:
             file = self.table.item(r, 0).text()
             var = self.table.item(r, 2).text()
@@ -4466,11 +4477,21 @@ class StatsDialog(QDialog):
             if file and len(self.ts_dict) > 1:
                 label = f"{file}::{var}"
             ax.plot(t, y, label=label)
+            if len(t) > 1:
+                dt = np.median(np.diff(t))
+                fs = 1.0 / dt if dt > 0 else 1.0
+                axp.psd(y, Fs=fs, label=label)
         ax.set_xlabel("Time")
         ax.set_ylabel("Value")
         ax.legend()
         ax.grid(True)
         self.line_canvas.draw()
+
+        axp.set_xlabel("Frequency [Hz]")
+        axp.set_ylabel("PSD")
+        axp.legend()
+        axp.grid(True)
+        self.psd_canvas.draw()
 
         self.hist_fig_rows.clear()
         axh = self.hist_fig_rows.add_subplot(111)
