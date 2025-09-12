@@ -4232,6 +4232,10 @@ class StatsDialog(QDialog):
         self.line_canvas = FigureCanvasQTAgg(self.line_fig)
         self.psd_fig = Figure(figsize=(5, 3))
         self.psd_canvas = FigureCanvasQTAgg(self.psd_fig)
+
+        for canvas in (self.line_canvas, self.psd_canvas):
+            canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
         ts_layout = QHBoxLayout()
         ts_layout.addWidget(self.line_canvas)
         ts_layout.addWidget(self.psd_canvas)
@@ -4240,6 +4244,10 @@ class StatsDialog(QDialog):
         self.hist_canvas_rows = FigureCanvasQTAgg(self.hist_fig_rows)
         self.hist_fig_cols = Figure(figsize=(4, 3))
         self.hist_canvas_cols = FigureCanvasQTAgg(self.hist_fig_cols)
+
+        for canvas in (self.hist_canvas_rows, self.hist_canvas_cols):
+            canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
         plot_layout.addLayout(ts_layout)
         hist_layout.addWidget(self.hist_canvas_rows)
         hist_layout.addWidget(self.hist_canvas_cols)
@@ -4485,12 +4493,17 @@ class StatsDialog(QDialog):
         ax.set_ylabel("Value")
         ax.legend()
         ax.grid(True)
+
+        self.line_fig.tight_layout()
+
         self.line_canvas.draw()
 
         axp.set_xlabel("Frequency [Hz]")
         axp.set_ylabel("PSD")
         axp.legend()
         axp.grid(True)
+
+        self.psd_fig.tight_layout()
         self.psd_canvas.draw()
 
         self.hist_fig_rows.clear()
@@ -4499,6 +4512,7 @@ class StatsDialog(QDialog):
             file = self.table.item(r, 0).text()
             var = self.table.item(r, 2).text()
             sid = f"{file}::{var}"
+
             data = self.ts_dict.get(sid)
             if data:
                 _, y = data
@@ -4520,6 +4534,7 @@ class StatsDialog(QDialog):
         axh.set_ylabel("Frequency")
         axh.legend()
         axh.grid(True)
+        self.hist_fig_rows.tight_layout()
         self.hist_canvas_rows.draw()
 
         self.hist_fig_cols.clear()
@@ -4598,6 +4613,7 @@ class StatsDialog(QDialog):
         if ylim_top is not None:
             axc.set_ylim(top=ylim_top * 1.1)
         axc.grid(True, axis="y")
+        self.hist_fig_cols.tight_layout()
         self.hist_canvas_cols.draw()
 
 class EVMWindow(QDialog):
