@@ -29,7 +29,10 @@ import math
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple, Union
+
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Set, Tuple, Union
+=======
+
 
 import pandas as pd
 
@@ -52,11 +55,28 @@ class SATEntity:
         Remaining tokens on the entity line.  The converter performs a light
         weight normalisation by converting numeric values to ``int``/``float``
         instances when possible while keeping symbolic values untouched.
+
+    record_index:
+        Optional numeric index that prefixes the entity definition in ACIS
+        files.  Older SAT exports omit this counter whereas newer variants use
+        a signed integer (e.g. ``-42``).  The converter keeps the value for
+        reference but it is not required for downstream processing.
+    reference_key:
+        Canonical identifier used internally by :class:`ACISSATConverter` when
+        resolving references between entities.  This corresponds to either the
+        explicit SAT identifier (e.g. ``"$42"``) or a synthetic key derived
+        from the record index (``"@42"``) when the SAT export omits explicit
+        identifiers.
+
     """
 
     entity_type: str
     identifier: Optional[str]
     tokens: List[Union[str, int, float]]
+
+    record_index: Optional[int] = None
+    reference_key: Optional[str] = None
+
 
     def to_dict(self) -> Dict[str, Union[str, int, float, List[Union[str, int, float]]]]:
         """Return a dictionary representation suitable for serialisation."""
@@ -65,6 +85,10 @@ class SATEntity:
             "entity_type": self.entity_type,
             "identifier": self.identifier,
             "tokens": self.tokens,
+
+            "record_index": self.record_index,
+            "reference_key": self.reference_key,
+
         }
 
 
@@ -88,6 +112,19 @@ class BRepMesh:
         """Return ``True`` when the mesh does not contain any faces."""
 
         return not self.vertices or not self.faces
+
+
+
+@dataclass(frozen=True)
+class _CoedgeData:
+    """Internal container describing the topology of a coedge."""
+
+    edge: Optional[str]
+    next: Optional[str]
+    previous: Optional[str]
+    partner: Optional[str]
+    orientation: str
+
 
 
 class ACISSATConverter:
@@ -341,15 +378,12 @@ class ACISSATConverter:
         self._entities = list(self._parse_entities(entity_lines))
         self._entity_index = {}
         for entity in self._entities:
-            if entity.identifier is None:
-                continue
-            if entity.identifier in self._entity_index:
-                warnings.warn(
-                    f"Duplicate identifier {entity.identifier!r} encountered; using the first occurrence",
-                    RuntimeWarning,
-                )
-                continue
-            self._entity_index[entity.identifier] = entity
+
+            for key in self._reference_keys_for_entity(entity):
+                if key in self._entity_index:
+                    continue
+                self._entity_index[key] = entity
+
         self._is_parsed = True
 
     def _split_header_and_body(self, lines: Iterable[str]) -> Tuple[List[str], List[str]]:
@@ -362,19 +396,20 @@ class ACISSATConverter:
             if not stripped:
                 continue
 
+
+            cleaned_with_hash = self._strip_comments(stripped, keep_hash=True)
+            if not cleaned_with_hash:
+                continue
+
             if not in_body:
-                cleaned = self._strip_comments(stripped, keep_hash=False)
-                if not cleaned:
-                    continue
-                if cleaned[0].isalpha():
+                if "#" in cleaned_with_hash:
                     in_body = True
-                    entity_lines.append(self._strip_comments(stripped, keep_hash=True))
                 else:
-                    header_lines.append(cleaned)
-            else:
-                cleaned = self._strip_comments(stripped, keep_hash=True)
-                if cleaned:
-                    entity_lines.append(cleaned)
+                    header_lines.append(self._strip_comments(stripped, keep_hash=False))
+                    continue
+
+            entity_lines.append(cleaned_with_hash)
+
 
         return header_lines, entity_lines
 
@@ -400,6 +435,12 @@ class ACISSATConverter:
             if not tokens:
                 continue
 
+
+            record_index, tokens = self._extract_leading_index(tokens)
+            if not tokens:
+                continue
+
+
             entity_type = tokens[0]
             remainder = tokens[1:]
             identifier: Optional[str] = None
@@ -408,9 +449,46 @@ class ACISSATConverter:
                 remainder = remainder[1:]
 
             normalised_tokens = [self._normalise_token(token) for token in remainder]
-            yield SATEntity(entity_type=entity_type, identifier=identifier, tokens=normalised_tokens)
+
+            reference_key = self._determine_reference_key(record_index, identifier)
+            yield SATEntity(
+                entity_type=entity_type,
+                identifier=identifier,
+                tokens=normalised_tokens,
+                record_index=record_index,
+                reference_key=reference_key,
+            )
 
     # Normalisation utilities ------------------------------------------
+    def _determine_reference_key(
+        self, record_index: Optional[int], identifier: Optional[str]
+    ) -> Optional[str]:
+        if identifier and self._should_index_identifier(identifier):
+            return identifier
+        if record_index is not None:
+            return f"@{abs(record_index)}"
+        return None
+
+    def _reference_keys_for_entity(self, entity: SATEntity) -> Iterator[str]:
+        seen: set[str] = set()
+        if entity.reference_key:
+            seen.add(entity.reference_key)
+            yield entity.reference_key
+        if entity.record_index is not None:
+            key = f"@{abs(entity.record_index)}"
+            if key not in seen:
+                seen.add(key)
+                yield key
+
+    def _should_index_identifier(self, identifier: str) -> bool:
+        if not identifier.startswith("$"):
+            return True
+        try:
+            return int(identifier[1:]) >= 0
+        except ValueError:
+            return True
+
+
     def _strip_comments(self, line: str, *, keep_hash: bool) -> str:
         cleaned = line
         for prefix in self.comment_prefixes:
@@ -436,6 +514,26 @@ class ACISSATConverter:
                 break
             cleaned.append(token)
         return cleaned
+
+
+    def _extract_leading_index(self, tokens: List[str]) -> Tuple[Optional[int], List[str]]:
+        if not tokens:
+            return None, tokens
+        first = tokens[0]
+        if self._is_integer_token(first):
+            try:
+                return int(first), tokens[1:]
+            except ValueError:
+                return None, tokens[1:]
+        return None, tokens
+
+    def _is_integer_token(self, token: str) -> bool:
+        if not token:
+            return False
+        if token[0] in {"+", "-"}:
+            token = token[1:]
+        return token.isdigit()
+
 
     def _normalise_token(self, token: str) -> Union[str, int, float]:
         if not token:
@@ -469,7 +567,9 @@ class _SATGeometryBuilder:
         self.points: Dict[str, Tuple[float, float, float]] = {}
         self.vertices: Dict[str, Tuple[float, float, float]] = {}
         self.edges: Dict[str, Tuple[str, str]] = {}
-        self.coedges: Dict[str, Tuple[str, str]] = {}
+
+        self.coedges: Dict[str, _CoedgeData] = {}
+
         self.loops: Dict[str, List[str]] = {}
         self.faces: Dict[str, List[str]] = {}
 
@@ -489,40 +589,48 @@ class _SATGeometryBuilder:
     # Collection helpers ----------------------------------------------
     def _collect_points(self) -> None:
         for entity in self.entities:
-            if entity.entity_type != "point" or entity.identifier is None:
+
+            if entity.entity_type != "point" or entity.reference_key is None:
+
                 continue
             coords = self._extract_coordinates(entity.tokens)
             if coords is None:
                 warnings.warn(
-                    f"Point {entity.identifier} does not contain three numeric coordinates; skipping",
+
+                    f"Point {entity.reference_key} does not contain three numeric coordinates; skipping",
                     RuntimeWarning,
                 )
                 continue
-            self.points[entity.identifier] = coords
+            self.points[entity.reference_key] = coords
 
     def _collect_vertices(self) -> None:
         for entity in self.entities:
-            if not entity.entity_type.startswith("vertex") or entity.identifier is None:
+            if not entity.entity_type.startswith("vertex") or entity.reference_key is None:
+
                 continue
             point_ref = self._find_first_reference(entity.tokens, {"point"})
             if not point_ref:
                 warnings.warn(
-                    f"Vertex {entity.identifier} does not reference a point entity; skipping",
+
+                    f"Vertex {entity.reference_key} does not reference a point entity; skipping",
+
                     RuntimeWarning,
                 )
                 continue
             point = self.points.get(point_ref)
             if point is None:
                 warnings.warn(
-                    f"Point {point_ref} referenced by vertex {entity.identifier} is missing; skipping",
+
+                    f"Point {point_ref} referenced by vertex {entity.reference_key} is missing; skipping",
                     RuntimeWarning,
                 )
                 continue
-            self.vertices[entity.identifier] = point
+            self.vertices[entity.reference_key] = point
 
     def _collect_edges(self) -> None:
         for entity in self.entities:
-            if not entity.entity_type.startswith("edge") or entity.identifier is None:
+            if not entity.entity_type.startswith("edge") or entity.reference_key is None:
+
                 continue
             vertex_refs = self._find_all_references(entity.tokens, {"vertex"})
             unique_vertices: List[str] = []
@@ -531,51 +639,127 @@ class _SATGeometryBuilder:
                     unique_vertices.append(ref)
             if len(unique_vertices) < 2:
                 warnings.warn(
-                    f"Edge {entity.identifier} does not reference two vertices; skipping",
+
+                    f"Edge {entity.reference_key} does not reference two vertices; skipping",
                     RuntimeWarning,
                 )
                 continue
-            self.edges[entity.identifier] = (unique_vertices[0], unique_vertices[1])
+            self.edges[entity.reference_key] = (unique_vertices[0], unique_vertices[1])
 
     def _collect_coedges(self) -> None:
         for entity in self.entities:
-            if not entity.entity_type.startswith("coedge") or entity.identifier is None:
+            if not entity.entity_type.startswith("coedge") or entity.reference_key is None:
                 continue
-            edge_ref = self._find_first_reference(entity.tokens, {"edge"})
-            if not edge_ref:
+            orientation = "reversed" if self._has_token(entity.tokens, "reversed") else "forward"
+            adjacency: List[str] = []
+            edge_ref: Optional[str] = None
+            for token in entity.tokens:
+                key = self._resolve_reference_key(token)
+                if key is None:
+                    continue
+                referenced = self.entity_index.get(key)
+                if referenced is None:
+                    continue
+                if referenced.entity_type.startswith("coedge") and len(adjacency) < 3:
+                    adjacency.append(key)
+                elif referenced.entity_type.startswith("edge") and edge_ref is None:
+                    edge_ref = key
+                if edge_ref is not None and len(adjacency) >= 3:
+                    break
+            if edge_ref is None:
                 warnings.warn(
-                    f"Coedge {entity.identifier} does not reference an edge; skipping",
+                    f"Coedge {entity.reference_key} does not reference an edge; skipping",
                     RuntimeWarning,
                 )
                 continue
-            orientation = "reversed" if self._has_token(entity.tokens, "reversed") else "forward"
-            self.coedges[entity.identifier] = (edge_ref, orientation)
+            next_ref = adjacency[0] if len(adjacency) > 0 else None
+            previous_ref = adjacency[1] if len(adjacency) > 1 else None
+            partner_ref = adjacency[2] if len(adjacency) > 2 else None
+            self.coedges[entity.reference_key] = _CoedgeData(
+                edge=edge_ref,
+                next=next_ref,
+                previous=previous_ref,
+                partner=partner_ref,
+                orientation=orientation,
+            )
 
     def _collect_loops(self) -> None:
         for entity in self.entities:
-            if not entity.entity_type.startswith("loop") or entity.identifier is None:
+            if not entity.entity_type.startswith("loop") or entity.reference_key is None:
                 continue
-            coedge_refs = self._find_all_references(entity.tokens, {"coedge"})
-            if not coedge_refs:
+            start_coedge = self._find_first_reference(entity.tokens, {"coedge"})
+            if not start_coedge:
                 warnings.warn(
-                    f"Loop {entity.identifier} does not reference any coedges; skipping",
+                    f"Loop {entity.reference_key} does not reference any coedges; skipping",
                     RuntimeWarning,
                 )
                 continue
-            self.loops[entity.identifier] = coedge_refs
+            coedge_cycle = self._traverse_coedge_cycle(start_coedge, entity.reference_key)
+            if not coedge_cycle:
+                continue
+            self.loops[entity.reference_key] = coedge_cycle
+
+    def _traverse_coedge_cycle(self, start_coedge: str, loop_id: str) -> List[str]:
+        if start_coedge not in self.coedges:
+            warnings.warn(
+                f"Loop {loop_id} references missing coedge {start_coedge}; skipping",
+                RuntimeWarning,
+            )
+            return []
+
+        visited: Set[str] = set()
+        sequence: List[str] = []
+        current = start_coedge
+
+        while current not in visited:
+            visited.add(current)
+            sequence.append(current)
+            data = self.coedges.get(current)
+            if data is None:
+                warnings.warn(
+                    f"Loop {loop_id} encountered missing coedge {current}; skipping",
+                    RuntimeWarning,
+                )
+                return []
+            next_coedge = data.next
+            if next_coedge is None:
+                warnings.warn(
+                    f"Coedge {current} on loop {loop_id} does not specify a next pointer; skipping loop",
+                    RuntimeWarning,
+                )
+                return []
+            if next_coedge not in self.coedges:
+                warnings.warn(
+                    f"Coedge {current} on loop {loop_id} references unknown next coedge {next_coedge}; skipping loop",
+                    RuntimeWarning,
+                )
+                return []
+            current = next_coedge
+
+        if current != start_coedge:
+            warnings.warn(
+                f"Loop {loop_id} traversal terminated at {current} without returning to {start_coedge}; skipping",
+                RuntimeWarning,
+            )
+            return []
+
+        return sequence
 
     def _collect_faces(self) -> None:
         for entity in self.entities:
-            if not entity.entity_type.startswith("face") or entity.identifier is None:
+            if not entity.entity_type.startswith("face") or entity.reference_key is None:
+
                 continue
             loop_refs = self._find_all_references(entity.tokens, {"loop"})
             if not loop_refs:
                 warnings.warn(
-                    f"Face {entity.identifier} does not contain any loops; skipping",
+
+                    f"Face {entity.reference_key} does not contain any loops; skipping",
                     RuntimeWarning,
                 )
                 continue
-            self.faces[entity.identifier] = loop_refs
+            self.faces[entity.reference_key] = loop_refs
+
 
     # Mesh construction -----------------------------------------------
     def _build_faces(self) -> Tuple[List[Tuple[float, float, float]], List[Tuple[int, int, int]]]:
@@ -640,37 +824,77 @@ class _SATGeometryBuilder:
 
     def _find_first_reference(self, tokens: Sequence[Union[str, int, float]], prefixes: Sequence[str]) -> Optional[str]:
         for token in tokens:
-            if isinstance(token, str) and token.startswith("$"):
-                referenced = self.entity_index.get(token)
-                if referenced and any(referenced.entity_type.startswith(prefix) for prefix in prefixes):
-                    return token
+
+            key = self._resolve_reference_key(token)
+            if key is None:
+                continue
+            referenced = self.entity_index.get(key)
+            if referenced and any(referenced.entity_type.startswith(prefix) for prefix in prefixes):
+                return key
+
         return None
 
     def _find_all_references(self, tokens: Sequence[Union[str, int, float]], prefixes: Sequence[str]) -> List[str]:
         references: List[str] = []
         for token in tokens:
-            if isinstance(token, str) and token.startswith("$"):
-                referenced = self.entity_index.get(token)
-                if referenced and any(referenced.entity_type.startswith(prefix) for prefix in prefixes):
-                    references.append(token)
+
+            key = self._resolve_reference_key(token)
+            if key is None:
+                continue
+            referenced = self.entity_index.get(key)
+            if referenced and any(referenced.entity_type.startswith(prefix) for prefix in prefixes):
+                references.append(key)
+
         return references
 
     def _has_token(self, tokens: Sequence[Union[str, int, float]], value: str) -> bool:
         return any(isinstance(token, str) and token.lower() == value for token in tokens)
 
+
+    def _resolve_reference_key(self, token: Union[str, int, float]) -> Optional[str]:
+        if not isinstance(token, str) or not token.startswith("$"):
+            return None
+        direct = self.entity_index.get(token)
+        if direct is not None:
+            return direct.reference_key or token
+        suffix = token[1:]
+        if suffix.isdigit():
+            fallback_key = f"@{suffix}"
+            fallback = self.entity_index.get(fallback_key)
+            if fallback is not None:
+                return fallback.reference_key or fallback_key
+        return None
+
+
     def _build_loop_vertex_sequence(self, loop_id: str) -> List[str]:
         coedge_ids = self.loops.get(loop_id, [])
         edges: List[Tuple[str, str]] = []
         for coedge_id in coedge_ids:
-            edge_info = self.coedges.get(coedge_id)
-            if not edge_info:
+
+            coedge_data = self.coedges.get(coedge_id)
+            if coedge_data is None:
+                warnings.warn(
+                    f"Loop {loop_id} references missing coedge {coedge_id}; skipping",
+                    RuntimeWarning,
+                )
                 continue
-            edge_id, orientation = edge_info
+            edge_id = coedge_data.edge
+            if edge_id is None:
+                warnings.warn(
+                    f"Coedge {coedge_id} on loop {loop_id} does not reference an edge; skipping",
+                    RuntimeWarning,
+                )
+                continue
             vertex_pair = self.edges.get(edge_id)
             if not vertex_pair:
+                warnings.warn(
+                    f"Edge {edge_id} referenced by coedge {coedge_id} is missing; skipping",
+                    RuntimeWarning,
+                )
                 continue
             start, end = vertex_pair
-            if orientation == "reversed":
+            if coedge_data.orientation.lower() == "reversed":
+
                 start, end = end, start
             edges.append((start, end))
 
