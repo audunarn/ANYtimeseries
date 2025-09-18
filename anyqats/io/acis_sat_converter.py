@@ -29,7 +29,10 @@ import math
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
+
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Set, Tuple, Union
+=======
+
 
 import pandas as pd
 
@@ -52,6 +55,7 @@ class SATEntity:
         Remaining tokens on the entity line.  The converter performs a light
         weight normalisation by converting numeric values to ``int``/``float``
         instances when possible while keeping symbolic values untouched.
+
     record_index:
         Optional numeric index that prefixes the entity definition in ACIS
         files.  Older SAT exports omit this counter whereas newer variants use
@@ -63,13 +67,16 @@ class SATEntity:
         explicit SAT identifier (e.g. ``"$42"``) or a synthetic key derived
         from the record index (``"@42"``) when the SAT export omits explicit
         identifiers.
+
     """
 
     entity_type: str
     identifier: Optional[str]
     tokens: List[Union[str, int, float]]
+
     record_index: Optional[int] = None
     reference_key: Optional[str] = None
+
 
     def to_dict(self) -> Dict[str, Union[str, int, float, List[Union[str, int, float]]]]:
         """Return a dictionary representation suitable for serialisation."""
@@ -78,8 +85,10 @@ class SATEntity:
             "entity_type": self.entity_type,
             "identifier": self.identifier,
             "tokens": self.tokens,
+
             "record_index": self.record_index,
             "reference_key": self.reference_key,
+
         }
 
 
@@ -105,6 +114,7 @@ class BRepMesh:
         return not self.vertices or not self.faces
 
 
+
 @dataclass(frozen=True)
 class _CoedgeData:
     """Internal container describing the topology of a coedge."""
@@ -114,6 +124,7 @@ class _CoedgeData:
     previous: Optional[str]
     partner: Optional[str]
     orientation: str
+
 
 
 class ACISSATConverter:
@@ -367,10 +378,12 @@ class ACISSATConverter:
         self._entities = list(self._parse_entities(entity_lines))
         self._entity_index = {}
         for entity in self._entities:
+
             for key in self._reference_keys_for_entity(entity):
                 if key in self._entity_index:
                     continue
                 self._entity_index[key] = entity
+
         self._is_parsed = True
 
     def _split_header_and_body(self, lines: Iterable[str]) -> Tuple[List[str], List[str]]:
@@ -382,6 +395,7 @@ class ACISSATConverter:
             stripped = raw_line.strip()
             if not stripped:
                 continue
+
 
             cleaned_with_hash = self._strip_comments(stripped, keep_hash=True)
             if not cleaned_with_hash:
@@ -395,6 +409,7 @@ class ACISSATConverter:
                     continue
 
             entity_lines.append(cleaned_with_hash)
+
 
         return header_lines, entity_lines
 
@@ -420,9 +435,11 @@ class ACISSATConverter:
             if not tokens:
                 continue
 
+
             record_index, tokens = self._extract_leading_index(tokens)
             if not tokens:
                 continue
+
 
             entity_type = tokens[0]
             remainder = tokens[1:]
@@ -432,6 +449,7 @@ class ACISSATConverter:
                 remainder = remainder[1:]
 
             normalised_tokens = [self._normalise_token(token) for token in remainder]
+
             reference_key = self._determine_reference_key(record_index, identifier)
             yield SATEntity(
                 entity_type=entity_type,
@@ -470,6 +488,7 @@ class ACISSATConverter:
         except ValueError:
             return True
 
+
     def _strip_comments(self, line: str, *, keep_hash: bool) -> str:
         cleaned = line
         for prefix in self.comment_prefixes:
@@ -496,6 +515,7 @@ class ACISSATConverter:
             cleaned.append(token)
         return cleaned
 
+
     def _extract_leading_index(self, tokens: List[str]) -> Tuple[Optional[int], List[str]]:
         if not tokens:
             return None, tokens
@@ -513,6 +533,7 @@ class ACISSATConverter:
         if token[0] in {"+", "-"}:
             token = token[1:]
         return token.isdigit()
+
 
     def _normalise_token(self, token: str) -> Union[str, int, float]:
         if not token:
@@ -546,7 +567,9 @@ class _SATGeometryBuilder:
         self.points: Dict[str, Tuple[float, float, float]] = {}
         self.vertices: Dict[str, Tuple[float, float, float]] = {}
         self.edges: Dict[str, Tuple[str, str]] = {}
+
         self.coedges: Dict[str, _CoedgeData] = {}
+
         self.loops: Dict[str, List[str]] = {}
         self.faces: Dict[str, List[str]] = {}
 
@@ -566,11 +589,14 @@ class _SATGeometryBuilder:
     # Collection helpers ----------------------------------------------
     def _collect_points(self) -> None:
         for entity in self.entities:
+
             if entity.entity_type != "point" or entity.reference_key is None:
+
                 continue
             coords = self._extract_coordinates(entity.tokens)
             if coords is None:
                 warnings.warn(
+
                     f"Point {entity.reference_key} does not contain three numeric coordinates; skipping",
                     RuntimeWarning,
                 )
@@ -580,17 +606,21 @@ class _SATGeometryBuilder:
     def _collect_vertices(self) -> None:
         for entity in self.entities:
             if not entity.entity_type.startswith("vertex") or entity.reference_key is None:
+
                 continue
             point_ref = self._find_first_reference(entity.tokens, {"point"})
             if not point_ref:
                 warnings.warn(
+
                     f"Vertex {entity.reference_key} does not reference a point entity; skipping",
+
                     RuntimeWarning,
                 )
                 continue
             point = self.points.get(point_ref)
             if point is None:
                 warnings.warn(
+
                     f"Point {point_ref} referenced by vertex {entity.reference_key} is missing; skipping",
                     RuntimeWarning,
                 )
@@ -600,6 +630,7 @@ class _SATGeometryBuilder:
     def _collect_edges(self) -> None:
         for entity in self.entities:
             if not entity.entity_type.startswith("edge") or entity.reference_key is None:
+
                 continue
             vertex_refs = self._find_all_references(entity.tokens, {"vertex"})
             unique_vertices: List[str] = []
@@ -608,6 +639,7 @@ class _SATGeometryBuilder:
                     unique_vertices.append(ref)
             if len(unique_vertices) < 2:
                 warnings.warn(
+
                     f"Edge {entity.reference_key} does not reference two vertices; skipping",
                     RuntimeWarning,
                 )
@@ -716,15 +748,18 @@ class _SATGeometryBuilder:
     def _collect_faces(self) -> None:
         for entity in self.entities:
             if not entity.entity_type.startswith("face") or entity.reference_key is None:
+
                 continue
             loop_refs = self._find_all_references(entity.tokens, {"loop"})
             if not loop_refs:
                 warnings.warn(
+
                     f"Face {entity.reference_key} does not contain any loops; skipping",
                     RuntimeWarning,
                 )
                 continue
             self.faces[entity.reference_key] = loop_refs
+
 
     # Mesh construction -----------------------------------------------
     def _build_faces(self) -> Tuple[List[Tuple[float, float, float]], List[Tuple[int, int, int]]]:
@@ -789,27 +824,32 @@ class _SATGeometryBuilder:
 
     def _find_first_reference(self, tokens: Sequence[Union[str, int, float]], prefixes: Sequence[str]) -> Optional[str]:
         for token in tokens:
+
             key = self._resolve_reference_key(token)
             if key is None:
                 continue
             referenced = self.entity_index.get(key)
             if referenced and any(referenced.entity_type.startswith(prefix) for prefix in prefixes):
                 return key
+
         return None
 
     def _find_all_references(self, tokens: Sequence[Union[str, int, float]], prefixes: Sequence[str]) -> List[str]:
         references: List[str] = []
         for token in tokens:
+
             key = self._resolve_reference_key(token)
             if key is None:
                 continue
             referenced = self.entity_index.get(key)
             if referenced and any(referenced.entity_type.startswith(prefix) for prefix in prefixes):
                 references.append(key)
+
         return references
 
     def _has_token(self, tokens: Sequence[Union[str, int, float]], value: str) -> bool:
         return any(isinstance(token, str) and token.lower() == value for token in tokens)
+
 
     def _resolve_reference_key(self, token: Union[str, int, float]) -> Optional[str]:
         if not isinstance(token, str) or not token.startswith("$"):
@@ -825,10 +865,12 @@ class _SATGeometryBuilder:
                 return fallback.reference_key or fallback_key
         return None
 
+
     def _build_loop_vertex_sequence(self, loop_id: str) -> List[str]:
         coedge_ids = self.loops.get(loop_id, [])
         edges: List[Tuple[str, str]] = []
         for coedge_id in coedge_ids:
+
             coedge_data = self.coedges.get(coedge_id)
             if coedge_data is None:
                 warnings.warn(
@@ -852,6 +894,7 @@ class _SATGeometryBuilder:
                 continue
             start, end = vertex_pair
             if coedge_data.orientation.lower() == "reversed":
+
                 start, end = end, start
             edges.append((start, end))
 
