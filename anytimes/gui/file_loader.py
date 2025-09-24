@@ -521,6 +521,8 @@ class FileLoader:
 
 
             def _update_table(coords, info, table=result_table):
+                if table is None:
+                    return
                 table.setRowCount(len(coords))
                 for row, (coord, (name, node, dist)) in enumerate(zip(coords, info)):
                     coord_str = f"{coord[0]:.2f}, {coord[1]:.2f}, {coord[2]:.2f}"
@@ -605,7 +607,8 @@ class FileLoader:
                         "Enter at least one coordinate in the form x,y,z.",
                     )
                     panel_pressure_by_file.pop(fp, None)
-                    table.setRowCount(0)
+                    if table is not None:
+                        table.setRowCount(0)
                     return
                 coord_tuples = [tuple(float(v) for v in c) for c in coords]
                 if not coord_tuples:
@@ -615,7 +618,8 @@ class FileLoader:
                         "Could not interpret the provided coordinates.",
                     )
                     panel_pressure_by_file.pop(fp, None)
-                    table.setRowCount(0)
+                    if table is not None:
+                        table.setRowCount(0)
                     return
 
                 start_dir = self._last_diffraction_dir or os.path.dirname(fp)
@@ -657,123 +661,206 @@ class FileLoader:
                         return
                     self._diffraction_cache[file_path] = diffraction_model
 
-                try:
-                    pressure_df, panel_info = self._get_panel_pressure(
-                        model=model,
-                        diffraction_model=diffraction_model,
-                        panel_coords=tuple(coord_tuples),
-                    )
-                except Exception as exc:
-                    QMessageBox.critical(
-                        dialog,
-                        "Surface Pressure Error",
-                        f"Failed to extract surface pressures:\n{exc}",
-                    )
-                    return
-
-                if (
-                    pressure_df is None
-                    or pressure_df.empty
-                    or ("Time" in pressure_df.columns and pressure_df.shape[1] <= 1)
-                    or ("Time" not in pressure_df.columns and pressure_df.shape[1] == 0)
-                ):
-                    QMessageBox.warning(
-                        dialog,
-                        "No Surface Pressures",
-                        "No surface pressure data was returned for the provided coordinates.",
-                    )
-                    panel_pressure_by_file.pop(fp, None)
-                    table.setRowCount(0)
-                    return
-
-                if panel_info is None:
-                    panel_info = pd.DataFrame()
+                target_files = [target_fp for target_fp, cb in file_checks.items() if cb.isChecked()]
+                if target_files:
+                    if fp in target_files:
+                        target_files = [fp] + [f for f in target_files if f != fp]
+                    else:
+                        target_files.insert(0, fp)
                 else:
-                    panel_info = panel_info.copy().reset_index(drop=True)
+                    target_files = [fp]
 
-                panel_pressure_by_file[fp] = [
-                    {
-                        "data": pressure_df.copy(),
-                        "info": panel_info.copy(),
-                        "diffraction_path": file_path,
-                    }
-                ]
+                multi_target = len(target_files) > 1
+                success_info = []
+                no_data_files = []
+                error_files = []
 
-                if not panel_info.empty:
-                    surface_var_name = "Surface Pressures"
-                    relevant_names = []
-                    if "name" in panel_info.columns:
-                        for raw_name in panel_info["name"].dropna().unique():
-                            if not isinstance(raw_name, str):
-                                continue
-                            if raw_name in obj_vars:
-                                relevant_names.append(raw_name)
-                    selection_changed = False
-                    if relevant_names:
-                        target_types = {
-                            obj_map[name][0].typeName
-                            for name in relevant_names
-                            if name in obj_map
+                for target_fp in target_files:
+                    state = per_file_state.get(target_fp)
+                    if state is None:
+                        continue
+                    target_model = state.get("model")
+                    if target_model is None and target_fp == fp:
+                        target_model = model
+                    target_table = state.get("table")
+
+                    try:
+                        pressure_df, panel_info = self._get_panel_pressure(
+                            model=target_model,
+                            diffraction_model=diffraction_model,
+                            panel_coords=tuple(coord_tuples),
+                        )
+                    except Exception as exc:
+                        panel_pressure_by_file.pop(target_fp, None)
+                        if target_table is not None:
+                            target_table.setRowCount(0)
+                        if multi_target:
+                            error_files.append((target_fp, str(exc)))
+                            continue
+                        QMessageBox.critical(
+                            dialog,
+                            "Surface Pressure Error",
+                            f"Failed to extract surface pressures:\n{exc}",
+                        )
+                        return
+
+                    if (
+                        pressure_df is None
+                        or pressure_df.empty
+                        or ("Time" in pressure_df.columns and pressure_df.shape[1] <= 1)
+                        or ("Time" not in pressure_df.columns and pressure_df.shape[1] == 0)
+                    ):
+                        panel_pressure_by_file.pop(target_fp, None)
+                        if target_table is not None:
+                            target_table.setRowCount(0)
+                        if multi_target:
+                            no_data_files.append(target_fp)
+                            continue
+                        QMessageBox.warning(
+                            dialog,
+                            "No Surface Pressures",
+                            "No surface pressure data was returned for the provided coordinates.",
+                        )
+                        return
+
+                    if panel_info is None:
+                        panel_info = pd.DataFrame()
+                    else:
+                        panel_info = panel_info.copy().reset_index(drop=True)
+
+                    panel_pressure_by_file[target_fp] = [
+                        {
+                            "data": pressure_df.copy(),
+                            "info": panel_info.copy(),
+                            "diffraction_path": file_path,
                         }
-                        for name in relevant_names:
-                            cb = obj_vars.get(name)
-                            if cb is None or cb.isChecked():
-                                continue
-                            cb.blockSignals(True)
-                            cb.setChecked(True)
-                            cb.blockSignals(False)
-                            selection_changed = True
-                        if target_types:
-                            for name, cb in obj_vars.items():
-                                if cb is None or not cb.isChecked() or name in relevant_names:
+                    ]
+
+                    if not panel_info.empty:
+                        surface_var_name = "Surface Pressures"
+                        obj_vars_state = state.get("obj_vars", {})
+                        obj_map_state = state.get("obj_map", {})
+                        var_vars_state = state.get("var_vars", {})
+                        rebuild_state = state.get("rebuild")
+
+                        relevant_names = []
+                        if "name" in panel_info.columns:
+                            for raw_name in panel_info["name"].dropna().unique():
+                                if not isinstance(raw_name, str):
                                     continue
-                                obj_type = obj_map.get(name, (None,))[0]
-                                obj_type_name = getattr(obj_type, "typeName", None)
-                                if obj_type_name not in target_types:
-                                    cb.blockSignals(True)
-                                    cb.setChecked(False)
-                                    cb.blockSignals(False)
-                                    selection_changed = True
-                    if selection_changed:
-                        rebuild_lists()
-                    surface_cb = var_vars.get(surface_var_name)
-                    if surface_cb is not None and not surface_cb.isChecked():
-                        surface_cb.setChecked(True)
+                                if raw_name in obj_vars_state:
+                                    relevant_names.append(raw_name)
 
-                    coords_for_table = []
-                    info_for_table = []
-                    for _, row in panel_info.iterrows():
-                        coord_val = row.get("input_coord")
-                        if isinstance(coord_val, (tuple, list, np.ndarray)) and len(coord_val) == 3:
-                            coords_for_table.append(np.array(coord_val, dtype=float))
-                        else:
-                            coords_for_table.append(
-                                np.array(
-                                    [
-                                        float(row.get("X", 0.0)),
-                                        float(row.get("Y", 0.0)),
-                                        float(row.get("Z", 0.0)),
-                                    ],
-                                    dtype=float,
+                        selection_changed = False
+                        if relevant_names:
+                            target_types = {
+                                obj_map_state[name][0].typeName
+                                for name in relevant_names
+                                if name in obj_map_state
+                            }
+                            for name in relevant_names:
+                                cb = obj_vars_state.get(name)
+                                if cb is None or cb.isChecked():
+                                    continue
+                                cb.blockSignals(True)
+                                cb.setChecked(True)
+                                cb.blockSignals(False)
+                                selection_changed = True
+                            if target_types:
+                                for name, cb in obj_vars_state.items():
+                                    if cb is None or not cb.isChecked() or name in relevant_names:
+                                        continue
+                                    obj_type = obj_map_state.get(name, (None,))[0]
+                                    obj_type_name = getattr(obj_type, "typeName", None)
+                                    if obj_type_name not in target_types:
+                                        cb.blockSignals(True)
+                                        cb.setChecked(False)
+                                        cb.blockSignals(False)
+                                        selection_changed = True
+                        if selection_changed and callable(rebuild_state):
+                            rebuild_state()
+                            var_vars_state = state.get("var_vars", var_vars_state)
+
+                        surface_cb = var_vars_state.get(surface_var_name)
+                        if surface_cb is not None and not surface_cb.isChecked():
+                            surface_cb.setChecked(True)
+
+                        coords_for_table = []
+                        info_for_table = []
+                        for _, row in panel_info.iterrows():
+                            coord_val = row.get("input_coord")
+                            if isinstance(coord_val, (tuple, list, np.ndarray)) and len(coord_val) == 3:
+                                coords_for_table.append(np.array(coord_val, dtype=float))
+                            else:
+                                coords_for_table.append(
+                                    np.array(
+                                        [
+                                            float(row.get("X", 0.0)),
+                                            float(row.get("Y", 0.0)),
+                                            float(row.get("Z", 0.0)),
+                                        ],
+                                        dtype=float,
+                                    )
                                 )
-                            )
-                        node_val = row.get("pidx")
-                        node_disp = None if pd.isna(node_val) else int(node_val) + 1
-                        dist_val = row.get("distance")
-                        if pd.isna(dist_val):
-                            dist_val = None
-                        info_for_table.append((row.get("name"), node_disp, dist_val))
-                    update_table(coords_for_table, info_for_table)
-                else:
-                    table.setRowCount(0)
+                            node_val = row.get("pidx")
+                            node_disp = None if pd.isna(node_val) else int(node_val) + 1
+                            dist_val = row.get("distance")
+                            if pd.isna(dist_val):
+                                dist_val = None
+                            info_for_table.append((row.get("name"), node_disp, dist_val))
+                        update_table(coords_for_table, info_for_table, table=target_table)
+                    else:
+                        if target_table is not None:
+                            target_table.setRowCount(0)
 
-                time_col = "Time" if "Time" in pressure_df.columns else None
-                n_series = pressure_df.shape[1] - (1 if time_col else 0)
-                QMessageBox.information(
-                    dialog,
-                    "Surface Pressures Extracted",
-                    f"Loaded {n_series} surface pressure series.",
-                )
+                    time_col = "Time" if "Time" in pressure_df.columns else None
+                    n_series = pressure_df.shape[1] - (1 if time_col else 0)
+                    success_info.append((target_fp, n_series))
+
+                if not success_info:
+                    if multi_target:
+                        if error_files:
+                            message_lines = ["Failed to extract surface pressures for:"]
+                            for path, err in error_files:
+                                message_lines.append(f" - {os.path.basename(path)}: {err}")
+                            QMessageBox.critical(
+                                dialog,
+                                "Surface Pressure Error",
+                                "\n".join(message_lines),
+                            )
+                        elif no_data_files:
+                            names = ", ".join(os.path.basename(path) for path in no_data_files)
+                            QMessageBox.warning(
+                                dialog,
+                                "No Surface Pressures",
+                                f"No surface pressure data was returned for: {names}.",
+                            )
+                    return
+
+                if multi_target:
+                    total_series = sum(count for _, count in success_info)
+                    message_lines = [
+                        f"Loaded {total_series} surface pressure series from {len(success_info)} file(s)."
+                    ]
+                    if no_data_files:
+                        names = ", ".join(os.path.basename(path) for path in no_data_files)
+                        message_lines.append(f"No surface pressure data was returned for: {names}.")
+                    if error_files:
+                        message_lines.append("Failed to extract surface pressures for:")
+                        for path, err in error_files:
+                            message_lines.append(f" - {os.path.basename(path)}: {err}")
+                    QMessageBox.information(
+                        dialog,
+                        "Surface Pressures Extracted",
+                        "\n".join(message_lines),
+                    )
+                else:
+                    n_series = success_info[0][1]
+                    QMessageBox.information(
+                        dialog,
+                        "Surface Pressures Extracted",
+                        f"Loaded {n_series} surface pressure series.",
+                    )
 
             pressure_btn.clicked.connect(extract_surface_pressures)
 
