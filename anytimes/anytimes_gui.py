@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 
 # Use software rendering for QtWebEngine to avoid "context lost" errors on
 # systems without proper GPU support. Respect existing environment variables
@@ -13,24 +14,51 @@ os.environ.setdefault("QT_QUICK_BACKEND", "software")
 
 from PySide6.QtWidgets import QApplication
 
-from .gui import (
-    ORCAFLEX_VARIABLE_MAP,
-    MATH_FUNCTIONS,
-    FileLoader,
-    EVMWindow,
-    OrcaflexVariableSelector,
-    SortableTableWidgetItem,
-    StatsDialog,
-    TimeSeriesEditorQt,
-    VariableRowWidget,
-    VariableTab,
-    _find_xyz_triples,
-    _looks_like_user_var,
-    _matches_terms,
-    _parse_search_terms,
-    _safe,
-    get_object_available_vars,
-)
+if __package__ in {None, ""}:
+    # Allow running the module as a script (``python anytimes/anytimes_gui.py``)
+    # by ensuring the package root is importable before falling back to an
+    # absolute import. When the module is imported as part of the package,
+    # ``__package__`` is already set and the relative import below is used.
+    package_root = Path(__file__).resolve().parent
+    sys.path.insert(0, str(package_root.parent))
+
+    from anytimes.gui import (
+        ORCAFLEX_VARIABLE_MAP,
+        MATH_FUNCTIONS,
+        FileLoader,
+        EVMWindow,
+        OrcaflexVariableSelector,
+        SortableTableWidgetItem,
+        StatsDialog,
+        TimeSeriesEditorQt,
+        VariableRowWidget,
+        VariableTab,
+        _find_xyz_triples,
+        _looks_like_user_var,
+        _matches_terms,
+        _parse_search_terms,
+        _safe,
+        get_object_available_vars,
+    )
+else:
+    from .gui import (
+        ORCAFLEX_VARIABLE_MAP,
+        MATH_FUNCTIONS,
+        FileLoader,
+        EVMWindow,
+        OrcaflexVariableSelector,
+        SortableTableWidgetItem,
+        StatsDialog,
+        TimeSeriesEditorQt,
+        VariableRowWidget,
+        VariableTab,
+        _find_xyz_triples,
+        _looks_like_user_var,
+        _matches_terms,
+        _parse_search_terms,
+        _safe,
+        get_object_available_vars,
+    )
 
 __all__ = [
     "ORCAFLEX_VARIABLE_MAP",
