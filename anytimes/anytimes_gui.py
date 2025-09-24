@@ -2,6 +2,7 @@
 import sys
 import os
 import warnings
+import datetime
 
 # Use software rendering for QtWebEngine to avoid "context lost" errors on
 # systems without proper GPU support. Respect existing environment variables
@@ -5119,6 +5120,8 @@ class FileLoader:
         self.loaded_sim_models = {}
         self.orcaflex_redundant_subs = []
         self.progress_callback = None  # called while pre-loading
+        self._last_diffraction_dir = None
+        self._diffraction_cache = {}
 
     @property
     def reuse_orcaflex_selection(self):
@@ -5296,6 +5299,7 @@ class FileLoader:
         right_side.addWidget(tabs)
 
         per_file_state = {}
+        panel_pressure_by_file = {}
         for fp in file_paths:
             model = self.loaded_sim_models[fp]
             obj_map = {
@@ -5387,10 +5391,12 @@ class FileLoader:
             extra_layout.addWidget(skip_entry)
             find_all_btn = QPushButton("Find Closest (All)")
             extra_layout.addWidget(find_all_btn)
+            pressure_btn = QPushButton("Extract Surface Pressures")
+            extra_layout.addWidget(pressure_btn)
             result_table = QTableWidget()
             result_table.setColumnCount(4)
             result_table.setHorizontalHeaderLabels(
-                ["Coordinate", "Object", "Node", "Distance"]
+                ["Coordinate", "Object", "Node / Panel", "Distance"]
             )
             extra_layout.addWidget(result_table)
             copy_btn = QPushButton("Copy Table")
@@ -5656,6 +5662,154 @@ class FileLoader:
 
             find_all_btn.clicked.connect(find_closest_all)
 
+            def extract_surface_pressures(
+                *_,
+                coord_entry=coord_entry,
+                model=model,
+                fp=fp,
+                update_table=_update_table,
+                table=result_table,
+            ):
+                coords = self._parse_xyz_list(coord_entry.text())
+                if not coords:
+                    QMessageBox.warning(
+                        dialog,
+                        "No Coordinates",
+                        "Enter at least one coordinate in the form x,y,z.",
+                    )
+                    panel_pressure_by_file.pop(fp, None)
+                    table.setRowCount(0)
+                    return
+                coord_tuples = [tuple(float(v) for v in c) for c in coords]
+                if not coord_tuples:
+                    QMessageBox.warning(
+                        dialog,
+                        "No Coordinates",
+                        "Could not interpret the provided coordinates.",
+                    )
+                    panel_pressure_by_file.pop(fp, None)
+                    table.setRowCount(0)
+                    return
+
+                start_dir = self._last_diffraction_dir or os.path.dirname(fp)
+                if not start_dir or not os.path.isdir(start_dir):
+                    start_dir = os.path.dirname(fp)
+                file_path, _ = QFileDialog.getOpenFileName(
+                    dialog,
+                    "Select Diffraction Model (.dat)",
+                    start_dir,
+                    "Diffraction data (*.dat);;All Files (*)",
+                )
+                if not file_path:
+                    return
+
+                directory = os.path.dirname(file_path)
+                if directory:
+                    self._last_diffraction_dir = directory
+
+                try:
+                    import OrcFxAPI
+                except ImportError:
+                    QMessageBox.critical(
+                        dialog,
+                        "OrcaFlex Not Available",
+                        "OrcFxAPI is required to extract surface pressures.",
+                    )
+                    return
+
+                diffraction_model = self._diffraction_cache.get(file_path)
+                if diffraction_model is None:
+                    try:
+                        diffraction_model = OrcFxAPI.Diffraction(file_path)
+                    except Exception as exc:
+                        QMessageBox.critical(
+                            dialog,
+                            "Diffraction Load Error",
+                            f"Failed to load diffraction model:\n{exc}",
+                        )
+                        return
+                    self._diffraction_cache[file_path] = diffraction_model
+
+                try:
+                    pressure_df, panel_info = self._get_panel_pressure(
+                        model=model,
+                        diffraction_model=diffraction_model,
+                        panel_coords=tuple(coord_tuples),
+                    )
+                except Exception as exc:
+                    QMessageBox.critical(
+                        dialog,
+                        "Surface Pressure Error",
+                        f"Failed to extract surface pressures:\n{exc}",
+                    )
+                    return
+
+                if (
+                    pressure_df is None
+                    or pressure_df.empty
+                    or ("Time" in pressure_df.columns and pressure_df.shape[1] <= 1)
+                    or ("Time" not in pressure_df.columns and pressure_df.shape[1] == 0)
+                ):
+                    QMessageBox.warning(
+                        dialog,
+                        "No Surface Pressures",
+                        "No surface pressure data was returned for the provided coordinates.",
+                    )
+                    panel_pressure_by_file.pop(fp, None)
+                    table.setRowCount(0)
+                    return
+
+                if panel_info is None:
+                    panel_info = pd.DataFrame()
+                else:
+                    panel_info = panel_info.copy().reset_index(drop=True)
+
+                panel_pressure_by_file[fp] = [
+                    {
+                        "data": pressure_df.copy(),
+                        "info": panel_info.copy(),
+                        "diffraction_path": file_path,
+                    }
+                ]
+
+                if not panel_info.empty:
+                    coords_for_table = []
+                    info_for_table = []
+                    for _, row in panel_info.iterrows():
+                        coord_val = row.get("input_coord")
+                        if isinstance(coord_val, (tuple, list, np.ndarray)) and len(coord_val) == 3:
+                            coords_for_table.append(np.array(coord_val, dtype=float))
+                        else:
+                            coords_for_table.append(
+                                np.array(
+                                    [
+                                        float(row.get("X", 0.0)),
+                                        float(row.get("Y", 0.0)),
+                                        float(row.get("Z", 0.0)),
+                                    ],
+                                    dtype=float,
+                                )
+                            )
+                        node_val = row.get("pidx")
+                        node_disp = None if pd.isna(node_val) else int(node_val) + 1
+                        dist_val = row.get("distance")
+                        if pd.isna(dist_val):
+                            dist_val = None
+                        info_for_table.append((row.get("name"), node_disp, dist_val))
+                    update_table(coords_for_table, info_for_table)
+                else:
+                    table.setRowCount(0)
+
+                time_col = "Time" if "Time" in pressure_df.columns else None
+                n_series = pressure_df.shape[1] - (1 if time_col else 0)
+                QMessageBox.information(
+                    dialog,
+                    "Surface Pressures Extracted",
+                    f"Loaded {n_series} surface pressure series.",
+                )
+
+            pressure_btn.clicked.connect(extract_surface_pressures)
+
             per_file_state[fp] = {
                 "obj_vars": obj_vars,
                 "var_vars": var_vars,
@@ -5871,15 +6025,80 @@ class FileLoader:
         result = {}
         for fp in file_paths:
             specs = out_specs.get(fp)
+            tsdb = None
             if specs:
                 tsdb = self._load_orcaflex_data_from_specs(
                     self.loaded_sim_models[fp], specs
                 )
-                if tsdb:
-                    result[fp] = tsdb
-            else:
-                result[fp] = TsDB()
+            if tsdb is None:
+                tsdb = TsDB()
+
+            entries = panel_pressure_by_file.get(fp, [])
+            for entry in entries:
+                tsdb = self._merge_panel_pressures(
+                    tsdb, entry.get("data"), entry.get("info")
+                )
+
+            result[fp] = tsdb
         return result
+
+
+    def _merge_panel_pressures(self, tsdb, pressures_df, panel_info):
+        if tsdb is None:
+            tsdb = TsDB()
+        if pressures_df is None or pressures_df.empty:
+            return tsdb
+        if "Time" not in pressures_df.columns:
+            return tsdb
+
+        time = np.asarray(pressures_df["Time"].to_numpy())
+        mapping = {}
+        if panel_info is not None and hasattr(panel_info, "empty") and not panel_info.empty:
+            for _, row in panel_info.iterrows():
+                pidx = row.get("pidx")
+                if pd.isna(pidx):
+                    continue
+                try:
+                    key = str(int(pidx) + 1)
+                except (TypeError, ValueError):
+                    continue
+                name = row.get("name")
+                coord_val = row.get("input_coord")
+                coord_txt = None
+                if isinstance(coord_val, (tuple, list, np.ndarray)) and len(coord_val) == 3:
+                    coord_txt = f"({coord_val[0]:.2f}, {coord_val[1]:.2f}, {coord_val[2]:.2f})"
+                if name:
+                    label = f"{name} Panel {int(pidx) + 1}"
+                else:
+                    label = f"Panel {int(pidx) + 1}"
+                if coord_txt:
+                    label = f"{label} Surface Pressure @ {coord_txt}"
+                else:
+                    label = f"{label} Surface Pressure"
+                mapping[key] = label
+
+        redundant = getattr(self, "orcaflex_redundant_subs", [])
+        existing_names = {ts.name for ts in getattr(tsdb, "register", {}).values()}
+
+        for col in pressures_df.columns:
+            if col == "Time":
+                continue
+            data = pressures_df[col].to_numpy(dtype=float, copy=True)
+            label = mapping.get(col, f"Panel {col} Surface Pressure")
+            if redundant:
+                label = self._strip_redundant(label, redundant)
+            base_label = label
+            suffix = 1
+            while True:
+                try:
+                    tsdb.add(TimeSeries(label, time, data))
+                    break
+                except KeyError:
+                    suffix += 1
+                    label = f"{base_label} ({suffix})"
+            existing_names.add(label)
+
+        return tsdb
 
 
     def _strip_redundant(self, label, subs):
@@ -5998,6 +6217,190 @@ class FileLoader:
             results.append((best_name, best_node, best_dist))
 
         return results
+
+    def _get_panel_pressure(
+        self,
+        model,
+        diffraction_model,
+        time_window=None,
+        kpa_to_pa=True,
+        panel_coords=None,
+        include_hydrostatic=True,
+        simidx=0,
+        work_folder=None,
+        use_existing=True,
+        ow_element_nth_resolution: int = 1,
+    ):
+        try:
+            import OrcFxAPI
+        except ImportError as exc:
+            raise RuntimeError("OrcFxAPI not available") from exc
+
+        if model is None:
+            raise ValueError("model is required")
+        if diffraction_model is None:
+            raise ValueError("diffraction_model is required")
+
+        if time_window is None:
+            time_window = OrcFxAPI.SpecifiedPeriod(
+                model.simulationStartTime, model.simulationStopTime
+            )
+        else:
+            time_window = OrcFxAPI.SpecifiedPeriod(time_window[0], time_window[1])
+
+        geometry = getattr(diffraction_model, "panelGeometry", None)
+        if geometry is None:
+            return pd.DataFrame(), pd.DataFrame()
+
+        panel_geometry = [
+            (res[0], res[1], res[3][0], res[3][1], res[3][2]) for res in geometry
+        ]
+        if not panel_geometry:
+            return pd.DataFrame(), pd.DataFrame()
+
+        pd_geo = pd.DataFrame(
+            panel_geometry, columns=("idx_id", "name", "X", "Y", "Z")
+        )
+        pd_geo["pidx"] = pd_geo.index.values
+
+        panel_array = pd.DataFrame()
+        if panel_coords is None:
+            panel_array = pd_geo.loc[pd_geo.idx_id != -1].copy()
+            if panel_array.empty:
+                time = model["General"].TimeHistory("Time", time_window)
+                return pd.DataFrame({"Time": time}), panel_array
+            panel_array["input_coord"] = list(
+                zip(panel_array["X"], panel_array["Y"], panel_array["Z"])
+            )
+            panel_array["distance"] = np.nan
+        else:
+            coords_list = []
+            for coord in panel_coords:
+                if isinstance(coord, np.ndarray):
+                    coord = coord.tolist()
+                if coord is None:
+                    continue
+                try:
+                    coords_list.append(tuple(float(v) for v in coord))
+                except (TypeError, ValueError):
+                    continue
+
+            if not coords_list:
+                time = model["General"].TimeHistory("Time", time_window)
+                return pd.DataFrame({"Time": time}), pd.DataFrame()
+
+            available = pd_geo.loc[pd_geo.idx_id != -1].copy()
+            if available.empty:
+                time = model["General"].TimeHistory("Time", time_window)
+                return pd.DataFrame({"Time": time}), pd.DataFrame()
+
+            rows = []
+            for idx, pt in enumerate(coords_list):
+                x, y, z = pt
+                this_geo = available.copy()
+                this_geo["distance"] = np.sqrt(
+                    np.power(this_geo.X.values - x, 2)
+                    + np.power(this_geo.Y.values - y, 2)
+                    + np.power(this_geo.Z.values - z, 2)
+                )
+                best = this_geo.sort_values("distance").iloc[0]
+                row_dict = best.to_dict()
+                row_dict["distance"] = float(row_dict.get("distance", np.nan))
+                row_dict["input_coord"] = tuple(pt)
+                row_dict["input_index"] = idx
+                rows.append(row_dict)
+
+            if rows:
+                panel_array = pd.DataFrame(rows)
+                if ow_element_nth_resolution and ow_element_nth_resolution > 1:
+                    panel_array = panel_array.iloc[::ow_element_nth_resolution]
+                panel_array = panel_array.reset_index(drop=True)
+
+        if panel_array is None or panel_array.empty:
+            time = model["General"].TimeHistory("Time", time_window)
+            return pd.DataFrame({"Time": time}), panel_array
+
+        if "input_index" in panel_array.columns:
+            panel_array = panel_array.sort_values("input_index").reset_index(drop=True)
+
+        panel_array = panel_array.dropna(subset=["name"]).reset_index(drop=True)
+        if panel_array.empty:
+            time = model["General"].TimeHistory("Time", time_window)
+            return pd.DataFrame({"Time": time}), panel_array
+
+        if "pidx" in panel_array.columns:
+            panel_array["pidx"] = panel_array["pidx"].astype(int)
+
+        all_press = []
+        unique_bodies = np.unique(panel_array["name"].values)
+
+        for this_body in unique_bodies:
+            press_df = None
+            found_this_body_press = False
+            if (
+                use_existing
+                and work_folder
+                and isinstance(work_folder, str)
+                and os.path.isdir(work_folder)
+            ):
+                for run_file in os.listdir(work_folder):
+                    if (
+                        f"of_pressures_sim_idx_{simidx}" in run_file
+                        and this_body in run_file
+                    ):
+                        try:
+                            press_df = pd.read_feather(
+                                os.path.join(work_folder, run_file)
+                            )
+                            found_this_body_press = True
+                            break
+                        except Exception:
+                            press_df = None
+                            found_this_body_press = False
+            if not found_this_body_press:
+                panel_ids = panel_array.loc[panel_array.name == this_body, "pidx"].values
+                if panel_ids.size == 0:
+                    continue
+                panel_press = model[this_body].PanelPressureTimeHistory(
+                    diffraction=diffraction_model,
+                    resultPanels=panel_ids,
+                    period=time_window,
+                    parameters=OrcFxAPI.PanelPressureParameters(
+                        IncludeHydrostaticPressure=include_hydrostatic,
+                        IncludeDiffractionPressure=True,
+                        IncludeRadiationPressure=True,
+                    ),
+                )
+                press_df = pd.DataFrame(
+                    panel_press,
+                    columns=np.int32(panel_ids + 1).astype(str),
+                )
+                if (
+                    work_folder
+                    and isinstance(work_folder, str)
+                    and os.path.isdir(work_folder)
+                ):
+                    filename = (
+                        f"of_pressures_sim_idx_{simidx}_body_{this_body}"
+                        f"_resolution_{ow_element_nth_resolution}_"
+                        f"{datetime.datetime.now().strftime('%m_%d_%Y_%H_%M_%S')}.feather"
+                    )
+                    try:
+                        press_df.to_feather(os.path.join(work_folder, filename))
+                    except Exception:
+                        pass
+            if press_df is not None:
+                all_press.append(press_df)
+
+        time = model["General"].TimeHistory("Time", time_window)
+        if not all_press:
+            return pd.DataFrame({"Time": time}), panel_array
+
+        all_press = pd.concat(all_press, axis=1)
+        if kpa_to_pa:
+            all_press = all_press * 1000
+        all_press["Time"] = time
+        return all_press, panel_array
 
     def _parse_extras(self, obj, entry_val: str):
         """Interpret extra strings for an OrcaFlex object."""
