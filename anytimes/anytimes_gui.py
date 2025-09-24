@@ -5773,6 +5773,46 @@ class FileLoader:
                 ]
 
                 if not panel_info.empty:
+                    surface_var_name = "Surface Pressures"
+                    relevant_names = []
+                    if "name" in panel_info.columns:
+                        for raw_name in panel_info["name"].dropna().unique():
+                            if not isinstance(raw_name, str):
+                                continue
+                            if raw_name in obj_vars:
+                                relevant_names.append(raw_name)
+                    selection_changed = False
+                    if relevant_names:
+                        target_types = {
+                            obj_map[name][0].typeName
+                            for name in relevant_names
+                            if name in obj_map
+                        }
+                        for name in relevant_names:
+                            cb = obj_vars.get(name)
+                            if cb is None or cb.isChecked():
+                                continue
+                            cb.blockSignals(True)
+                            cb.setChecked(True)
+                            cb.blockSignals(False)
+                            selection_changed = True
+                        if target_types:
+                            for name, cb in obj_vars.items():
+                                if cb is None or not cb.isChecked() or name in relevant_names:
+                                    continue
+                                obj_type = obj_map.get(name, (None,))[0]
+                                obj_type_name = getattr(obj_type, "typeName", None)
+                                if obj_type_name not in target_types:
+                                    cb.blockSignals(True)
+                                    cb.setChecked(False)
+                                    cb.blockSignals(False)
+                                    selection_changed = True
+                    if selection_changed:
+                        rebuild_lists()
+                    surface_cb = var_vars.get(surface_var_name)
+                    if surface_cb is not None and not surface_cb.isChecked():
+                        surface_cb.setChecked(True)
+
                     coords_for_table = []
                     info_for_table = []
                     for _, row in panel_info.iterrows():
@@ -6504,6 +6544,8 @@ class FileLoader:
                     obj_name, var, end = spec
                     obj = _match_obj(obj_name)
                 else:
+                    continue
+                if isinstance(var, str) and var.strip().lower() == "surface pressures":
                     continue
                 if obj is None:
                     continue
