@@ -1362,95 +1362,157 @@ class TimeSeriesEditorQt(QMainWindow):
             label = label.split(":", 1)[-1]
             return re_suffix.sub("", label)
 
-        for f_idx, (tsdb, path) in enumerate(zip(self.tsdbs, self.file_paths), start=1):
-            fname = os.path.basename(path)
-
-            if per_file_mode:
-                entries = per_file_map.get(fname, [])
-                if not entries:
-                    continue
-                source_labels = [orig for orig, _ in entries]
-                varnames = [var for _, var in entries]
-            else:
-                source_labels = selected_keys
-                varnames = normalized_keys
-
+        if not per_file_mode:
             merged_segments = []
             merged_time_parts = []
             offset = 0.0
             last_dt = None
 
-            for _, varname in zip(source_labels, varnames):
-                ts = tsdb.getm().get(varname)
-                if ts is None:
-                    continue
-
-                data = self.apply_filters(ts)
-                mask = self.get_time_window(ts)
-                if isinstance(mask, slice):
-                    y_segment = data[mask]
-                else:
-                    if not mask.any():
+            for _, varname in zip(selected_keys, normalized_keys):
+                for tsdb in self.tsdbs:
+                    ts = tsdb.getm().get(varname)
+                    if ts is None:
                         continue
-                    y_segment = data[mask]
 
-                if y_segment.size == 0:
+                    data = self.apply_filters(ts)
+                    mask = self.get_time_window(ts)
+                    if isinstance(mask, slice):
+                        y_segment = data[mask]
+                        t_segment = ts.t[mask]
+                    else:
+                        if not mask.any():
+                            continue
+                        y_segment = data[mask]
+                        t_segment = ts.t[mask]
+
+                    if y_segment.size == 0:
+                        continue
+
+                    dt = getattr(ts, "dt", None)
+                    if dt in (None, 0):
+                        local_t = np.asarray(t_segment)
+                        if local_t.size > 1:
+                            if np.issubdtype(local_t.dtype, np.datetime64):
+                                local_t = local_t.astype("datetime64[ns]").astype("int64") / 1e9
+                            dt = float(np.median(np.diff(local_t)))
+                        elif last_dt not in (None, 0):
+                            dt = last_dt
+                        else:
+                            dt = 0.0
+
+                    idx = np.arange(y_segment.size, dtype=float)
+                    local_time = idx * float(dt) if dt else np.zeros_like(idx)
+
+                    merged_segments.append(np.asarray(y_segment))
+                    merged_time_parts.append(local_time + offset)
+
+                    if dt:
+                        last_dt = float(dt)
+                        offset = merged_time_parts[-1][-1] + float(dt)
+                    elif merged_time_parts[-1].size:
+                        offset = merged_time_parts[-1][-1]
+
+            if merged_segments:
+                merged_x = np.concatenate(merged_segments)
+                merged_t = np.concatenate(merged_time_parts)
+
+                cleaned_labels = [_clean_label(label) for label in selected_keys]
+                name_base = f"merge({'+'.join(cleaned_labels)})"
+                if filt_tag:
+                    name_base += f"_{filt_tag}"
+
+                name = name_base
+                counter = 1
+                while any(name in tsdb.getm() for tsdb in self.tsdbs):
+                    name = f"{name_base}_{counter}"
+                    counter += 1
+
+                merged_ts = TimeSeries(name, merged_t, merged_x)
+                if self.tsdbs:
+                    self.tsdbs[0].add(merged_ts)
+                    for tsdb in self.tsdbs[1:]:
+                        tsdb.add(TimeSeries(name, merged_t.copy(), merged_x.copy()))
+                self.user_variables.add(name)
+                created.append(name)
+        else:
+            for f_idx, (tsdb, path) in enumerate(zip(self.tsdbs, self.file_paths), start=1):
+                fname = os.path.basename(path)
+                entries = per_file_map.get(fname, [])
+                if not entries:
+                    continue
+                source_labels = [orig for orig, _ in entries]
+                varnames = [var for _, var in entries]
+
+                merged_segments = []
+                merged_time_parts = []
+                offset = 0.0
+                last_dt = None
+
+                for _, varname in zip(source_labels, varnames):
+                    ts = tsdb.getm().get(varname)
+                    if ts is None:
+                        continue
+
+                    data = self.apply_filters(ts)
+                    mask = self.get_time_window(ts)
+                    if isinstance(mask, slice):
+                        y_segment = data[mask]
+                        t_segment = ts.t[mask]
+                    else:
+                        if not mask.any():
+                            continue
+                        y_segment = data[mask]
+                        t_segment = ts.t[mask]
+
+                    if y_segment.size == 0:
+                        continue
+
+                    dt = getattr(ts, "dt", None)
+                    if dt in (None, 0):
+                        local_t = np.asarray(t_segment)
+                        if local_t.size > 1:
+                            if np.issubdtype(local_t.dtype, np.datetime64):
+                                local_t = local_t.astype("datetime64[ns]").astype("int64") / 1e9
+                            dt = float(np.median(np.diff(local_t)))
+                        elif last_dt not in (None, 0):
+                            dt = last_dt
+                        else:
+                            dt = 0.0
+
+                    idx = np.arange(y_segment.size, dtype=float)
+                    local_time = idx * float(dt) if dt else np.zeros_like(idx)
+
+                    merged_segments.append(np.asarray(y_segment))
+                    merged_time_parts.append(local_time + offset)
+
+                    if dt:
+                        last_dt = float(dt)
+                        offset = merged_time_parts[-1][-1] + float(dt)
+                    elif merged_time_parts[-1].size:
+                        offset = merged_time_parts[-1][-1]
+
+                if not merged_segments:
                     continue
 
-                dt = getattr(ts, "dt", None)
-                if dt in (None, 0):
-                    local_t = ts.t
-                    if isinstance(mask, slice):
-                        local_t = local_t[mask]
-                    else:
-                        local_t = local_t[mask]
-                    if len(local_t) > 1:
-                        arr = np.asarray(local_t)
-                        if np.issubdtype(arr.dtype, np.datetime64):
-                            arr = arr.astype("datetime64[ns]").astype("int64") / 1e9
-                        dt = float(np.median(np.diff(arr)))
-                    elif last_dt not in (None, 0):
-                        dt = last_dt
-                    else:
-                        dt = 0.0
+                merged_x = np.concatenate(merged_segments)
+                merged_t = np.concatenate(merged_time_parts)
 
-                idx = np.arange(y_segment.size, dtype=float)
-                if dt:
-                    local_time = idx * float(dt)
-                else:
-                    local_time = np.zeros_like(idx)
+                cleaned_labels = [_clean_label(label) for label in source_labels]
+                name_base = f"merge({'+'.join(cleaned_labels)})"
+                if not per_file_mode and multi_file:
+                    name_base += f"_f{f_idx}"
+                if filt_tag:
+                    name_base += f"_{filt_tag}"
 
-                merged_segments.append(np.asarray(y_segment))
-                merged_time_parts.append(local_time + offset)
+                name = name_base
+                counter = 1
+                while name in tsdb.getm():
+                    name = f"{name_base}_{counter}"
+                    counter += 1
 
-                if dt:
-                    last_dt = float(dt)
-                    offset = merged_time_parts[-1][-1] + float(dt)
-                elif merged_time_parts[-1].size:
-                    offset = merged_time_parts[-1][-1]
-
-            if not merged_segments:
-                continue
-
-            merged_x = np.concatenate(merged_segments)
-            merged_t = np.concatenate(merged_time_parts)
-
-            cleaned_labels = [_clean_label(label) for label in source_labels]
-            name_base = f"merge({'+'.join(cleaned_labels)})"
-            if not per_file_mode and multi_file:
-                name_base += f"_f{f_idx}"
-            if filt_tag:
-                name_base += f"_{filt_tag}"
-
-            name = name_base
-            counter = 1
-            while name in tsdb.getm():
-                name = f"{name_base}_{counter}"
-                counter += 1
-
-            tsdb.add(TimeSeries(name, merged_t, merged_x))
-            self.user_variables.add(name)
-            created.append(name)
+                tsdb.add(TimeSeries(name, merged_t, merged_x))
+                self.user_variables.add(name)
+                created.append(name)
 
         if created:
             QTimer.singleShot(0, lambda: self._populate_variables(None))
