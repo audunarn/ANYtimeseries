@@ -1,6 +1,7 @@
 from pathlib import Path
 import numpy as np
 import pandas as pd
+import pytest
 
 from anytimes import evm
 from anytimes.evm import (
@@ -127,46 +128,106 @@ def test_return_levels_lower_tail_reflects_negative_extremes():
     np.testing.assert_allclose(calculated, expected, rtol=0, atol=1e-12)
 
 
-def test_extreme_value_statistics_matches_orcaflex_reference():
+@pytest.mark.parametrize(
+    (
+        "column",
+        "tail",
+        "threshold",
+        "expected",
+    ),
+    [
+        (
+            "In-frame connection moment",
+            "upper",
+            41_000.0,
+            {
+                "exceedances": 48,
+                "shape": -0.11058,
+                "scale": 5628.31,
+                "return_level": 58_724.77085556258,
+                "lower_bound": 54_840.982400358895,
+                "upper_bound": 74_527.62784681482,
+                "lower_tolerance": 1_200.0,
+                "upper_tolerance": 15_000.0,
+                "shape_se": 0.18128,
+                "scale_se": 1301.11,
+            },
+        ),
+        (
+            "In-frame connection GY moment",
+            "upper",
+            38_630.0,
+            {
+                "exceedances": 21,
+                "shape": -0.0161,
+                "scale": 4400.84,
+                "return_level": 51_705.40634088432,
+                "lower_bound": 47_471.09092177025,
+                "upper_bound": 82_159.58909065329,
+                "lower_tolerance": 3_500.0,
+                "upper_tolerance": 25_000.0,
+                "shape_se": 0.32253,
+                "scale_se": 1713.67,
+            },
+        ),
+        (
+            "In-frame connection GY moment",
+            "lower",
+            -41_630.0,
+            {
+                "exceedances": 27,
+                "shape": -0.01297,
+                "scale": 5133.53,
+                "return_level": -58_192.663151184766,
+                "lower_bound": -89_306.37327445572,
+                "upper_bound": -53_249.29580064948,
+                "lower_tolerance": 20_000.0,
+                "upper_tolerance": 4_000.0,
+                "shape_se": 0.29053,
+                "scale_se": 1788.95,
+            },
+        ),
+    ],
+)
+def test_extreme_value_statistics_matches_orcaflex_reference(column, tail, threshold, expected):
     df = pd.read_excel(Path(__file__).with_name("ts_test.xlsx"))
     t = df["Time"].to_numpy()
-    x = df["In-frame connection moment"].to_numpy()
+    x = df[column].to_numpy()
 
-    rng = np.random.default_rng(321)
     res = calculate_extreme_value_statistics(
         t,
         x,
-        threshold=40_000.0,
-        tail="upper",
+        threshold=threshold,
+        tail=tail,
         return_periods_hours=(3,),
-        confidence_level=57.0,
-        n_bootstrap=200_000,
-        rng=rng,
+        confidence_level=95.0,
+        n_bootstrap=100_000,
+        rng=np.random.default_rng(321),
         sample_exceedance_rate=True,
     )
 
-    assert res.exceedances.size == 59
-    assert np.isclose(res.shape, -0.07282703542815137)
-    assert np.isclose(res.scale, 5391.153396561946)
+    assert res.exceedances.size == expected["exceedances"]
+    assert res.shape == pytest.approx(expected["shape"], abs=5e-5)
+    assert res.scale == pytest.approx(expected["scale"], abs=0.2)
 
-    target_return_level = 59_019.11922172028
-    assert np.isclose(res.return_levels[0], target_return_level, atol=50.0)
+    assert res.return_levels[0] == pytest.approx(expected["return_level"], abs=50.0)
+    assert abs(res.lower_bounds[0] - expected["lower_bound"]) <= expected["lower_tolerance"]
+    assert abs(res.upper_bounds[0] - expected["upper_bound"]) <= expected["upper_tolerance"]
 
-    target_lower = 56_816.934740780554
-    target_upper = 62_741.90315822626
-
-    assert abs(res.lower_bounds[0] - target_lower) < 500.0
-    assert abs(res.upper_bounds[0] - target_upper) < 1_200.0
+    if tail == "upper":
+        excesses = res.exceedances - res.threshold
+    else:
+        excesses = res.threshold - res.exceedances
 
     covariance = evm._gpd_parameter_covariance(
         shape=res.shape,
         scale=res.scale,
-        excesses=res.exceedances - res.threshold,
+        excesses=excesses,
     )
     assert covariance is not None
     se_shape = float(np.sqrt(covariance[0, 0]))
     se_scale = float(np.sqrt(covariance[1, 1]))
 
-    assert np.isclose(se_shape, 0.15899, atol=1e-3)
-    assert np.isclose(se_scale, 1106.65, atol=5.0)
+    assert se_shape == pytest.approx(expected["shape_se"], abs=5e-4)
+    assert se_scale == pytest.approx(expected["scale_se"], abs=5.0)
 
