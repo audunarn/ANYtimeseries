@@ -289,7 +289,7 @@ def calculate_extreme_value_statistics(
     upper_bounds = np.full(return_levels.shape, np.nan)
 
     if covariance is not None and n_bootstrap > 0:
-        rng = np.random.default_rng() if rng is None else rng
+        rng = np.random.default_rng(0) if rng is None else rng
         try:
             samples = rng.multivariate_normal(
                 mean=np.array([shape, scale], dtype=float),
