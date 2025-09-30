@@ -17,7 +17,10 @@ from PySide6.QtWidgets import (
     QMessageBox,
 )
 
-from anytimes.evm import calculate_extreme_value_statistics
+
+from anytimes.evm import calculate_extreme_value_statistics, declustering_boundaries
+=======
+
 
 class EVMWindow(QDialog):
     def __init__(self, tsdb, var_name, parent=None):
@@ -78,16 +81,12 @@ class EVMWindow(QDialog):
         threshold = start_thresh
         attempts = 0
 
-        mean_val = np.mean(x)
-        cross_type = np.greater if tail == "upper" else np.less
-        cross_indices = np.where(np.diff(cross_type(x, mean_val)))[0]
-        if cross_indices.size == 0 or cross_indices[-1] != len(x) - 1:
-            cross_indices = np.append(cross_indices, len(x) - 1)
+        boundaries = declustering_boundaries(x, tail)
 
         while attempts < 10:
             clustered_peaks = []
-            for i in range(len(cross_indices) - 1):
-                segment = x[cross_indices[i] : cross_indices[i + 1]]
+            for start, end in zip(boundaries[:-1], boundaries[1:]):
+                segment = x[start:end]
                 peak = np.max(segment) if tail == "upper" else np.min(segment)
                 if (tail == "upper" and peak > threshold) or (
                     tail == "lower" and peak < threshold
@@ -117,15 +116,11 @@ class EVMWindow(QDialog):
     def _cluster_exceedances(self, threshold, tail):
         x = self.x
 
-        mean_val = np.mean(x)
-        cross_type = np.greater if tail == "upper" else np.less
-        cross_indices = np.where(np.diff(cross_type(x, mean_val)))[0]
-        if cross_indices.size == 0 or cross_indices[-1] != len(x) - 1:
-            cross_indices = np.append(cross_indices, len(x) - 1)
+        boundaries = declustering_boundaries(x, tail)
 
         clustered_peaks = []
-        for i in range(len(cross_indices) - 1):
-            segment = x[cross_indices[i] : cross_indices[i + 1]]
+        for start, end in zip(boundaries[:-1], boundaries[1:]):
+            segment = x[start:end]
             peak = np.max(segment) if tail == "upper" else np.min(segment)
             if (tail == "upper" and peak > threshold) or (
                 tail == "lower" and peak < threshold
@@ -133,7 +128,9 @@ class EVMWindow(QDialog):
                 clustered_peaks.append(peak)
         # use numpy array like helper does to ensure consistent type
         clustered_peaks_arr = np.array(clustered_peaks, dtype=float)
-        return clustered_peaks_arr, cross_indices
+
+        return clustered_peaks_arr, boundaries
+
 
     def on_manual_threshold(self):
         self.threshold_spin.interpretText()
@@ -189,7 +186,7 @@ class EVMWindow(QDialog):
 
         threshold = self.threshold_spin.value()
 
-        clustered_peaks, cross_indices = self._cluster_exceedances(threshold, tail)
+        clustered_peaks, boundaries = self._cluster_exceedances(threshold, tail)
 
         if len(clustered_peaks) < 10:
             QMessageBox.warning(
@@ -233,7 +230,9 @@ class EVMWindow(QDialog):
             f"Xi: {c:.4f}\n"
             f"Exceedances used: {len(evm_result.exceedances)}\n"
         )
-        result += f"Total crossings/clusters found: {len(cross_indices) - 1}\n"
+
+        result += f"Total crossings/clusters found: {max(len(boundaries) - 1, 0)}\n"
+
         result += f"Observed maximum value: {max_val:.4f} {units}\n"
         result += f"Return level unit: {units or 'same as input'}\n\n"
         result += f"{self.ci_spin.value():.0f}% Confidence Interval:\n"

@@ -23,6 +23,32 @@ class ExtremeValueResult:
     exceedance_rate: float
 
 
+
+def declustering_boundaries(signal: np.ndarray, tail: str) -> np.ndarray:
+    r"""Return indices that split *signal* at mean crossings.
+
+    The GUI declustering routine separates the record whenever it crosses the
+    mean level and then keeps the most extreme value from each segment.  This
+    helper mirrors that behaviour so that both the GUI and the reusable module
+    use identical clustering logic.
+    """
+
+    if signal.size == 0:
+        return np.array([0], dtype=int)
+
+    mean_val = float(np.mean(signal))
+    cross_type = np.greater if tail == "upper" else np.less
+    # ``np.diff`` operates on the boolean mask and highlights sign changes.
+    crossings = np.where(np.diff(cross_type(signal, mean_val)))[0] + 1
+
+    # Always include the start and end of the record so that every sample is
+    # covered even if no crossings are detected.
+    boundaries = np.concatenate(([0], crossings, [signal.size]))
+    _, unique_indices = np.unique(boundaries, return_index=True)
+    return boundaries[np.sort(unique_indices)]
+
+
+
 def cluster_exceedances(x: np.ndarray, threshold: float, tail: str) -> np.ndarray:
     """Return the cluster peaks that exceed *threshold*.
 
@@ -34,22 +60,87 @@ def cluster_exceedances(x: np.ndarray, threshold: float, tail: str) -> np.ndarra
     if tail not in {"upper", "lower"}:
         raise ValueError("tail must be 'upper' or 'lower'")
 
-    mean_val = np.mean(x)
-    cross_type = np.greater if tail == "upper" else np.less
-    cross_indices = np.where(np.diff(cross_type(x, mean_val)))[0]
-    if cross_indices.size == 0 or cross_indices[-1] != len(x) - 1:
-        cross_indices = np.append(cross_indices, len(x) - 1)
+
+    boundaries = declustering_boundaries(x, tail)
 
     clustered_peaks: list[float] = []
-    for i in range(len(cross_indices) - 1):
-        segment = x[cross_indices[i] : cross_indices[i + 1]]
-        peak = np.max(segment) if tail == "upper" else np.min(segment)
+    for start, end in zip(boundaries[:-1], boundaries[1:]):
+        if end <= start:
+            continue
+        segment = x[start:end]
+        peak = float(np.max(segment) if tail == "upper" else np.min(segment))
+
         if (tail == "upper" and peak > threshold) or (
             tail == "lower" and peak < threshold
         ):
             clustered_peaks.append(peak)
 
     return np.asarray(clustered_peaks, dtype=float)
+
+
+
+def _prepare_tail_arrays(
+    t: np.ndarray, x: np.ndarray, tail: str
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return sorted copies of ``t`` and ``x`` suitable for analysis."""
+
+    if t.shape != x.shape:
+        raise ValueError("t and x must have matching shapes")
+
+    if t.size < 2:
+        raise ValueError("At least two samples are required for extreme value analysis")
+
+    order = np.argsort(t)
+    t_sorted = np.asarray(t, dtype=float)[order]
+    x_sorted = np.asarray(x, dtype=float)[order]
+
+    if not np.all(np.isfinite(t_sorted)) or not np.all(np.isfinite(x_sorted)):
+        raise ValueError("t and x must contain only finite values")
+
+    if t_sorted[-1] == t_sorted[0]:
+        raise ValueError("Time array must span a non-zero duration")
+
+    return t_sorted, x_sorted
+
+
+def _return_levels(
+    *,
+    threshold: float,
+    scale: float,
+    shape: float,
+    exceedance_rate: float,
+    return_durations: np.ndarray,
+    tail: str,
+
+) -> np.ndarray:
+    r"""Compute return levels using the OrcaFlex convention.
+
+    The OrcaFlex documentation defines the return level for a storm of
+    duration ``T`` hours as ::
+
+        z_T = u + \frac{\sigma}{\xi} \left( (\lambda T)^{\xi} - 1 \right)
+
+    where ``u`` is the threshold, ``\sigma`` is the scale, ``\xi`` is the
+    shape and ``\lambda`` is the mean cluster rate per hour.  The lower-tail
+    expression mirrors the upper-tail result but subtracts the positive GPD
+    excursion instead of adding it.  The limit as ``\xi`` tends to zero is
+    handled analytically.
+    """
+
+    scaled_rate = exceedance_rate * return_durations
+    if np.any(scaled_rate <= 0):
+        raise ValueError("Return durations must be positive")
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        if abs(shape) < 1e-9:
+            excursion = scale * np.log(scaled_rate)
+        else:
+            excursion = (scale / shape) * (np.power(scaled_rate, shape) - 1.0)
+
+    if tail == "upper":
+        return threshold + excursion
+    return threshold - excursion
+
 
 
 def calculate_extreme_value_statistics(
@@ -87,6 +178,10 @@ def calculate_extreme_value_statistics(
     if tail not in {"upper", "lower"}:
         raise ValueError("tail must be 'upper' or 'lower'")
 
+
+    t, x = _prepare_tail_arrays(np.asarray(t, dtype=float), np.asarray(x, dtype=float), tail)
+
+
     if clustered_peaks is None:
         clustered_peaks = cluster_exceedances(x, threshold, tail)
     else:
@@ -94,13 +189,31 @@ def calculate_extreme_value_statistics(
     if clustered_peaks.size == 0:
         raise ValueError("No exceedances found above the provided threshold")
 
-    excesses = clustered_peaks - threshold
+
+    if tail == "upper":
+        excesses = clustered_peaks - threshold
+    else:
+        excesses = threshold - clustered_peaks
+    if np.any(excesses <= 0):
+        raise ValueError("Threshold must be exceeded by all clustered peaks")
+
     c, loc, scale = genpareto.fit(excesses, floc=0)
 
-    exceed_prob = clustered_peaks.size / (t[-1] - t[0])
+    duration_seconds = float(t[-1] - t[0])
+    exceed_rate = clustered_peaks.size / (duration_seconds / 3600.0)
     return_periods = np.asarray(tuple(return_periods_hours), dtype=float)
+    if np.any(return_periods <= 0):
+        raise ValueError("Return periods must be positive")
     return_secs = return_periods * 3600
-    return_levels = threshold + (scale / c) * ((exceed_prob * return_secs) ** c - 1)
+    return_levels = _return_levels(
+        threshold=threshold,
+        scale=scale,
+        shape=c,
+        exceedance_rate=exceed_rate,
+        return_durations=return_secs / 3600.0,
+        tail=tail,
+    )
+
 
     rng = np.random.default_rng() if rng is None else rng
     boot_levels: list[np.ndarray] = []
@@ -110,7 +223,16 @@ def calculate_extreme_value_statistics(
             bc, _, bscale = genpareto.fit(sample, floc=0)
         except Exception:
             continue
-        boot_level = threshold + (bscale / bc) * ((exceed_prob * return_secs) ** bc - 1)
+
+        boot_level = _return_levels(
+            threshold=threshold,
+            scale=bscale,
+            shape=bc,
+            exceedance_rate=exceed_rate,
+            return_durations=return_secs / 3600.0,
+            tail=tail,
+        )
+
         if np.isnan(boot_level).any():
             continue
         if not ((boot_level > -1e6).all() and (boot_level < 1e6).all()):
@@ -134,7 +256,9 @@ def calculate_extreme_value_statistics(
         scale=float(scale),
         exceedances=clustered_peaks,
         threshold=float(threshold),
-        exceedance_rate=float(exceed_prob),
+
+        exceedance_rate=float(exceed_rate),
+
     )
 
 
@@ -142,5 +266,8 @@ __all__ = [
     "ExtremeValueResult",
     "calculate_extreme_value_statistics",
     "cluster_exceedances",
+
+    "declustering_boundaries",
+
 ]
 
