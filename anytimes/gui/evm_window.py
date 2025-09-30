@@ -6,6 +6,7 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDoubleSpinBox,
@@ -74,6 +75,7 @@ class EVMWindow(QDialog):
         self._evm_ran = False
 
         self._latest_warning: str | None = None
+        self._show_canvas_messages = True
 
 
         self.build_inputs()
@@ -184,6 +186,10 @@ class EVMWindow(QDialog):
         layout.addWidget(self.ci_spin, 3, 1)
         self.ci_spin.valueChanged.connect(self.on_ci_changed)
 
+        self.canvas_message_checkbox = QCheckBox("Show messages on canvas")
+        self.canvas_message_checkbox.setChecked(True)
+        self.canvas_message_checkbox.toggled.connect(self.on_canvas_message_toggle)
+
         run_btn = QPushButton("Run EVM")
         run_btn.clicked.connect(self.run_evm)
         layout.addWidget(run_btn, 4, 0, 1, 2)
@@ -192,8 +198,13 @@ class EVMWindow(QDialog):
         iterate_btn.clicked.connect(self.on_iterate_fit)
         layout.addWidget(iterate_btn, 4, 2)
 
+        layout.addWidget(self.canvas_message_checkbox, 5, 0, 1, 3)
+
     def show_canvas_message(self, message: str):
         """Display *message* on the plot canvas."""
+
+        if not self._show_canvas_messages:
+            return
 
         self.fig.clear()
         self.fig.text(
@@ -519,8 +530,11 @@ class EVMWindow(QDialog):
         qax.legend()
 
         if warnings:
-            self.fig.suptitle(warnings, color="red", fontsize=10)
-            self.fig.tight_layout(rect=[0, 0, 1, 0.92])
+            if self._show_canvas_messages:
+                self.fig.suptitle(warnings, color="red", fontsize=10)
+                self.fig.tight_layout(rect=[0, 0, 1, 0.92])
+            else:
+                self.fig.tight_layout()
         else:
             self.fig.tight_layout()
 
@@ -528,6 +542,9 @@ class EVMWindow(QDialog):
 
     def display_message_on_canvas(self, message: str) -> None:
         """Display a centered message in the plotting canvas."""
+
+        if not self._show_canvas_messages:
+            return
 
         self.fig.clear()
         ax = self.fig.add_subplot(111)
@@ -541,6 +558,16 @@ class EVMWindow(QDialog):
             wrap=True,
         )
         self.fig_canvas.draw()
+
+    def on_canvas_message_toggle(self, checked: bool) -> None:
+        """Callback to enable/disable canvas messaging."""
+
+        self._show_canvas_messages = checked
+
+        if not checked:
+            # Clear any existing message/warning from the canvas when disabled.
+            self.fig.clear()
+            self.fig_canvas.draw()
 
 __all__ = ['EVMWindow']
 
