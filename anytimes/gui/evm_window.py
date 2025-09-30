@@ -4,6 +4,7 @@ from __future__ import annotations
 import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -25,6 +26,7 @@ class EVMWindow(QDialog):
     def __init__(self, tsdb, var_name, parent=None):
         super().__init__(parent)
         self.setWindowTitle(f"Extreme Value Analysis - {var_name}")
+        self.setWindowFlags(self.windowFlags() | Qt.WindowMaximizeButtonHint)
         self.resize(800, 600)
 
         self.ts = tsdb.getm()[var_name]
@@ -63,6 +65,8 @@ class EVMWindow(QDialog):
         self.fig_canvas = FigureCanvasQTAgg(self.fig)
         self.plot_layout.addWidget(self.fig_canvas)
         self._evm_ran = False
+
+        self._latest_warning: str | None = None
 
 
         self.build_inputs()
@@ -177,6 +181,21 @@ class EVMWindow(QDialog):
         run_btn.clicked.connect(self.run_evm)
         layout.addWidget(run_btn, 4, 0, 1, 3)
 
+    def show_canvas_message(self, message: str):
+        """Display *message* on the plot canvas."""
+
+        self.fig.clear()
+        self.fig.text(
+            0.5,
+            0.5,
+            message,
+            ha="center",
+            va="center",
+            wrap=True,
+            fontsize=11,
+        )
+        self.fig_canvas.draw()
+
     def run_evm(self):
         x = self.x
         t = self.t
@@ -188,37 +207,58 @@ class EVMWindow(QDialog):
         clustered_peaks, boundaries = self._cluster_exceedances(threshold, tail)
 
         if len(clustered_peaks) < 10:
+            message = (
+                "Too few clustered exceedances were found for the selected threshold. "
+                "Adjust the threshold or tail selection and try again."
+            )
+            self._latest_warning = None
             QMessageBox.warning(
                 self,
                 "Too Few Points",
                 f"Threshold {threshold:.3f} resulted in only {len(clustered_peaks)} clustered exceedances.",
             )
+            self.result_text.setPlainText(message)
+            self.show_canvas_message(message)
+            self._evm_ran = False
             return
 
-        evm_result = calculate_extreme_value_statistics(
-            t,
-            x,
-            threshold,
-            tail=tail,
-            confidence_level=self.ci_spin.value(),
-            clustered_peaks=clustered_peaks,
-        )
+        try:
+            evm_result = calculate_extreme_value_statistics(
+                t,
+                x,
+                threshold,
+                tail=tail,
+                confidence_level=self.ci_spin.value(),
+                clustered_peaks=clustered_peaks,
+            )
+        except Exception as exc:  # pragma: no cover - defensive GUI guard
+            message = f"Extreme value analysis failed: {exc}"
+            self._latest_warning = None
+            self.result_text.setPlainText(message)
+            self.show_canvas_message(message)
+            self._evm_ran = False
+            return
 
         c = evm_result.shape
         scale = evm_result.scale
 
         # Diagnostic: warn if shape is too extreme
+        warnings: list[str] = []
         if abs(c) > 1:
-            print(
+            warnings.append(
                 f"Warning: large shape parameter detected (xi = {c:.4f}). Return levels may be unstable."
             )
         if c < -1e-6:
-            print("Note: fitted GPD shape xi < 0 indicates a bounded tail.")
+            warnings.append("Note: fitted GPD shape xi < 0 indicates a bounded tail.")
+        self._latest_warning = "\n".join(warnings) if warnings else None
 
         units = ""
         max_val = np.max(x) if tail == "upper" else np.min(x)
 
-        result = f"Extreme value statistics: {self.ts.name}\n\n"
+        header = f"Extreme value statistics: {self.ts.name}"
+        if self._latest_warning:
+            header = f"{header}\n\n{self._latest_warning}"
+        result = f"{header}\n\n"
         result += (
             f"The {evm_result.return_periods[-2]:.1f} hour return level is\n"
             f"{evm_result.return_levels[-2]:.5f} {units}\n\n"
@@ -253,6 +293,7 @@ class EVMWindow(QDialog):
             threshold,
             evm_result.lower_bounds,
             evm_result.upper_bounds,
+            warnings=self._latest_warning,
         )
         self._evm_ran = True
 
@@ -271,6 +312,8 @@ class EVMWindow(QDialog):
         threshold,
         lower_bounds=None,
         upper_bounds=None,
+        *,
+        warnings: str | None = None,
     ):
         from scipy.stats import genpareto
 
@@ -319,7 +362,11 @@ class EVMWindow(QDialog):
         qax.grid(True)
         qax.legend()
 
-        self.fig.tight_layout()
+        if warnings:
+            self.fig.suptitle(warnings, color="red", fontsize=10)
+            self.fig.tight_layout(rect=[0, 0, 1, 0.92])
+        else:
+            self.fig.tight_layout()
 
         self.fig_canvas.draw()
 
