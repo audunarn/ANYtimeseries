@@ -19,7 +19,6 @@ from PySide6.QtWidgets import (
 
 
 from anytimes.evm import calculate_extreme_value_statistics, declustering_boundaries
-=======
 
 
 class EVMWindow(QDialog):
