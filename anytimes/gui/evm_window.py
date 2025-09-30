@@ -17,6 +17,8 @@ from PySide6.QtWidgets import (
     QMessageBox,
 )
 
+from anytimes.evm import calculate_extreme_value_statistics
+
 class EVMWindow(QDialog):
     def __init__(self, tsdb, var_name, parent=None):
         super().__init__(parent)
@@ -129,7 +131,9 @@ class EVMWindow(QDialog):
                 tail == "lower" and peak < threshold
             ):
                 clustered_peaks.append(peak)
-        return clustered_peaks, cross_indices
+        # use numpy array like helper does to ensure consistent type
+        clustered_peaks_arr = np.array(clustered_peaks, dtype=float)
+        return clustered_peaks_arr, cross_indices
 
     def on_manual_threshold(self):
         self.threshold_spin.interpretText()
@@ -178,9 +182,6 @@ class EVMWindow(QDialog):
         layout.addWidget(run_btn, 4, 0, 1, 3)
 
     def run_evm(self):
-
-        from scipy.stats import genpareto
-
         x = self.x
         t = self.t
 
@@ -198,8 +199,17 @@ class EVMWindow(QDialog):
             )
             return
 
-        excesses = np.array(clustered_peaks) - threshold
-        c, loc, scale = genpareto.fit(excesses, floc=0)
+        evm_result = calculate_extreme_value_statistics(
+            t,
+            x,
+            threshold,
+            tail=tail,
+            confidence_level=self.ci_spin.value(),
+            clustered_peaks=clustered_peaks,
+        )
+
+        c = evm_result.shape
+        scale = evm_result.scale
 
         # Diagnostic: warn if shape is too extreme
         if abs(c) > 1:
@@ -209,64 +219,42 @@ class EVMWindow(QDialog):
         if c < -1e-6:
             print("Note: fitted GPD shape xi < 0 indicates a bounded tail.")
 
-        exceed_prob = len(clustered_peaks) / (t[-1] - t[0])
-
-        return_periods = np.array([0.1, 0.5, 1, 3, 5])  # hours
-        return_secs = return_periods * 3600
-        rl = threshold + (scale / c) * ((exceed_prob * return_secs) ** c - 1)
-
-        n_bootstrap = 500
-        boot_levels = []
-        rs = np.random.default_rng()
-
-        for _ in range(n_bootstrap):
-            sample = rs.choice(excesses, size=len(excesses), replace=True)
-            try:
-                bc, _, bscale = genpareto.fit(sample, floc=0)
-                boot_level = threshold + (bscale / bc) * (
-                    (exceed_prob * return_secs) ** bc - 1
-                )
-                boot_levels.append(boot_level)
-            except Exception:
-                continue
-
-        boot_levels = np.array(boot_levels)
-        boot_levels = boot_levels[~np.isnan(boot_levels).any(axis=1)]
-        boot_levels = boot_levels[
-            (boot_levels > -1e6).all(axis=1) & (boot_levels < 1e6).all(axis=1)
-        ]
-
-        if boot_levels.shape[0] > 0:
-            ci_alpha = 100 - self.ci_spin.value()
-            lower_bounds = np.percentile(boot_levels, ci_alpha / 2, axis=0)
-            upper_bounds = np.percentile(boot_levels, 100 - ci_alpha / 2, axis=0)
-        else:
-            lower_bounds = upper_bounds = [np.nan] * len(return_secs)
-
         units = ""
         max_val = np.max(x) if tail == "upper" else np.min(x)
 
         result = f"Extreme value statistics: {self.ts.name}\n\n"
-        result += f"The {return_periods[-2]:.1f} hour return level is\n{rl[-2]:.5f} {units}\n\n"
-        result += f"Fitted GPD parameters:\nSigma: {scale:.4f}\nXi: {c:.4f}\nExceedances used: {len(excesses)}\n"
+        result += (
+            f"The {evm_result.return_periods[-2]:.1f} hour return level is\n"
+            f"{evm_result.return_levels[-2]:.5f} {units}\n\n"
+        )
+        result += (
+            "Fitted GPD parameters:\n"
+            f"Sigma: {scale:.4f}\n"
+            f"Xi: {c:.4f}\n"
+            f"Exceedances used: {len(evm_result.exceedances)}\n"
+        )
         result += f"Total crossings/clusters found: {len(cross_indices) - 1}\n"
         result += f"Observed maximum value: {max_val:.4f} {units}\n"
         result += f"Return level unit: {units or 'same as input'}\n\n"
         result += f"{self.ci_spin.value():.0f}% Confidence Interval:\n"
-        for rp, lo, up in zip(return_periods, lower_bounds, upper_bounds):
+        for rp, lo, up in zip(
+            evm_result.return_periods,
+            evm_result.lower_bounds,
+            evm_result.upper_bounds,
+        ):
             result += f"{rp:.1f} hr: {lo:.3f} – {up:.3f}\n"
 
         self.result_text.setPlainText(result)
 
         self.plot_diagnostics(
-            return_secs,
-            rl,
-            excesses,
+            evm_result.return_periods * 3600,
+            evm_result.return_levels,
+            evm_result.exceedances - threshold,
             c,
             scale,
             threshold,
-            lower_bounds,
-            upper_bounds,
+            evm_result.lower_bounds,
+            evm_result.upper_bounds,
         )
         self._evm_ran = True
 
