@@ -4,6 +4,7 @@ from __future__ import annotations
 import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -25,6 +26,8 @@ class EVMWindow(QDialog):
     def __init__(self, tsdb, var_name, parent=None):
         super().__init__(parent)
         self.setWindowTitle(f"Extreme Value Analysis - {var_name}")
+        self.setWindowFlag(Qt.WindowMaximizeButtonHint, True)
+        self.setWindowFlag(Qt.WindowMinimizeButtonHint, True)
         self.resize(800, 600)
 
         self.ts = tsdb.getm()[var_name]
@@ -207,13 +210,24 @@ class EVMWindow(QDialog):
         c = evm_result.shape
         scale = evm_result.scale
 
-        # Diagnostic: warn if shape is too extreme
+        warnings: list[str] = []
         if abs(c) > 1:
-            print(
+            warnings.append(
                 f"Warning: large shape parameter detected (xi = {c:.4f}). Return levels may be unstable."
             )
         if c < -1e-6:
-            print("Note: fitted GPD shape xi < 0 indicates a bounded tail.")
+            warnings.append("Note: fitted GPD shape xi < 0 indicates a bounded tail.")
+
+        if warnings:
+            message = "\n\n".join(warnings)
+            message += (
+                "\n\nReturn level plots are unavailable because of these warnings. "
+                "Consider adjusting the threshold or data selection before rerunning the analysis."
+            )
+            self.result_text.setPlainText(message)
+            self.display_message_on_canvas(message)
+            self._evm_ran = False
+            return
 
         units = ""
         max_val = np.max(x) if tail == "upper" else np.min(x)
@@ -321,6 +335,22 @@ class EVMWindow(QDialog):
 
         self.fig.tight_layout()
 
+        self.fig_canvas.draw()
+
+    def display_message_on_canvas(self, message: str) -> None:
+        """Display a centered message in the plotting canvas."""
+
+        self.fig.clear()
+        ax = self.fig.add_subplot(111)
+        ax.axis("off")
+        ax.text(
+            0.5,
+            0.5,
+            message,
+            ha="center",
+            va="center",
+            wrap=True,
+        )
         self.fig_canvas.draw()
 
 __all__ = ['EVMWindow']
