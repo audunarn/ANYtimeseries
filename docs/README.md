@@ -125,6 +125,18 @@ Launched from **Open Extreme Value Statistics Tool**, this dialog estimates retu
 - **Run EVM** performs the analysis and updates the result text.
 - Plots of the raw time series with threshold, return level curve and a quantile comparison.
 
+### Troubleshooting unstable fits
+
+The Generalized Pareto (GPD) fit relies on a sensible threshold and a sufficient number of independent exceedances. When the analysis raises a warning such as `Warning: large shape parameter detected (xi = -1.1465). Return levels may be unstable. Note: fitted GPD shape xi < 0 indicates a bounded tail.`, consider the following adjustments to obtain a stable fit:
+
+- **Review the data sample** – confirm that the time window contains the events of interest and that the series is in the correct units. A negative shape parameter often signals that the observed values are capped by a physical limit or data truncation.
+- **Increase the threshold** – a higher threshold reduces bias from the bulk of the distribution and can pull the shape estimate towards zero. Ensure at least ~10–15 clustered exceedances remain after declustering.
+- **Tweak the declustering window** – if peaks are highly correlated, widen the separation criterion (or pre-filter the series) so that clusters represent independent events.
+- **Check the tail selection** – if extreme minima are of interest, switch to the lower-tail option and re-run the analysis.
+- **Cross-validate with diagnostics** – inspect the return level plot and quantile comparison; large curvature or erratic extrapolation confirms that the fitted model is unreliable for long return periods.
+
+Iterating on the threshold and data selection usually produces a more moderate shape parameter (|xi| ≲ 1) and leads to return levels that are consistent with the supporting diagnostics.
+
 ## Command Line Helpers
 
 For quick access you can create a small batch script that launches the GUI with a specific Python interpreter:
