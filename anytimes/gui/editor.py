@@ -1429,9 +1429,12 @@ class TimeSeriesEditorQt(QMainWindow):
 
                 merged_ts = TimeSeries(name, merged_t, merged_x)
                 if self.tsdbs:
+                    # The merged result should behave like a single user variable.
+                    # Adding duplicates to every file leads to repeated plots and
+                    # duplicated entries.  Keep a single authoritative copy in the
+                    # first database so downstream features (plotting, stats, …)
+                    # only see one series.
                     self.tsdbs[0].add(merged_ts)
-                    for tsdb in self.tsdbs[1:]:
-                        tsdb.add(TimeSeries(name, merged_t.copy(), merged_x.copy()))
                 self.user_variables.add(name)
                 created.append(name)
         else:

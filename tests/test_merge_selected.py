@@ -118,11 +118,16 @@ def test_merge_common_single_series_creates_user_variables(qt_app, message_spy, 
     editor.merge_selected_series()
     qt_app.processEvents()
 
-    expected = {"merge(CommonVar)_f1", "merge(CommonVar)_f2", "merge(CommonVar)_f3"}
+    expected = "merge(CommonVar)"
     created = set()
     for tsdb in editor.tsdbs:
         created.update(name for name in tsdb.getm() if name.startswith("merge(CommonVar)"))
-    assert expected <= created
+
+    assert created == {expected}
+    # Only the first database should receive the merged copy.
+    assert expected in editor.tsdbs[0].getm()
+    for tsdb in editor.tsdbs[1:]:
+        assert expected not in tsdb.getm()
     assert not message_spy["crit"]
     assert not message_spy["warn"]
 
@@ -141,10 +146,14 @@ def test_merge_common_name_with_colon_not_misclassified(qt_app, message_spy, mon
     editor.merge_selected_series()
     qt_app.processEvents()
 
-    expected = {"merge(Var)_f1", "merge(Var)_f2", "merge(Var)_f3"}
+    expected = "merge(Var)"
     created = set()
     for tsdb in editor.tsdbs:
         created.update(name for name in tsdb.getm() if name.startswith("merge(Var)"))
-    assert expected <= created
+
+    assert created == {expected}
+    assert expected in editor.tsdbs[0].getm()
+    for tsdb in editor.tsdbs[1:]:
+        assert expected not in tsdb.getm()
     assert not message_spy["crit"]
     assert not message_spy["warn"]
