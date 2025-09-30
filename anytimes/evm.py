@@ -8,6 +8,71 @@ import numpy as np
 from scipy.stats import genpareto
 
 
+def _gpd_negative_log_likelihood(
+    params: np.ndarray, excesses: np.ndarray
+) -> float:
+    """Return the negative log-likelihood of a GPD sample."""
+
+    shape, scale = params
+    if scale <= 0 or np.any(1.0 + shape * excesses / scale <= 0.0):
+        return float("inf")
+
+    log_term = np.log1p(shape * excesses / scale)
+    n = excesses.size
+    return n * np.log(scale) + (1.0 / shape + 1.0) * np.sum(log_term)
+
+
+def _gpd_parameter_covariance(
+    *, shape: float, scale: float, excesses: np.ndarray
+) -> np.ndarray | None:
+    """Return an observed-information covariance matrix for ``shape`` and ``scale``."""
+
+    params = np.asarray([shape, scale], dtype=float)
+    if np.any(~np.isfinite(params)):
+        return None
+
+    # Scale the perturbation relative to the magnitude of each parameter so that
+    # the finite-difference Hessian remains well conditioned for both large and
+    # small values.
+    step = np.maximum(np.abs(params), 1.0) * 1e-5
+    hessian = np.empty((2, 2), dtype=float)
+
+    for i in range(2):
+        for j in range(2):
+            offset_i = np.zeros(2, dtype=float)
+            offset_j = np.zeros(2, dtype=float)
+            offset_i[i] = step[i]
+            offset_j[j] = step[j]
+
+            f_pp = _gpd_negative_log_likelihood(
+                params + offset_i + offset_j, excesses
+            )
+            f_pm = _gpd_negative_log_likelihood(
+                params + offset_i - offset_j, excesses
+            )
+            f_mp = _gpd_negative_log_likelihood(
+                params - offset_i + offset_j, excesses
+            )
+            f_mm = _gpd_negative_log_likelihood(
+                params - offset_i - offset_j, excesses
+            )
+
+            hessian[i, j] = (f_pp - f_pm - f_mp + f_mm) / (4.0 * step[i] * step[j])
+
+    if not np.all(np.isfinite(hessian)):
+        return None
+
+    try:
+        covariance = np.linalg.inv(hessian)
+    except np.linalg.LinAlgError:
+        return None
+
+    if np.any(~np.isfinite(covariance)):
+        return None
+
+    return covariance
+
+
 @dataclass(frozen=True)
 class ExtremeValueResult:
     """Container for Generalized Pareto extreme value analysis results."""
@@ -170,7 +235,8 @@ def calculate_extreme_value_statistics(
     confidence_level:
         Percent confidence level for the bootstrap interval.
     n_bootstrap:
-        Number of bootstrap iterations.
+        Number of multivariate normal samples used to approximate the
+        confidence interval.  Set to zero to skip the interval calculation.
     rng:
         Optional :class:`numpy.random.Generator` for deterministic bootstrapping.
     """
@@ -197,7 +263,7 @@ def calculate_extreme_value_statistics(
     if np.any(excesses <= 0):
         raise ValueError("Threshold must be exceeded by all clustered peaks")
 
-    c, loc, scale = genpareto.fit(excesses, floc=0)
+    shape, loc, scale = genpareto.fit(excesses, floc=0)
 
     duration_seconds = float(t[-1] - t[0])
     exceed_rate = clustered_peaks.size / (duration_seconds / 3600.0)
@@ -208,51 +274,63 @@ def calculate_extreme_value_statistics(
     return_levels = _return_levels(
         threshold=threshold,
         scale=scale,
-        shape=c,
+        shape=shape,
         exceedance_rate=exceed_rate,
         return_durations=return_secs / 3600.0,
         tail=tail,
     )
 
+    covariance = _gpd_parameter_covariance(
+        shape=shape, scale=scale, excesses=excesses
+    )
 
-    rng = np.random.default_rng() if rng is None else rng
-    boot_levels: list[np.ndarray] = []
-    for _ in range(n_bootstrap):
-        sample = rng.choice(excesses, size=excesses.size, replace=True)
+    ci_alpha = 100.0 - confidence_level
+    lower_bounds = np.full(return_levels.shape, np.nan)
+    upper_bounds = np.full(return_levels.shape, np.nan)
+
+    if covariance is not None and n_bootstrap > 0:
+        rng = np.random.default_rng() if rng is None else rng
         try:
-            bc, _, bscale = genpareto.fit(sample, floc=0)
-        except Exception:
-            continue
+            samples = rng.multivariate_normal(
+                mean=np.array([shape, scale], dtype=float),
+                cov=covariance,
+                size=int(n_bootstrap),
+            )
+        except ValueError:
+            samples = np.empty((0, 2))
 
-        boot_level = _return_levels(
-            threshold=threshold,
-            scale=bscale,
-            shape=bc,
-            exceedance_rate=exceed_rate,
-            return_durations=return_secs / 3600.0,
-            tail=tail,
-        )
+        if samples.size:
+            valid_levels: list[np.ndarray] = []
+            for sh, sc in samples:
+                if sc <= 0:
+                    continue
+                if np.any(1.0 + sh * excesses / sc <= 0.0):
+                    continue
 
-        if np.isnan(boot_level).any():
-            continue
-        if not ((boot_level > -1e6).all() and (boot_level < 1e6).all()):
-            continue
-        boot_levels.append(boot_level)
+                boot_level = _return_levels(
+                    threshold=threshold,
+                    scale=sc,
+                    shape=sh,
+                    exceedance_rate=exceed_rate,
+                    return_durations=return_secs / 3600.0,
+                    tail=tail,
+                )
 
-    if boot_levels:
-        boot_arr = np.vstack(boot_levels)
-        ci_alpha = 100 - confidence_level
-        lower_bounds = np.percentile(boot_arr, ci_alpha / 2, axis=0)
-        upper_bounds = np.percentile(boot_arr, 100 - ci_alpha / 2, axis=0)
-    else:
-        lower_bounds = upper_bounds = np.full(return_levels.shape, np.nan)
+                if np.isnan(boot_level).any():
+                    continue
+                valid_levels.append(boot_level)
+
+            if valid_levels:
+                boot_arr = np.vstack(valid_levels)
+                lower_bounds = np.percentile(boot_arr, ci_alpha / 2, axis=0)
+                upper_bounds = np.percentile(boot_arr, 100.0 - ci_alpha / 2, axis=0)
 
     return ExtremeValueResult(
         return_periods=return_periods,
         return_levels=return_levels,
         lower_bounds=lower_bounds,
         upper_bounds=upper_bounds,
-        shape=float(c),
+        shape=float(shape),
         scale=float(scale),
         exceedances=clustered_peaks,
         threshold=float(threshold),
