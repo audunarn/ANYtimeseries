@@ -426,9 +426,16 @@ class StatsDialog(QDialog):
                 label = f"{file}::{var}"
             ax.plot(t, y, label=label)
             if len(t) > 1:
-                dt = np.median(np.diff(t))
-                fs = 1.0 / dt if dt > 0 else 1.0
-                axp.psd(y, Fs=fs, label=label)
+                ts_tmp = TimeSeries("tmp", t, y)
+                try:
+                    freqs, psd_vals = ts_tmp.psd(resample=ts_tmp.dt)
+                except ValueError:
+                    dt = float(np.median(np.diff(t)))
+                    if dt <= 0:
+                        continue
+                    freqs, psd_vals = ts_tmp.psd(resample=dt)
+                if freqs.size and psd_vals.size:
+                    axp.plot(freqs, psd_vals, label=label)
 
         ax.set_xlabel("Time")
         ax.set_ylabel("Value")
@@ -438,7 +445,7 @@ class StatsDialog(QDialog):
         self._tight_draw(self.line_fig, self.line_canvas)
 
         axp.set_xlabel("Frequency [Hz]")
-        axp.set_ylabel("PSD")
+        axp.set_ylabel("Power spectral density")
         axp.legend()
         axp.grid(True)
 
