@@ -219,6 +219,7 @@ def calculate_extreme_value_statistics(
     n_bootstrap: int = 500,
     rng: np.random.Generator | None = None,
     clustered_peaks: np.ndarray | None = None,
+    sample_exceedance_rate: bool = False,
 ) -> ExtremeValueResult:
     """Estimate return levels using the Generalized Pareto distribution.
 
@@ -239,6 +240,9 @@ def calculate_extreme_value_statistics(
         confidence interval.  Set to zero to skip the interval calculation.
     rng:
         Optional :class:`numpy.random.Generator` for deterministic bootstrapping.
+    sample_exceedance_rate:
+        If ``True``, include Poisson variability in the storm occurrence rate
+        when bootstrapping return levels.
     """
 
     if tail not in {"upper", "lower"}:
@@ -266,7 +270,8 @@ def calculate_extreme_value_statistics(
     shape, loc, scale = genpareto.fit(excesses, floc=0)
 
     duration_seconds = float(t[-1] - t[0])
-    exceed_rate = clustered_peaks.size / (duration_seconds / 3600.0)
+    duration_hours = duration_seconds / 3600.0
+    exceed_rate = clustered_peaks.size / duration_hours
     return_periods = np.asarray(tuple(return_periods_hours), dtype=float)
     if np.any(return_periods <= 0):
         raise ValueError("Return periods must be positive")
@@ -300,30 +305,56 @@ def calculate_extreme_value_statistics(
             samples = np.empty((0, 2))
 
         if samples.size:
-            valid_levels: list[np.ndarray] = []
-            for sh, sc in samples:
-                if sc <= 0:
-                    continue
-                if np.any(1.0 + sh * excesses / sc <= 0.0):
-                    continue
+            shapes = samples[:, 0]
+            scales = samples[:, 1]
 
-                boot_level = _return_levels(
-                    threshold=threshold,
-                    scale=sc,
-                    shape=sh,
-                    exceedance_rate=exceed_rate,
-                    return_durations=return_secs / 3600.0,
-                    tail=tail,
-                )
+            finite_mask = np.isfinite(shapes) & np.isfinite(scales)
+            if not finite_mask.all():
+                shapes = shapes[finite_mask]
+                scales = scales[finite_mask]
 
-                if np.isnan(boot_level).any():
-                    continue
-                valid_levels.append(boot_level)
+            if shapes.size:
+                max_excess = float(np.max(excesses))
 
-            if valid_levels:
-                boot_arr = np.vstack(valid_levels)
-                lower_bounds = np.percentile(boot_arr, ci_alpha / 2, axis=0)
-                upper_bounds = np.percentile(boot_arr, 100.0 - ci_alpha / 2, axis=0)
+                valid_mask = scales > 0
+                if max_excess > 0.0:
+                    support_limit = -shapes * max_excess
+                    valid_mask &= (shapes >= 0.0) | (scales > support_limit)
+
+                if not valid_mask.all():
+                    shapes = shapes[valid_mask]
+                    scales = scales[valid_mask]
+
+                if shapes.size:
+                    durations = return_secs / 3600.0
+                    if sample_exceedance_rate and clustered_peaks.size > 0:
+                        rate_samples = rng.gamma(
+                            shape=clustered_peaks.size,
+                            scale=1.0 / duration_hours,
+                            size=shapes.size,
+                        )
+                    else:
+                        rate_samples = np.full(shapes.size, exceed_rate)
+
+                    rate = rate_samples[:, np.newaxis] * (durations[np.newaxis, :])
+                    shape_mat = shapes[:, np.newaxis]
+                    scale_mat = scales[:, np.newaxis]
+
+                    excursion = np.where(
+                        np.isclose(shape_mat, 0.0, atol=1e-9),
+                        scale_mat * np.log(rate),
+                        (scale_mat / shape_mat) * (np.power(rate, shape_mat) - 1.0),
+                    )
+
+                    if tail == "upper":
+                        boot_levels = threshold + excursion
+                    else:
+                        boot_levels = threshold - excursion
+
+                    lower_bounds = np.percentile(boot_levels, ci_alpha / 2, axis=0)
+                    upper_bounds = np.percentile(
+                        boot_levels, 100.0 - ci_alpha / 2, axis=0
+                    )
 
     return ExtremeValueResult(
         return_periods=return_periods,
