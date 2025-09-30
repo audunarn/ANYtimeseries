@@ -1,11 +1,14 @@
 import numpy as np
 
+
 from anytimes import evm
 from anytimes.evm import (
     calculate_extreme_value_statistics,
     cluster_exceedances,
     declustering_boundaries,
 )
+=======
+
 
 
 def _synthetic_series():
@@ -24,7 +27,9 @@ def test_cluster_exceedances_matches_expected_profile():
 
     clusters = cluster_exceedances(x, threshold, "upper")
 
+
     assert clusters.size == 33
+
     expected_first = np.array(
         [
             3.255648,
@@ -35,8 +40,10 @@ def test_cluster_exceedances_matches_expected_profile():
             5.634556,
             4.319638,
             4.548014,
+
             4.114666,
             3.789485,
+
         ]
     )
     np.testing.assert_allclose(clusters[: expected_first.size], expected_first, rtol=0, atol=1e-6)
@@ -56,6 +63,7 @@ def test_calculate_extreme_value_statistics_matches_known_values():
         rng=np.random.default_rng(2024),
     )
 
+
     assert res.exceedances.size == 33
     assert np.isclose(res.shape, -0.7942124974671382)
     assert np.isclose(res.scale, 4.8572359369876255)
@@ -64,9 +72,11 @@ def test_calculate_extreme_value_statistics_matches_known_values():
     expected_lower = np.array([5.85069148, 6.00889926, 6.01775253, 6.03363989, 6.04274598])
     expected_upper = np.array([7.09042912, 7.22463645, 7.26022048, 7.35106889, 7.38627693])
 
+
     np.testing.assert_allclose(res.return_levels, expected_levels, rtol=0, atol=1e-6)
     np.testing.assert_allclose(res.lower_bounds, expected_lower, rtol=0, atol=1e-6)
     np.testing.assert_allclose(res.upper_bounds, expected_upper, rtol=0, atol=1e-6)
+
 
 
 def test_declustering_boundaries_include_extremes():
@@ -116,3 +126,4 @@ def test_return_levels_lower_tail_reflects_negative_extremes():
     )
 
     np.testing.assert_allclose(calculated, expected, rtol=0, atol=1e-12)
+
