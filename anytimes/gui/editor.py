@@ -248,10 +248,12 @@ class TimeSeriesEditorQt(QMainWindow):
         self.mean_of_sel_btn = QPushButton("Mean")
         self.abs_btn = QPushButton("Absolute")
         self.rolling_avg_btn = QPushButton("Rolling Avg")
+        self.merge_selected_btn = QPushButton("Merge Selected")
         row4.addWidget(self.sqrt_sum_btn)
         row4.addWidget(self.mean_of_sel_btn)
         row4.addWidget(self.abs_btn)
         row4.addWidget(self.rolling_avg_btn)
+        row4.addWidget(self.merge_selected_btn)
         transform_layout.addLayout(row4)
 
         row5 = QHBoxLayout()
@@ -571,6 +573,7 @@ class TimeSeriesEditorQt(QMainWindow):
         self.sqrt_sum_btn.clicked.connect(self.sqrt_sum_of_squares)
         self.abs_btn.clicked.connect(self.abs_var)
         self.rolling_avg_btn.clicked.connect(self.rolling_average)
+        self.merge_selected_btn.clicked.connect(self.merge_selected_series)
         self.radians_btn.clicked.connect(self.to_radians)
         self.degrees_btn.clicked.connect(self.to_degrees)
         self.shift_min0_btn.clicked.connect(self.shift_min_to_zero)
@@ -1285,6 +1288,181 @@ class TimeSeriesEditorQt(QMainWindow):
 
         func = lambda y, w=window: pd.Series(y).rolling(window=w, min_periods=1).mean().to_numpy()
         self._apply_transformation(func, "rollMean", True)
+
+    def merge_selected_series(self):
+        """Merge selected time series end-to-end into a new user variable."""
+        import os
+        import re
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QMessageBox
+        from anyqats import TimeSeries
+
+        self.rebuild_var_lookup()
+
+        selected_keys = [k for k, ck in self.var_checkboxes.items() if ck.isChecked()]
+        if not selected_keys:
+            QMessageBox.warning(
+                self, "No selection", "Select variables to merge into a new series."
+            )
+            return
+
+        if len(selected_keys) < 2:
+            QMessageBox.warning(
+                self,
+                "Need more series",
+                "Select at least two time series to perform a merge.",
+            )
+            return
+
+        filenames = [os.path.basename(path) for path in self.file_paths]
+
+        def _has_file_prefix(key: str) -> bool:
+            return any(
+                key.startswith(f"{name}::") or key.startswith(f"{name}:") for name in filenames
+            )
+
+        per_file_mode = any(_has_file_prefix(k) for k in selected_keys)
+        if per_file_mode and not all(_has_file_prefix(k) for k in selected_keys):
+            QMessageBox.critical(
+                self,
+                "Mixed selection",
+                "Pick either only common-tab variables or only per-file keys when merging.",
+            )
+            return
+
+        per_file_map = {name: [] for name in filenames}
+        if per_file_mode:
+            for key in selected_keys:
+                for name in filenames:
+                    if key.startswith(f"{name}::"):
+                        per_file_map[name].append((key, key.split("::", 1)[1]))
+                        break
+                    if key.startswith(f"{name}:"):
+                        per_file_map[name].append((key, key.split(":", 1)[1]))
+                        break
+
+        created = []
+        filt_tag = self._filter_tag()
+        multi_file = len(self.tsdbs) > 1
+        self.user_variables = getattr(self, "user_variables", set())
+        re_suffix = re.compile(r"_f\d+$")
+
+        def _clean_label(label: str) -> str:
+            label = label.split("::", 1)[-1]
+            label = label.split(":", 1)[-1]
+            return re_suffix.sub("", label)
+
+        for f_idx, (tsdb, path) in enumerate(zip(self.tsdbs, self.file_paths), start=1):
+            fname = os.path.basename(path)
+
+            if per_file_mode:
+                entries = per_file_map.get(fname, [])
+                if not entries:
+                    continue
+                source_labels = [orig for orig, _ in entries]
+                varnames = [var for _, var in entries]
+            else:
+                source_labels = selected_keys
+                varnames = selected_keys
+
+            merged_segments = []
+            merged_time_parts = []
+            offset = 0.0
+            last_dt = None
+
+            for _, varname in zip(source_labels, varnames):
+                ts = tsdb.getm().get(varname)
+                if ts is None:
+                    continue
+
+                data = self.apply_filters(ts)
+                mask = self.get_time_window(ts)
+                if isinstance(mask, slice):
+                    y_segment = data[mask]
+                else:
+                    if not mask.any():
+                        continue
+                    y_segment = data[mask]
+
+                if y_segment.size == 0:
+                    continue
+
+                dt = getattr(ts, "dt", None)
+                if dt in (None, 0):
+                    local_t = ts.t
+                    if isinstance(mask, slice):
+                        local_t = local_t[mask]
+                    else:
+                        local_t = local_t[mask]
+                    if len(local_t) > 1:
+                        arr = np.asarray(local_t)
+                        if np.issubdtype(arr.dtype, np.datetime64):
+                            arr = arr.astype("datetime64[ns]").astype("int64") / 1e9
+                        dt = float(np.median(np.diff(arr)))
+                    elif last_dt not in (None, 0):
+                        dt = last_dt
+                    else:
+                        dt = 0.0
+
+                idx = np.arange(y_segment.size, dtype=float)
+                if dt:
+                    local_time = idx * float(dt)
+                else:
+                    local_time = np.zeros_like(idx)
+
+                merged_segments.append(np.asarray(y_segment))
+                merged_time_parts.append(local_time + offset)
+
+                if dt:
+                    last_dt = float(dt)
+                    offset = merged_time_parts[-1][-1] + float(dt)
+                elif merged_time_parts[-1].size:
+                    offset = merged_time_parts[-1][-1]
+
+            if not merged_segments:
+                continue
+
+            merged_x = np.concatenate(merged_segments)
+            merged_t = np.concatenate(merged_time_parts)
+
+            cleaned_labels = [_clean_label(label) for label in source_labels]
+            name_base = f"merge({'+'.join(cleaned_labels)})"
+            if not per_file_mode and multi_file:
+                name_base += f"_f{f_idx}"
+            if filt_tag:
+                name_base += f"_{filt_tag}"
+
+            name = name_base
+            counter = 1
+            while name in tsdb.getm():
+                name = f"{name_base}_{counter}"
+                counter += 1
+
+            tsdb.add(TimeSeries(name, merged_t, merged_x))
+            self.user_variables.add(name)
+            created.append(name)
+
+        if created:
+            QTimer.singleShot(0, lambda: self._populate_variables(None))
+
+            def _ok():
+                show = 10
+                if len(created) <= show:
+                    msg = "\n".join(sorted(created))
+                else:
+                    msg = "\n".join(sorted(created)[:show]) + f"\n… and {len(created) - show} more"
+                QMessageBox.information(self, "Merge complete", msg)
+
+            QTimer.singleShot(0, _ok)
+        else:
+            QTimer.singleShot(
+                0,
+                lambda: QMessageBox.warning(
+                    self,
+                    "No data",
+                    "No merged series were created. Ensure the selected series exist in the chosen files.",
+                ),
+            )
 
     def sqrt_sum_of_squares(self):
         """
