@@ -354,43 +354,60 @@ class EVMWindow(QDialog):
         min_val = float(np.min(x))
         max_val = float(np.max(x))
 
+        if not np.isfinite(min_val) or not np.isfinite(max_val):
+            return [base_threshold]
+
+        span = max_val - min_val
+        if span <= 0:
+            return [base_threshold]
+
+        delta = span / 1000.0
+        if delta <= 0:
+            delta = max(abs(max_val), abs(min_val), 1.0) / 1000.0
+
+        base_clamped = float(np.clip(base_threshold, min_val, max_val))
+
+        candidates: list[float] = []
+        seen: set[float] = set()
+
         if tail == "upper":
-            quantiles = np.linspace(0.6, 0.995, 40)
-            spread = np.linspace(base_threshold, max_val, 30)
-            backfill = np.linspace(min_val, base_threshold, 20)
+            current = float(max_val - delta)
+            if current < min_val:
+                current = max_val
+
+            steps = 0
+            while current >= min_val and steps < 2000:
+                key = round(current, 6)
+                if key not in seen:
+                    candidates.append(current)
+                    seen.add(key)
+                current -= delta
+                steps += 1
+
         else:
-            quantiles = np.linspace(0.005, 0.4, 40)
-            spread = np.linspace(min_val, base_threshold, 30)
-            backfill = np.linspace(base_threshold, max_val, 20)
+            current = float(min_val + delta)
+            if current > max_val:
+                current = min_val
 
-        quantile_thresholds = np.quantile(x, quantiles)
+            steps = 0
+            while current <= max_val and steps < 2000:
+                key = round(current, 6)
+                if key not in seen:
+                    candidates.append(current)
+                    seen.add(key)
+                current += delta
+                steps += 1
 
-        candidates = np.concatenate(
-            (
-                [base_threshold],
-                quantile_thresholds,
-                spread,
-                backfill,
-            )
-        )
+        base_key = round(base_clamped, 6)
+        if base_key not in seen:
+            candidates.append(base_clamped)
 
-        unique_candidates: list[float] = []
-        seen = set()
-        for value in candidates:
-            if tail == "upper":
-                value = float(min(value, max_val))
-            else:
-                value = float(max(value, min_val))
+        if tail == "upper":
+            candidates.sort(reverse=True)
+        else:
+            candidates.sort()
 
-            key = round(value, 6)
-            if key in seen:
-                continue
-            seen.add(key)
-            unique_candidates.append(value)
-
-        unique_candidates.sort(key=lambda val: abs(val - base_threshold))
-
-        return unique_candidates
+        return candidates
 
     def on_iterate_fit(self) -> None:
         tail = self.tail_combo.currentText()
