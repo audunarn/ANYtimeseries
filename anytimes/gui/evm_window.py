@@ -26,7 +26,9 @@ class EVMWindow(QDialog):
     def __init__(self, tsdb, var_name, parent=None):
         super().__init__(parent)
         self.setWindowTitle(f"Extreme Value Analysis - {var_name}")
+
         self.setWindowFlags(self.windowFlags() | Qt.WindowMaximizeButtonHint)
+
         self.resize(800, 600)
 
         self.ts = tsdb.getm()[var_name]
@@ -242,7 +244,9 @@ class EVMWindow(QDialog):
         c = evm_result.shape
         scale = evm_result.scale
 
+
         # Diagnostic: warn if shape is too extreme
+
         warnings: list[str] = []
         if abs(c) > 1:
             warnings.append(
@@ -250,7 +254,9 @@ class EVMWindow(QDialog):
             )
         if c < -1e-6:
             warnings.append("Note: fitted GPD shape xi < 0 indicates a bounded tail.")
+
         self._latest_warning = "\n".join(warnings) if warnings else None
+
 
         units = ""
         max_val = np.max(x) if tail == "upper" else np.min(x)
@@ -368,6 +374,22 @@ class EVMWindow(QDialog):
         else:
             self.fig.tight_layout()
 
+        self.fig_canvas.draw()
+
+    def display_message_on_canvas(self, message: str) -> None:
+        """Display a centered message in the plotting canvas."""
+
+        self.fig.clear()
+        ax = self.fig.add_subplot(111)
+        ax.axis("off")
+        ax.text(
+            0.5,
+            0.5,
+            message,
+            ha="center",
+            va="center",
+            wrap=True,
+        )
         self.fig_canvas.draw()
 
 __all__ = ['EVMWindow']
