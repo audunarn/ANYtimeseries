@@ -1306,23 +1306,35 @@ class TimeSeriesEditorQt(QMainWindow):
             )
             return
 
-        if len(selected_keys) < 2:
-            QMessageBox.warning(
-                self,
-                "Need more series",
-                "Select at least two time series to perform a merge.",
-            )
-            return
-
         filenames = [os.path.basename(path) for path in self.file_paths]
+        filename_set = set(filenames)
+
+        def _normalize_key(key: str) -> str:
+            """Map legacy "file:var" selections to "file::var" when possible."""
+            if "::" in key:
+                return key
+            if ":" in key:
+                prefix, rest = key.split(":", 1)
+                candidate = f"{prefix}::{rest}"
+                if candidate in self.var_checkboxes:
+                    return candidate
+            return key
+
+        normalized_keys = [_normalize_key(key) for key in selected_keys]
 
         def _has_file_prefix(key: str) -> bool:
-            return any(
-                key.startswith(f"{name}::") or key.startswith(f"{name}:") for name in filenames
-            )
+            if "::" in key:
+                prefix = key.split("::", 1)[0]
+                return prefix in filename_set
+            if ":" in key:
+                prefix, rest = key.split(":", 1)
+                if prefix in filename_set:
+                    candidate = f"{prefix}::{rest}"
+                    return candidate in self.var_checkboxes
+            return False
 
-        per_file_mode = any(_has_file_prefix(k) for k in selected_keys)
-        if per_file_mode and not all(_has_file_prefix(k) for k in selected_keys):
+        per_file_mode = any(_has_file_prefix(k) for k in normalized_keys)
+        if per_file_mode and not all(_has_file_prefix(k) for k in normalized_keys):
             QMessageBox.critical(
                 self,
                 "Mixed selection",
@@ -1332,14 +1344,12 @@ class TimeSeriesEditorQt(QMainWindow):
 
         per_file_map = {name: [] for name in filenames}
         if per_file_mode:
-            for key in selected_keys:
-                for name in filenames:
-                    if key.startswith(f"{name}::"):
-                        per_file_map[name].append((key, key.split("::", 1)[1]))
-                        break
-                    if key.startswith(f"{name}:"):
-                        per_file_map[name].append((key, key.split(":", 1)[1]))
-                        break
+            for original, normalized in zip(selected_keys, normalized_keys):
+                if "::" not in normalized:
+                    continue
+                prefix, varname = normalized.split("::", 1)
+                if prefix in per_file_map:
+                    per_file_map[prefix].append((original, varname))
 
         created = []
         filt_tag = self._filter_tag()
@@ -1363,7 +1373,7 @@ class TimeSeriesEditorQt(QMainWindow):
                 varnames = [var for _, var in entries]
             else:
                 source_labels = selected_keys
-                varnames = selected_keys
+                varnames = normalized_keys
 
             merged_segments = []
             merged_time_parts = []
