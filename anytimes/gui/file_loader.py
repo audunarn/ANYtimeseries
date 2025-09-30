@@ -629,7 +629,7 @@ class FileLoader:
                     dialog,
                     "Select Diffraction Model (.owr)",
                     start_dir,
-                    "Diffraction data (*.owr *.dat);;All Files (*)",
+                    "Diffraction data (*.owr)",
                 )
                 if not file_path:
                     return
