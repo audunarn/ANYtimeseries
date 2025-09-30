@@ -181,7 +181,11 @@ class EVMWindow(QDialog):
 
         run_btn = QPushButton("Run EVM")
         run_btn.clicked.connect(self.run_evm)
-        layout.addWidget(run_btn, 4, 0, 1, 3)
+        layout.addWidget(run_btn, 4, 0, 1, 2)
+
+        iterate_btn = QPushButton("Iterate Fit")
+        iterate_btn.clicked.connect(self.on_iterate_fit)
+        layout.addWidget(iterate_btn, 4, 2)
 
     def show_canvas_message(self, message: str):
         """Display *message* on the plot canvas."""
@@ -199,16 +203,15 @@ class EVMWindow(QDialog):
         self.fig_canvas.draw()
 
     def run_evm(self):
-        x = self.x
-        t = self.t
-
         tail = self.tail_combo.currentText()
-
         threshold = self.threshold_spin.value()
 
-        clustered_peaks, boundaries = self._cluster_exceedances(threshold, tail)
+        status, data = self._fit_once(threshold, tail)
 
-        if len(clustered_peaks) < 10:
+        if status == "ok":
+            self._manual_threshold = threshold
+            self._handle_successful_fit(data, tail)
+        elif status == "insufficient":
             message = (
                 "Too few clustered exceedances were found for the selected threshold. "
                 "Adjust the threshold or tail selection and try again."
@@ -217,35 +220,42 @@ class EVMWindow(QDialog):
             QMessageBox.warning(
                 self,
                 "Too Few Points",
-                f"Threshold {threshold:.3f} resulted in only {len(clustered_peaks)} clustered exceedances.",
+                f"Threshold {threshold:.3f} resulted in only {data['count']} clustered exceedances.",
             )
             self.result_text.setPlainText(message)
             self.show_canvas_message(message)
             self._evm_ran = False
-            return
+        else:
+            message = f"Extreme value analysis failed: {data['message']}"
+            self._latest_warning = None
+            self.result_text.setPlainText(message)
+            self.show_canvas_message(message)
+            self._evm_ran = False
+
+    def on_ci_changed(self, value):
+        if self._evm_ran:
+            self.run_evm()
+
+
+    def _fit_once(self, threshold: float, tail: str):
+        clustered_peaks, boundaries = self._cluster_exceedances(threshold, tail)
+
+        if len(clustered_peaks) < 10:
+            return "insufficient", {"count": len(clustered_peaks), "threshold": threshold}
 
         try:
             evm_result = calculate_extreme_value_statistics(
-                t,
-                x,
+                self.t,
+                self.x,
                 threshold,
                 tail=tail,
                 confidence_level=self.ci_spin.value(),
                 clustered_peaks=clustered_peaks,
             )
         except Exception as exc:  # pragma: no cover - defensive GUI guard
-            message = f"Extreme value analysis failed: {exc}"
-            self._latest_warning = None
-            self.result_text.setPlainText(message)
-            self.show_canvas_message(message)
-            self._evm_ran = False
-            return
+            return "error", {"message": str(exc), "threshold": threshold}
 
         c = evm_result.shape
-        scale = evm_result.scale
-
-
-        # Diagnostic: warn if shape is too extreme
 
         warnings: list[str] = []
         if abs(c) > 1:
@@ -255,11 +265,31 @@ class EVMWindow(QDialog):
         if c < -1e-6:
             warnings.append("Note: fitted GPD shape xi < 0 indicates a bounded tail.")
 
-        self._latest_warning = "\n".join(warnings) if warnings else None
+        warnings_text = "\n".join(warnings) if warnings else None
 
+        return (
+            "ok",
+            {
+                "evm_result": evm_result,
+                "boundaries": boundaries,
+                "threshold": threshold,
+                "warnings": warnings_text,
+            },
+        )
+
+    def _handle_successful_fit(self, data: dict, tail: str) -> None:
+        evm_result = data["evm_result"]
+        threshold = data["threshold"]
+        boundaries = data["boundaries"]
+        warnings_text = data["warnings"]
+
+        c = evm_result.shape
+        scale = evm_result.scale
+
+        self._latest_warning = warnings_text
 
         units = ""
-        max_val = np.max(x) if tail == "upper" else np.min(x)
+        max_val = np.max(self.x) if tail == "upper" else np.min(self.x)
 
         header = f"Extreme value statistics: {self.ts.name}"
         if self._latest_warning:
@@ -303,9 +333,101 @@ class EVMWindow(QDialog):
         )
         self._evm_ran = True
 
-    def on_ci_changed(self, value):
-        if self._evm_ran:
-            self.run_evm()
+    def _candidate_thresholds(self, base_threshold: float, tail: str) -> list[float]:
+        x = np.asarray(self.x, dtype=float)
+        min_val = float(np.min(x))
+        max_val = float(np.max(x))
+
+        if tail == "upper":
+            quantiles = np.linspace(0.6, 0.995, 40)
+            spread = np.linspace(base_threshold, max_val, 30)
+            backfill = np.linspace(min_val, base_threshold, 20)
+        else:
+            quantiles = np.linspace(0.005, 0.4, 40)
+            spread = np.linspace(min_val, base_threshold, 30)
+            backfill = np.linspace(base_threshold, max_val, 20)
+
+        quantile_thresholds = np.quantile(x, quantiles)
+
+        candidates = np.concatenate(
+            (
+                [base_threshold],
+                quantile_thresholds,
+                spread,
+                backfill,
+            )
+        )
+
+        unique_candidates: list[float] = []
+        seen = set()
+        for value in candidates:
+            if tail == "upper":
+                value = float(min(value, max_val))
+            else:
+                value = float(max(value, min_val))
+
+            key = round(value, 6)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_candidates.append(value)
+
+        unique_candidates.sort(key=lambda val: abs(val - base_threshold))
+
+        return unique_candidates
+
+    def on_iterate_fit(self) -> None:
+        tail = self.tail_combo.currentText()
+        base_threshold = self.threshold_spin.value()
+
+        self.result_text.setPlainText("Iterating to find a stable fit...")
+        self._evm_ran = False
+
+        best_success: dict | None = None
+        failure_message: str | None = None
+
+        for threshold in self._candidate_thresholds(base_threshold, tail):
+            status, data = self._fit_once(threshold, tail)
+
+            if status == "ok" and not data["warnings"]:
+                best_success = data
+                break
+
+            if status == "ok" and best_success is None:
+                best_success = data
+            elif status == "insufficient":
+                failure_message = (
+                    f"Threshold {threshold:.3f} resulted in only {data['count']} clustered exceedances."
+                )
+            elif status == "error":
+                failure_message = data["message"]
+
+        if best_success and not best_success["warnings"]:
+            final_threshold = best_success["threshold"]
+            self.threshold_spin.setValue(round(final_threshold, 4))
+            self._manual_threshold = final_threshold
+            self._handle_successful_fit(best_success, tail)
+            return
+
+        if best_success:
+            warning_details = best_success.get("warnings") or ""
+            if warning_details:
+                warning_details = f"\n\n{warning_details}"
+            message = (
+                "Iteration could not find a warning-free fit. The last computed fit still "
+                "triggered stability warnings." + warning_details
+            )
+            self._latest_warning = None
+            self.result_text.setPlainText(message)
+            self.show_canvas_message(message)
+            self._evm_ran = False
+            return
+
+        message = failure_message or "Iteration failed to compute a valid extreme value fit."
+        self._latest_warning = None
+        self.result_text.setPlainText(message)
+        self.show_canvas_message(message)
+        self._evm_ran = False
 
 
     def plot_diagnostics(
