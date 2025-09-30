@@ -3652,6 +3652,63 @@ class TimeSeriesEditorQt(QMainWindow):
         x_out[valid_idx] = x_filt
         return x_out
 
+    @staticmethod
+    def _time_vectors_match(ref, other):
+        """Return True if two time axes share identical samples."""
+
+        ref = np.asarray(ref)
+        other = np.asarray(other)
+
+        if ref.shape != other.shape:
+            return False
+        if ref.size == 0:
+            return True
+
+        if np.array_equal(ref, other):
+            return True
+
+        try:
+            return np.allclose(ref, other, rtol=1e-9, atol=1e-9, equal_nan=True)
+        except TypeError:
+            return False
+
+    def _group_series_by_timebase(self, tsdb):
+        """Partition time series into groups that share a common time base."""
+
+        groups = []
+        names = list(getattr(tsdb, "register_keys", []))
+        if not names:
+            return groups
+
+        used = set()
+        for name in names:
+            if name in used:
+                continue
+
+            ts_ref = tsdb.get(name=name)
+            if ts_ref is None:
+                continue
+
+            group = [name]
+            used.add(name)
+            t_ref = ts_ref.t
+
+            for other_name in names:
+                if other_name in used:
+                    continue
+
+                ts_other = tsdb.get(name=other_name)
+                if ts_other is None:
+                    continue
+
+                if self._time_vectors_match(t_ref, ts_other.t):
+                    group.append(other_name)
+                    used.add(other_name)
+
+            groups.append(group)
+
+        return groups
+
     def _filter_tag(self) -> str:
         """Return short text tag describing the active frequency filter."""
         if self.filter_lowpass_rb.isChecked():
@@ -3815,11 +3872,40 @@ class TimeSeriesEditorQt(QMainWindow):
             if not self.work_dir:
                 return
         ts_paths = []
-        for i, (tsdb, original_path) in enumerate(zip(self.tsdbs, self.file_paths)):
-            filename = f"temp_{i + 1}.ts"
-            ts_path = os.path.join(self.work_dir, filename)
-            tsdb.export(ts_path, names=list(tsdb.getm().keys()), force_common_time=True)
-            ts_paths.append(ts_path)
+        for i, (tsdb, original_path) in enumerate(zip(self.tsdbs, self.file_paths), start=1):
+            groups = self._group_series_by_timebase(tsdb)
+            if not groups:
+                continue
+
+            base_label = os.path.splitext(os.path.basename(original_path))[0] or f"file_{i}"
+
+            for group_idx, names in enumerate(groups, start=1):
+                temp_db = TsDB()
+                copied = []
+                for key in names:
+                    ts_obj = tsdb.get(name=key)
+                    if ts_obj is None:
+                        continue
+                    clone = ts_obj.__copy__()
+                    temp_db.add(clone)
+                    copied.append(clone)
+
+                if not copied:
+                    continue
+
+                is_user_group = all(ts.name in getattr(self, "user_variables", set()) for ts in copied)
+
+                if len(groups) == 1:
+                    filename = f"temp_{i}.ts"
+                else:
+                    suffix = "_user" if is_user_group else f"_part{group_idx}"
+                    filename = f"temp_{i}_{base_label}{suffix}.ts"
+
+                ts_path = os.path.join(self.work_dir, filename)
+
+                # Group members share the same time base – enforce a shared grid per file only.
+                temp_db.export(ts_path, names=list(temp_db.getm().keys()), force_common_time=True)
+                ts_paths.append(ts_path)
         try:
             cmd = [sys.executable, "-m", "anyqats.cli", "app", "-f"] + ts_paths
             subprocess.Popen(cmd)
