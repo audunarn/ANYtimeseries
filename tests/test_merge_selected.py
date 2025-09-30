@@ -3,12 +3,15 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+pytest.importorskip("PySide6.QtWidgets", exc_type=ImportError)
 from PySide6.QtWidgets import QWidget
 
 
@@ -49,7 +52,6 @@ for name, module in stub_modules.items():
     sys.modules.setdefault(name, module)
 
 import numpy as np
-import pytest
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from anytimes.gui.editor import TimeSeriesEditorQt
