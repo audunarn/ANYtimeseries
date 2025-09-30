@@ -23,6 +23,11 @@ from anytimes.evm import calculate_extreme_value_statistics, declustering_bounda
 
 
 class EVMWindow(QDialog):
+    #: Maximum number of clustered exceedances allowed when auto-iterating.
+    #: Using too many points tends to bias the tail fit towards the bulk of
+    #: the distribution rather than the extremes we want to model.
+    _MAX_CLUSTERED_EXCEEDANCES = 120
+
     def __init__(self, tsdb, var_name, parent=None):
         super().__init__(parent)
         self.setWindowTitle(f"Extreme Value Analysis - {var_name}")
@@ -384,23 +389,48 @@ class EVMWindow(QDialog):
         self._evm_ran = False
 
         best_success: dict | None = None
-        failure_message: str | None = None
+        best_with_warning: dict | None = None
+        failure_messages: list[str] = []
 
-        for threshold in self._candidate_thresholds(base_threshold, tail):
+        candidate_thresholds = self._candidate_thresholds(base_threshold, tail)
+        candidate_thresholds = sorted(
+            candidate_thresholds,
+            reverse=(tail == "upper"),
+        )
+
+        for threshold in candidate_thresholds:
             status, data = self._fit_once(threshold, tail)
 
-            if status == "ok" and not data["warnings"]:
+            if status == "ok":
+                exceedance_count = len(data["evm_result"].exceedances)
+
+                if exceedance_count > self._MAX_CLUSTERED_EXCEEDANCES:
+                    failure_messages.append(
+                        (
+                            "Threshold {thresh:.3f} produced {count} clustered "
+                            "exceedances which is above the maximum of {max_count}."
+                        ).format(
+                            thresh=threshold,
+                            count=exceedance_count,
+                            max_count=self._MAX_CLUSTERED_EXCEEDANCES,
+                        )
+                    )
+                    continue
+
+                if data["warnings"]:
+                    if best_with_warning is None:
+                        best_with_warning = data
+                    continue
+
                 best_success = data
                 break
 
-            if status == "ok" and best_success is None:
-                best_success = data
             elif status == "insufficient":
-                failure_message = (
+                failure_messages.append(
                     f"Threshold {threshold:.3f} resulted in only {data['count']} clustered exceedances."
                 )
             elif status == "error":
-                failure_message = data["message"]
+                failure_messages.append(data["message"])
 
         if best_success and not best_success["warnings"]:
             final_threshold = best_success["threshold"]
@@ -409,21 +439,19 @@ class EVMWindow(QDialog):
             self._handle_successful_fit(best_success, tail)
             return
 
-        if best_success:
-            warning_details = best_success.get("warnings") or ""
+        if best_with_warning:
+            warning_details = best_with_warning.get("warnings") or ""
             if warning_details:
                 warning_details = f"\n\n{warning_details}"
-            message = (
-                "Iteration could not find a warning-free fit. The last computed fit still "
-                "triggered stability warnings." + warning_details
-            )
-            self._latest_warning = None
-            self.result_text.setPlainText(message)
-            self.show_canvas_message(message)
-            self._evm_ran = False
+            final_threshold = best_with_warning["threshold"]
+            self.threshold_spin.setValue(round(final_threshold, 4))
+            self._manual_threshold = final_threshold
+            self._handle_successful_fit(best_with_warning, tail)
             return
 
-        message = failure_message or "Iteration failed to compute a valid extreme value fit."
+        message = "\n".join(failure_messages)
+        if not message:
+            message = "Iteration failed to compute a valid extreme value fit."
         self._latest_warning = None
         self.result_text.setPlainText(message)
         self.show_canvas_message(message)
