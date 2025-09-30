@@ -1,7 +1,7 @@
 """Dialog for displaying statistics with filtering and plotting."""
 from __future__ import annotations
 
-import os
+import os, re
 import warnings
 
 import anyqats as qats
