@@ -142,6 +142,7 @@ def test_extreme_value_statistics_matches_orcaflex_reference():
         confidence_level=57.0,
         n_bootstrap=200_000,
         rng=rng,
+        sample_exceedance_rate=True,
     )
 
     assert res.exceedances.size == 59
