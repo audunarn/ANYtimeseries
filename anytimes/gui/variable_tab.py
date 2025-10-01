@@ -78,8 +78,11 @@ class VariableTab(QWidget):
         top_row.addWidget(self.search_box)
         self.select_all_btn = QPushButton("Select All")
         self.unselect_all_btn = QPushButton("Unselect All")
-        top_row.addWidget(self.select_all_btn)
-        top_row.addWidget(self.unselect_all_btn)
+
+        for btn in (self.select_all_btn, self.unselect_all_btn):
+            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            btn.setMinimumHeight(28)
+            top_row.addWidget(btn)
         layout.addLayout(top_row)
         # -- Scrollable area for variable checkboxes --
         scroll = QScrollArea()
