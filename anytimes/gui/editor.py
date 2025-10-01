@@ -191,6 +191,7 @@ class TimeSeriesEditorQt(QMainWindow):
         self.right_outer_layout.addLayout(self.top_row_layout)
 
         self.controls_widget = QWidget()
+        self.controls_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.controls_layout = QVBoxLayout(self.controls_widget)
 
         self.extra_widget = QWidget()
@@ -315,8 +316,11 @@ class TimeSeriesEditorQt(QMainWindow):
 
         # ---- Offset Group ----
         offset_group = QGroupBox("Apply operation from variable input fields")
+        offset_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         offset_layout = QVBoxLayout(offset_group)
-        offset_layout.addWidget(QLabel('Examples: add "+1 / 1" substract "-1" divide "/2" multiply "*2"'))
+        offset_examples = QLabel('Examples: add "+1 / 1" substract "-1" divide "/2" multiply "*2"')
+        offset_examples.setWordWrap(True)
+        offset_layout.addWidget(offset_examples)
         self.apply_value_user_var_cb = QCheckBox("Create user variable instead of overwriting?")
         offset_layout.addWidget(self.apply_value_user_var_cb)
         self.apply_values_btn = QPushButton("Apply Values")
@@ -325,9 +329,10 @@ class TimeSeriesEditorQt(QMainWindow):
 
         # ---- File list group ----
         file_group = QGroupBox("Loaded Files")
+        file_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         file_list_layout = QVBoxLayout(file_group)
         self.file_list = QListWidget()
-        self.file_list.setMinimumWidth(max(160, self._min_left_panel - 40))
+        self.file_list.setMinimumWidth(160)
         self.remove_file_btn = QPushButton("Remove File")
         file_list_layout.addWidget(self.file_list)
         file_list_layout.addWidget(self.remove_file_btn)
@@ -335,6 +340,7 @@ class TimeSeriesEditorQt(QMainWindow):
 
         # ---- Time window controls ----
         time_group = QGroupBox("Time Window (for Plot/Stats/Transform)")
+        time_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         time_layout = QHBoxLayout(time_group)
         time_layout.addWidget(QLabel("Start:"))
         self.time_start = QLineEdit()
@@ -350,6 +356,7 @@ class TimeSeriesEditorQt(QMainWindow):
 
         # ---- Frequency filtering controls ----
         self.freq_group = QGroupBox("Apply frequency filter to transformations and calculations")
+        self.freq_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         freq_layout = QGridLayout(self.freq_group)
         self.filter_none_rb = QRadioButton("None")
         self.filter_lowpass_rb = QRadioButton("Low-pass")
@@ -395,6 +402,7 @@ class TimeSeriesEditorQt(QMainWindow):
 
         # ---- Tools (EVA + QATS) ----
         self.tools_group = QGroupBox("Tools")
+        self.tools_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         tools_layout = QHBoxLayout(self.tools_group)
         self.launch_qats_btn = QPushButton("Open in AnyQATS")
         self.evm_tool_btn = QPushButton("Open Extreme Value Statistics Tool")
@@ -405,6 +413,7 @@ class TimeSeriesEditorQt(QMainWindow):
 
         # ---- Plot controls ----
         self.plot_group = QGroupBox("Plot Controls")
+        self.plot_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
         plot_group = self.plot_group  # backward compatibility for older refs
 
@@ -526,6 +535,7 @@ class TimeSeriesEditorQt(QMainWindow):
 
         # ---- Analysis ----
         self.analysis_group = QGroupBox("Analysis")
+        self.analysis_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         analysis_layout = QVBoxLayout(self.analysis_group)
         self.show_stats_btn = QPushButton("Show statistic for selected variables")
         self.show_stats_btn.clicked.connect(self.show_stats)
