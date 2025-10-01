@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QVBoxLayout,
     QWidget,
+    QSizePolicy,
 )
 
 from .utils import _matches_terms, _parse_search_terms
@@ -25,9 +26,11 @@ class VariableRowWidget(QWidget):
 
         layout = QHBoxLayout(self)
         self.checkbox = QCheckBox()
+        self.checkbox.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.input = QLineEdit()
         self.input.setFixedWidth(70)
         self.label = QLabel(varname)
+        self.label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
         layout.addWidget(self.checkbox)
         layout.addWidget(self.input)
@@ -75,17 +78,24 @@ class VariableTab(QWidget):
         top_row.addWidget(self.search_box)
         self.select_all_btn = QPushButton("Select All")
         self.unselect_all_btn = QPushButton("Unselect All")
-        top_row.addWidget(self.select_all_btn)
-        top_row.addWidget(self.unselect_all_btn)
+
+        for btn in (self.select_all_btn, self.unselect_all_btn):
+            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            btn.setMinimumHeight(28)
+            top_row.addWidget(btn)
         layout.addLayout(top_row)
         # -- Scrollable area for variable checkboxes --
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.inner = QWidget()
+        self.inner.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.MinimumExpanding)
         self.inner_layout = QVBoxLayout(self.inner)
         self._populate_checkboxes(self.all_vars)
         scroll.setWidget(self.inner)
         layout.addWidget(scroll)
+        layout.setStretch(0, 0)
+        layout.setStretch(1, 1)
         # Connections
         self.select_all_btn.clicked.connect(lambda: self.set_all(True))
         self.unselect_all_btn.clicked.connect(lambda: self.set_all(False))

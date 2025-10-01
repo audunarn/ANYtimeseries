@@ -85,9 +85,9 @@ class TimeSeriesEditorQt(QMainWindow):
         self.setWindowTitle("AnytimeSeries - time series editor (Qt/PySide6)")
 
 
-        self._min_left_panel = 240
-        self._min_right_panel = 420
-        self._splitter_ratio = 0.35
+        self._min_left_panel = 320
+        self._min_right_panel = 360
+        self._splitter_ratio = 0.52
         self._updating_splitter = False
 
 
@@ -137,7 +137,12 @@ class TimeSeriesEditorQt(QMainWindow):
         # -----------------------
         left_widget = QWidget()
         left_widget.setMinimumWidth(self._min_left_panel)
-        left_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        # Allow the variable panel to grow when the splitter handle is dragged.
+        # ``Preferred`` prevented the widget from expanding even though the
+        # splitter reported the new size, resulting in the left pane snapping
+        # back to its original width. ``Expanding`` makes the panel honour the
+        # splitter geometry updates while keeping the existing minimum width.
+        left_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         left_layout = QVBoxLayout(left_widget)
 
         # Quick navigation buttons
@@ -148,10 +153,18 @@ class TimeSeriesEditorQt(QMainWindow):
         self.goto_user_btn = QPushButton("Go to User Variables")
         self.unselect_all_btn = QPushButton("Unselect All")
         self.select_pos_btn = QPushButton("Select all by list pos.")
-        btn_row.addWidget(self.goto_common_btn)
-        btn_row.addWidget(self.goto_user_btn)
-        btn_row.addWidget(self.unselect_all_btn)
-        btn_row.addWidget(self.select_pos_btn)
+
+        nav_buttons = (
+            self.goto_common_btn,
+            self.goto_user_btn,
+            self.unselect_all_btn,
+            self.select_pos_btn,
+        )
+
+        for btn in nav_buttons:
+            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            btn.setMinimumHeight(28)
+            btn_row.addWidget(btn)
         left_layout.addLayout(btn_row)
 
         # Tab widget for variables (common, per-file, user)
