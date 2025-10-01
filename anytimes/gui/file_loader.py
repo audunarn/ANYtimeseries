@@ -37,6 +37,7 @@ from .utils import (
     _matches_terms,
     _parse_search_terms,
 )
+from .layout_utils import apply_initial_size
 
 class FileLoader:
     def __init__(self, orcaflex_varmap=None, parent_gui=None):
@@ -179,7 +180,15 @@ class FileLoader:
         dialog = QDialog(self.parent_gui)
         dialog.setWindowTitle("Pick OrcaFlex Variables")
         dialog.setWindowFlags(dialog.windowFlags() | Qt.WindowMaximizeButtonHint)
-        dialog.resize(1150, 820)
+        apply_initial_size(
+            dialog,
+            desired_width=1250,
+            desired_height=860,
+            min_width=880,
+            min_height=640,
+            width_ratio=0.92,
+            height_ratio=0.92,
+        )
         main_layout = QHBoxLayout(dialog)
 
         file_side = QVBoxLayout()
