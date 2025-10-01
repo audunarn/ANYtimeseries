@@ -85,9 +85,11 @@ class TimeSeriesEditorQt(QMainWindow):
         self.setWindowTitle("AnytimeSeries - time series editor (Qt/PySide6)")
 
 
+
         self._min_left_panel = 320
         self._min_right_panel = 360
         self._splitter_ratio = 0.52
+
         self._updating_splitter = False
 
 
