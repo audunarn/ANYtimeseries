@@ -29,7 +29,7 @@ anytimes
 
 ## Basic Workflow
 
-1. **Load data** – open one or more time-series files. The application automatically groups files with common variables for an efficient workflow.
+1. **Load data** – open one or more time-series files. The application automatically groups files with common variables for an efficient workflow. When loading OrcaFlex studies you can optionally preload `.sim` files so that object/variable listings appear instantly.
 2. **Inspect variables** – select variables and preview the data in table form.
 3. **Manipulate series** – apply predefined operations or build custom expressions to create new series.
 4. **Visualise** – choose from several plot types and engines (Plotly, Bokeh or Matplotlib) to explore the results.
@@ -40,7 +40,7 @@ anytimes
 - Frequency filtering for noise reduction.
 - Equation-based transformations for complex processing.
 - Extreme value statistics and a statistics table summarising key metrics.
-- Support for OrcaFlex `.sim` files.
+- Support for OrcaFlex `.sim` files, including reusable selections and diffraction-based surface pressure extraction.
 - Configurable light and dark themes for comfortable viewing.
 
 ## Supported File Types
@@ -65,6 +65,7 @@ The loader accepts a broad range of common formats:
 - **Save Values… / Load Values…** – store or restore current offsets and scaling factors.
 - **Export Selected to CSV** – export ticked variables; optional resampling via the adjacent `dt` field.
 - **Clear OrcaFlex Selection / Re-select OrcaFlex Variables** – manage previous `.sim` selections.
+- **Reuse OrcaFlex Selection** – toggle whether future `.sim` loads automatically apply the most recent selection.
 - **Dark Theme** – toggle light/dark appearance.
 - **Embed Plot** – draw plots inside the main window instead of a popup.
 
@@ -89,6 +90,7 @@ Radio buttons select **None**, **Low-pass**, **High-pass**, **Band-pass** or **B
 ### Tools
 - **Open in AnyQATS** – launch the external viewer.
 - **Open Extreme Value Statistics Tool** – open the dedicated extreme value analysis window.
+- **Extract OrcaFlex Surface Pressures** – available once coordinates are supplied in the OrcaFlex selector; loads panel pressure series from diffraction models.
 
 ### Plot controls
 - **Plot Selected (one graph / side-by-side)** – display selected variables on a single axis or in a grid; **Same axes** forces a common scale.
@@ -103,6 +105,17 @@ Radio buttons select **None**, **Low-pass**, **High-pass**, **Band-pass** or **B
 ### Calculator
 - **Calculate** – evaluate Python-style expressions to create new variables.
 - **?** – open a short help message about calculator syntax.
+
+## OrcaFlex integration
+
+Opening one or more OrcaFlex `.sim` files reveals additional tools:
+
+- **Object and variable search** – the selection dialog offers live filters for objects and variables, optional arc-length/extra inputs and the ability to strip redundant substrings (e.g. `-Line1-`) from labels.
+- **Batch apply** – after choosing a reference simulation you can apply the same object/variable selection to every checked simulation, provided their object sets match.
+- **Reusable selections** – enable *Use this selection for all future OrcaFlex files* to remember the current selection, apply it automatically on the next import and optionally align similarly named objects through configurable stripping rules.
+- **Diffraction support** – specify panel coordinates to extract surface pressure time series using a matching diffraction (`.owr`) file. Results are cached per diffraction model so repeat imports are instant.
+- **Redundant substring control** – specify substrings (e.g. `Copy of`) to remove from generated labels, keeping variable names tidy when combining multiple sources.
+- **Surface pressure feedback** – the dialog reports how many series were generated per simulation and surfaces any failures or missing data so problematic files can be corrected quickly.
 
 ## Statistics Window
 
