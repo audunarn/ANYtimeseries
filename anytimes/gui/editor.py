@@ -87,7 +87,7 @@ class TimeSeriesEditorQt(QMainWindow):
 
         self._min_left_panel = 240
         self._min_right_panel = 420
-        self._splitter_ratio = 0.35
+        self._splitter_ratio = 0.42
         self._updating_splitter = False
 
 
@@ -137,7 +137,12 @@ class TimeSeriesEditorQt(QMainWindow):
         # -----------------------
         left_widget = QWidget()
         left_widget.setMinimumWidth(self._min_left_panel)
-        left_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        # Allow the variable panel to grow when the splitter handle is dragged.
+        # ``Preferred`` prevented the widget from expanding even though the
+        # splitter reported the new size, resulting in the left pane snapping
+        # back to its original width. ``Expanding`` makes the panel honour the
+        # splitter geometry updates while keeping the existing minimum width.
+        left_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         left_layout = QVBoxLayout(left_widget)
 
         # Quick navigation buttons
