@@ -339,12 +339,13 @@ class EVMWindow(QDialog):
         self.plot_diagnostics(
             evm_result.return_periods * 3600,
             evm_result.return_levels,
-            evm_result.exceedances - threshold,
+            evm_result.exceedances,
             c,
             scale,
             threshold,
             evm_result.lower_bounds,
             evm_result.upper_bounds,
+            tail=tail,
             warnings=self._latest_warning,
         )
         self._evm_ran = True
@@ -490,13 +491,14 @@ class EVMWindow(QDialog):
         self,
         durations,
         levels,
-        excesses,
+        exceedances,
         c,
         scale,
         threshold,
         lower_bounds=None,
         upper_bounds=None,
         *,
+        tail: str,
         warnings: str | None = None,
     ):
         from scipy.stats import genpareto
@@ -534,12 +536,34 @@ class EVMWindow(QDialog):
         ax.grid(True)
         ax.legend()
 
-        sorted_empirical = np.sort(excesses)
-        probs = (np.arange(1, len(sorted_empirical) + 1) - 0.5) / len(sorted_empirical)
-        model_quantiles = genpareto.ppf(probs, c, scale=scale)
+        exceedances = np.asarray(exceedances, dtype=float)
+        excursions = (
+            exceedances - threshold if tail == "upper" else threshold - exceedances
+        )
+
+        if np.any(excursions <= 0):
+            raise ValueError("All exceedances must lie beyond the threshold")
+
+        sorted_excursions = np.sort(excursions)
+        probs = (np.arange(1, len(sorted_excursions) + 1) - 0.5) / len(sorted_excursions)
+        model_excursions = genpareto.ppf(probs, c, scale=scale)
+
+        if tail == "lower":
+            sorted_excursions = sorted_excursions[::-1]
+            model_excursions = model_excursions[::-1]
+
+        if tail == "upper":
+            sorted_empirical = threshold + sorted_excursions
+            model_quantiles = threshold + model_excursions
+        else:
+            sorted_empirical = threshold - sorted_excursions
+            model_quantiles = threshold - model_excursions
 
         qax.scatter(model_quantiles, sorted_empirical, alpha=0.6, label="Data")
-        qax.plot(model_quantiles, model_quantiles, color="red", label="1:1 line")
+
+        diag_min = float(np.min([model_quantiles.min(), sorted_empirical.min()]))
+        diag_max = float(np.max([model_quantiles.max(), sorted_empirical.max()]))
+        qax.plot([diag_min, diag_max], [diag_min, diag_max], color="red", label="1:1 line")
         qax.set_title("Quantile Plot")
         qax.set_xlabel("Theoretical Quantiles")
         qax.set_ylabel("Empirical Quantiles")
