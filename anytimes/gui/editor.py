@@ -297,10 +297,10 @@ class TimeSeriesEditorQt(QMainWindow):
         self.shift_cnt_entry.setFixedWidth(60)
         row5.addWidget(self.shift_cnt_entry)
         self.shift_min_nz_btn = QPushButton(
-            "Shift Min -> 0 : if repeted minima as per input"
+            "Shift Min -> 0"
         )
         self.shift_common_max_btn = QPushButton(
-            "Common Shift Min -> 0 : if repeted minima as per input"
+            "Common Shift Min -> 0"
         )
         row5.addWidget(self.shift_min_nz_btn)
         row5.addWidget(self.shift_common_max_btn)
