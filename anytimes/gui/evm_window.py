@@ -568,6 +568,8 @@ class EVMWindow(QDialog):
         qax.set_xlabel("Theoretical Quantiles")
         qax.set_ylabel("Empirical Quantiles")
         qax.grid(True)
+        if tail == "lower":
+            qax.invert_xaxis()
         qax.legend()
 
         if warnings:
