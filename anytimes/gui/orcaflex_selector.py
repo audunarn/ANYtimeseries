@@ -21,12 +21,21 @@ from .utils import (
     _parse_search_terms,
     get_object_available_vars,
 )
+from .layout_utils import apply_initial_size
 
 class OrcaflexVariableSelector(QDialog):
     def __init__(self, model, orcaflex_varmap=None, parent=None, previous_selection=None, allow_reuse=False):
         super().__init__(parent)
         self.setWindowTitle("Select OrcaFlex Variables")
-        self.resize(1100, 800)
+        apply_initial_size(
+            self,
+            desired_width=1200,
+            desired_height=820,
+            min_width=860,
+            min_height=620,
+            width_ratio=0.92,
+            height_ratio=0.92,
+        )
         self.model = model
         self.orcaflex_varmap = ORCAFLEX_VARIABLE_MAP or {}
         self.selected = []

@@ -64,6 +64,7 @@ from PySide6.QtWidgets import (
 )
 
 from .file_loader import FileLoader
+from .layout_utils import apply_initial_size
 from .stats_dialog import StatsDialog
 from .evm_window import EVMWindow
 from .sortable_table_widget_item import SortableTableWidgetItem
@@ -82,6 +83,12 @@ class TimeSeriesEditorQt(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("AnytimeSeries - time series editor (Qt/PySide6)")
+
+
+        self._min_left_panel = 240
+        self._min_right_panel = 420
+        self._splitter_ratio = 0.35
+        self._updating_splitter = False
 
 
 
@@ -121,16 +128,22 @@ class TimeSeriesEditorQt(QMainWindow):
         # =======================
         # LAYOUT: MAIN SPLITTER
         # =======================
-        main_splitter = QSplitter(Qt.Horizontal)
+        self.main_splitter = QSplitter(Qt.Horizontal)
+        self.main_splitter.setChildrenCollapsible(False)
+        self.main_splitter.setHandleWidth(6)
 
         # -----------------------
         # LEFT: Variable Tabs
         # -----------------------
         left_widget = QWidget()
+        left_widget.setMinimumWidth(self._min_left_panel)
+        left_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         left_layout = QVBoxLayout(left_widget)
 
         # Quick navigation buttons
         btn_row = QHBoxLayout()
+        btn_row.setContentsMargins(0, 0, 0, 0)
+        btn_row.setSpacing(6)
         self.goto_common_btn = QPushButton("Go to Common")
         self.goto_user_btn = QPushButton("Go to User Variables")
         self.unselect_all_btn = QPushButton("Unselect All")
@@ -143,15 +156,17 @@ class TimeSeriesEditorQt(QMainWindow):
 
         # Tab widget for variables (common, per-file, user)
         self.tabs = QTabWidget()
-        self.tabs.setMinimumWidth(380)  # Make the variable panel wider
+        self.tabs.setMinimumWidth(self._min_left_panel)
+        self.tabs.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         left_layout.addWidget(self.tabs)
 
-        main_splitter.addWidget(left_widget)
+        self.main_splitter.addWidget(left_widget)
 
         # -----------------------
         # RIGHT: Controls and Analysis
         # -----------------------
         right_widget = QWidget()
+        right_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         # Use a vertical layout so an optional embedded plot can span
 
         # the full width below the control sections when embedded
@@ -297,7 +312,7 @@ class TimeSeriesEditorQt(QMainWindow):
         file_group = QGroupBox("Loaded Files")
         file_list_layout = QVBoxLayout(file_group)
         self.file_list = QListWidget()
-        self.file_list.setMinimumWidth(220)
+        self.file_list.setMinimumWidth(max(160, self._min_left_panel - 40))
         self.remove_file_btn = QPushButton("Remove File")
         file_list_layout.addWidget(self.file_list)
         file_list_layout.addWidget(self.remove_file_btn)
@@ -538,17 +553,20 @@ class TimeSeriesEditorQt(QMainWindow):
         self.right_outer_layout.setStretch(0, 0)
         self.right_outer_layout.setStretch(1, 1)
         self.plot_view.hide()
-        main_splitter.addWidget(right_widget)
-        main_splitter.setStretchFactor(0, 1)
-        main_splitter.setStretchFactor(1, 2)
+        self.main_splitter.addWidget(right_widget)
+        self.main_splitter.setStretchFactor(0, 1)
+        self.main_splitter.setStretchFactor(1, 2)
 
         # ---- Set main container ----
         container = QWidget()
         container.setAutoFillBackground(True)
         container_layout = QHBoxLayout(container)
-        container_layout.addWidget(main_splitter)
+        container_layout.addWidget(self.main_splitter)
         self.setCentralWidget(container)
         self.setAutoFillBackground(True)
+
+        self.main_splitter.splitterMoved.connect(self._on_splitter_moved)
+        self._configure_initial_geometry()
 
         # =======================
         # SIGNALS AND ACTIONS
@@ -605,6 +623,63 @@ class TimeSeriesEditorQt(QMainWindow):
         self.theme_switch.setChecked(True)
         self.toggle_embed_layout('')
         self.embed_plot_cb.setChecked(True)
+
+    def _configure_initial_geometry(self) -> None:
+        """Size the window and splitter based on the current screen."""
+
+        apply_initial_size(
+            self,
+            desired_width=1400,
+            desired_height=900,
+            min_width=880,
+            min_height=640,
+            width_ratio=0.92,
+            height_ratio=0.9,
+        )
+
+        self._apply_splitter_ratio()
+        QTimer.singleShot(0, self._apply_splitter_ratio)
+
+    def _apply_splitter_ratio(self) -> None:
+        """Keep the main splitter proportions responsive when resizing."""
+
+        if not hasattr(self, "main_splitter"):
+            return
+
+        total = self.main_splitter.size().width()
+        if total < 2:
+            return
+
+        left = int(total * self._splitter_ratio)
+        left = max(self._min_left_panel, left)
+
+        if total - left < self._min_right_panel:
+            left = max(self._min_left_panel, total - self._min_right_panel)
+
+        left = max(1, min(left, total - 1))
+        right = max(1, total - left)
+
+        self._updating_splitter = True
+        try:
+            self.main_splitter.setSizes([left, right])
+        finally:
+            self._updating_splitter = False
+
+    def _on_splitter_moved(self, _pos: int, _index: int) -> None:
+        if self._updating_splitter:
+            return
+
+        sizes = self.main_splitter.sizes()
+        total = sum(sizes)
+        if not total:
+            return
+
+        ratio = sizes[0] / total
+        self._splitter_ratio = max(0.15, min(0.85, ratio))
+
+    def resizeEvent(self, event):  # type: ignore[override]
+        super().resizeEvent(event)
+        self._apply_splitter_ratio()
 
     def eventFilter(self, obj, event):
 
@@ -984,7 +1059,8 @@ class TimeSeriesEditorQt(QMainWindow):
             var_list_widget.addItem(item)
             var_list_widget.setItemWidget(item, row_widget)
             self.var_widgets[varname] = row_widget
-        var_list_widget.setMinimumWidth(350)  # You can make it even wider if needed
+        min_width = getattr(self, "_min_left_panel", 240)
+        var_list_widget.setMinimumWidth(min_width + 60)
 
     def show_selected(self):
         out = []

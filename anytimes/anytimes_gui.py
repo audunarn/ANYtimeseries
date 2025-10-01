@@ -85,6 +85,5 @@ def main() -> None:
     """Launch the AnytimeSeries GUI."""
     app = QApplication(sys.argv)
     window = TimeSeriesEditorQt()
-    window.resize(1400, 800)
     window.show()
     sys.exit(app.exec())

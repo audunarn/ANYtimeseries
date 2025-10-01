@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 )
 
 from .sortable_table_widget_item import SortableTableWidgetItem
+from .layout_utils import apply_initial_size
 
 class StatsDialog(QDialog):
     """Qt table dialog with copy and plotting features."""
@@ -41,7 +42,15 @@ class StatsDialog(QDialog):
         self.setWindowFlag(Qt.Window)
         # allow maximizing the statistics window
         self.setWindowFlags(self.windowFlags() | Qt.WindowMaximizeButtonHint)
-        self.resize(900, 600)
+        apply_initial_size(
+            self,
+            desired_width=1100,
+            desired_height=720,
+            min_width=820,
+            min_height=560,
+            width_ratio=0.9,
+            height_ratio=0.9,
+        )
 
         self.series_info = series_info
         self.ts_dict: dict[str, tuple[np.ndarray, np.ndarray]] = {}

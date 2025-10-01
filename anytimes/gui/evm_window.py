@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 
 
 from anytimes.evm import calculate_extreme_value_statistics, declustering_boundaries
+from .layout_utils import apply_initial_size
 
 
 class EVMWindow(QDialog):
@@ -35,7 +36,15 @@ class EVMWindow(QDialog):
 
         self.setWindowFlags(self.windowFlags() | Qt.WindowMaximizeButtonHint)
 
-        self.resize(800, 600)
+        apply_initial_size(
+            self,
+            desired_width=900,
+            desired_height=700,
+            min_width=760,
+            min_height=540,
+            width_ratio=0.85,
+            height_ratio=0.85,
+        )
 
         self.ts = tsdb.getm()[var_name]
         self.x = self.ts.x
