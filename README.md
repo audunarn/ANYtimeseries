@@ -4,26 +4,42 @@
 
 # ANYtimeSeries
 
-ANYtimeSeries provides a QT-based interface for exploring and editing time-series data.
+ANYtimeSeries provides a Qt-based interface for exploring, editing and analysing time-series data. The goal is efficient processing and a clear understanding of the loaded signals, whether they originate from laboratory tests, numerical simulations or OrcaFlex studies.
 
-The intension is efficent processing and understanding of the loaded data.
+The application integrates with the bundled **anyqats** package and supports a broad range of formats for loading and visualising time-series information. For a comprehensive walkthrough—covering the full workflow, control reference and screenshots—see the [documentation](docs/README.md).
 
-The application integrates with the bundled anyqats package and supports various file formats for loading and visualising time-series information.
+## Key features
 
-For a more comprehensive guide, including workflow examples and screenshots, see the [documentation](docs/README.md).
+### Data import and management
+- Load multiple files at once; the editor automatically identifies common variables for quick comparison across tests.
+- Native support for text, binary and tabular formats (`csv`, `xlsx`, `mat`, `h5`, `tdms`, `parquet`, …) alongside OrcaFlex `.sim` studies.
+- Preload OrcaFlex simulations, reuse previous selections and broadcast object/variable choices across matching simulations to keep large projects in sync.
+- Extract surface pressure time series by pairing `.sim` files with diffraction (`.owr`) models and a set of user-specified panel coordinates.
+- Cache OrcaFlex selections and diffraction models so subsequent loads are instant.
 
-Some of the features of ANYtimes
-- loading of multiple files
-- detection of commom variables files for effiecent work flow
-- quick manipulation of time series using predefined operations
-- complex manipulation of time series using equation input
-- frequency filtering
-- time sereis statistics
-- many plotting options
-- embdedded and in browser plotting
-- Orcaflex .sim files compability
-- extreme value statstics
-- selection of plotting engine (plotly, bokeh or matplotlib)
+### Editing and transformation
+- Quickly manipulate series via predefined operations (multiply/divide, negate, convert degrees↔radians, rolling averages, absolute value, square-root sum of squares, mean, zero-shifting utilities and more).
+- Apply custom expressions per variable (e.g. `*2`, `+offset`) or evaluate full calculator expressions to build user-defined channels instead of overwriting the originals.
+- Limit operations to a time window and optionally resample data when exporting selections to CSV.
+
+### Filtering, statistics and extreme values
+- Apply low-, high-, band-pass or band-stop filters to the active selection and feed the filtered data into plots or statistics.
+- Open the Statistics window for a sortable table, histograms, descriptive metrics and clipboard export (TSV).
+- Launch the Extreme Value Statistics tool to perform Generalized Pareto fits, return-level calculations and diagnostic plotting, including guidance for stabilising challenging fits.
+
+### Visualisation
+- Plot selected variables in a single figure or side-by-side grid using Plotly, Bokeh or Matplotlib backends.
+- Embed plots inside the main window or open them in a separate browser window, toggle shared axes, annotate maxima/minima and trim labels.
+- Generate rolling means, mean overlays and XYZ scatter animations to inspect vector responses.
+
+### OrcaFlex integration
+- Search objects and variables with live filtering, strip redundant substrings from labels and specify arc-length/extras directly in the selector.
+- Reuse selections for future `.sim` files, apply them to batches of simulations and automatically align similarly named objects via configurable stripping rules.
+- Load AnyQATS directly from the GUI for side-by-side inspection of the same datasets.
+
+### Convenience utilities
+- Switch between light and dark themes, embed plots, open external viewers and manage offsets/scaling presets via save/load dialogs.
+- Track file loading progress with an integrated progress bar and optional preloading callbacks.
 
 
 <p align="center">
@@ -46,7 +62,7 @@ Some of the features of ANYtimes
 pip install anytimes
 ```
 
-For running in windows without Python environment installed, download the .exe file from [releases][2]
+For running on Windows without a Python environment installed, download the `.exe` file from [releases][2].
 
 ## Requirements
 
@@ -71,12 +87,13 @@ from anytimes import anytimes_gui
 
 The module exposes Qt widgets for building custom time-series exploration tools. 
 
-You can also launch the GUI from the command line using the `anytimes` entry point:
+You can also launch the GUI from the command line using the `anytimes` entry point or via Python's module launcher:
 ```cmd
 C:\Python\Python313\Scripts\anytimes
+python -m anytimes
 ```
 
-You can start the GUI by typing:
+You can start the GUI programmatically by calling:
 
 ```python
 anytimes_gui.main()
@@ -92,7 +109,7 @@ C:\Python\Python313\python.exe C:\Github\ANYtimeseries\anytimes\anytimes_gui.py
 pause
 ```
 
-Update it with the correct location of you Python environment and location of .py file.
+Update it with the correct location of your Python environment and the `.py` file.
 
 
 ## License
