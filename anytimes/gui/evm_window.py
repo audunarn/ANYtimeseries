@@ -125,23 +125,47 @@ class EVMWindow(QDialog):
         ax.legend()
         self.fig_canvas.draw()
 
-    def _cluster_exceedances(self, threshold, tail):
-        x = self.x
+    def _declustered_peaks(self, tail: str) -> tuple[np.ndarray, np.ndarray]:
+        """Return cluster peaks and their boundaries for ``tail``."""
 
+        x = np.asarray(self.x, dtype=float)
         boundaries = declustering_boundaries(x, tail)
 
-        clustered_peaks = []
-        for start, end in zip(boundaries[:-1], boundaries[1:]):
-            segment = x[start:end]
-            peak = np.max(segment) if tail == "upper" else np.min(segment)
-            if (tail == "upper" and peak > threshold) or (
-                tail == "lower" and peak < threshold
-            ):
-                clustered_peaks.append(peak)
-        # use numpy array like helper does to ensure consistent type
-        clustered_peaks_arr = np.array(clustered_peaks, dtype=float)
+        peaks: list[float] = []
+        trimmed_boundaries: list[int] = []
 
-        return clustered_peaks_arr, boundaries
+        if boundaries.size:
+            trimmed_boundaries.append(int(boundaries[0]))
+
+        for start, end in zip(boundaries[:-1], boundaries[1:]):
+            if end <= start:
+                continue
+
+            segment = x[start:end]
+            if segment.size == 0:
+                continue
+
+            peak = float(np.max(segment) if tail == "upper" else np.min(segment))
+            peaks.append(peak)
+            trimmed_boundaries.append(int(end))
+
+        if not peaks:
+            trimmed_boundaries = trimmed_boundaries[:1]
+
+        return np.asarray(peaks, dtype=float), np.asarray(trimmed_boundaries, dtype=int)
+
+    def _cluster_exceedances(self, threshold, tail):
+        peaks, boundaries = self._declustered_peaks(tail)
+
+        if peaks.size == 0:
+            return np.empty(0, dtype=float), boundaries
+
+        if tail == "upper":
+            mask = peaks > threshold
+        else:
+            mask = peaks < threshold
+
+        return peaks[mask], boundaries
 
 
     def on_manual_threshold(self):
@@ -253,8 +277,17 @@ class EVMWindow(QDialog):
             self.run_evm()
 
 
-    def _fit_once(self, threshold: float, tail: str):
-        clustered_peaks, boundaries = self._cluster_exceedances(threshold, tail)
+    def _fit_once(self, threshold: float, tail: str, *, precomputed=None):
+        if precomputed is None:
+            clustered_peaks, boundaries = self._cluster_exceedances(threshold, tail)
+        else:
+            peaks, boundaries = precomputed
+            if peaks.size == 0:
+                clustered_peaks = np.empty(0, dtype=float)
+            elif tail == "upper":
+                clustered_peaks = peaks[peaks > threshold]
+            else:
+                clustered_peaks = peaks[peaks < threshold]
 
         if len(clustered_peaks) < 10:
             return "insufficient", {"count": len(clustered_peaks), "threshold": threshold}
@@ -350,69 +383,88 @@ class EVMWindow(QDialog):
         )
         self._evm_ran = True
 
-    def _candidate_thresholds(self, base_threshold: float, tail: str) -> list[float]:
-        x = np.asarray(self.x, dtype=float)
-        min_val = float(np.min(x))
-        max_val = float(np.max(x))
+    def _candidate_thresholds(
+        self, base_threshold: float, tail: str, peaks: np.ndarray
+    ) -> list[float]:
+        """Return iteration thresholds derived from declustered peaks."""
 
-        if not np.isfinite(min_val) or not np.isfinite(max_val):
-            return [base_threshold]
+        if peaks.size == 0:
+            return [float(base_threshold)]
 
-        span = max_val - min_val
-        if span <= 0:
-            return [base_threshold]
+        comparator = np.greater if tail == "upper" else np.less
+        base_count = int(np.count_nonzero(comparator(peaks, base_threshold)))
 
-        delta = span / 1000.0
-        if delta <= 0:
-            delta = max(abs(max_val), abs(min_val), 1.0) / 1000.0
+        total_available = int(min(peaks.size, self._MAX_CLUSTERED_EXCEEDANCES))
+        min_required = 10
 
-        base_clamped = float(np.clip(base_threshold, min_val, max_val))
+        if total_available < min_required:
+            return [float(base_threshold)]
 
-        candidates: list[float] = []
+        counts: set[int] = {min_required, total_available, max(min_required, base_count)}
+
+        if total_available > min_required:
+            n_points = min(25, total_available - min_required + 1)
+            geom_counts = np.geomspace(min_required, total_available, num=n_points)
+            counts.update(int(round(val)) for val in geom_counts)
+
+        for delta in (-15, -10, -5, -2, 0, 2, 5, 10, 15):
+            counts.add(base_count + delta)
+
+        valid_counts = sorted(
+            {
+                int(c)
+                for c in counts
+                if min_required <= int(c) <= total_available
+            }
+        )
+
+        if tail == "upper":
+            ordered_peaks = np.sort(peaks)[::-1]
+        else:
+            ordered_peaks = np.sort(peaks)
+
+        thresholds: list[float] = []
         seen: set[float] = set()
 
-        if tail == "upper":
-            current = float(max_val - delta)
-            if current < min_val:
-                current = max_val
+        def _add_threshold(value: float) -> None:
+            key = round(value, 8)
+            if np.isfinite(value) and key not in seen:
+                thresholds.append(float(value))
+                seen.add(key)
 
-            steps = 0
-            while current >= min_val and steps < 2000:
-                key = round(current, 6)
-                if key not in seen:
-                    candidates.append(current)
-                    seen.add(key)
-                current -= delta
-                steps += 1
+        _add_threshold(float(base_threshold))
 
-        else:
-            current = float(min_val + delta)
-            if current > max_val:
-                current = min_val
+        for count in valid_counts:
+            idx = count - 1
+            if idx < 0 or idx >= ordered_peaks.size:
+                continue
 
-            steps = 0
-            while current <= max_val and steps < 2000:
-                key = round(current, 6)
-                if key not in seen:
-                    candidates.append(current)
-                    seen.add(key)
-                current += delta
-                steps += 1
+            peak_value = float(ordered_peaks[idx])
+            if tail == "upper":
+                threshold = np.nextafter(peak_value, -np.inf)
+            else:
+                threshold = np.nextafter(peak_value, np.inf)
 
-        base_key = round(base_clamped, 6)
-        if base_key not in seen:
-            candidates.append(base_clamped)
+            _add_threshold(threshold)
 
-        if tail == "upper":
-            candidates.sort(reverse=True)
-        else:
-            candidates.sort()
-
-        return candidates
+        thresholds.sort(reverse=(tail == "upper"))
+        return thresholds
 
     def on_iterate_fit(self) -> None:
         tail = self.tail_combo.currentText()
         base_threshold = self.threshold_spin.value()
+
+        peaks, boundaries = self._declustered_peaks(tail)
+        if peaks.size < 10:
+            message = (
+                "Iteration requires at least 10 clustered peaks. Lower the threshold "
+                "or adjust the tail selection and try again."
+            )
+            self._latest_warning = None
+            self.result_text.setPlainText(message)
+            self.show_canvas_message(message)
+            self._evm_ran = False
+            return
 
         self.result_text.setPlainText("Iterating to find a stable fit...")
         self._evm_ran = False
@@ -421,14 +473,14 @@ class EVMWindow(QDialog):
         best_with_warning: dict | None = None
         failure_messages: list[str] = []
 
-        candidate_thresholds = self._candidate_thresholds(base_threshold, tail)
-        candidate_thresholds = sorted(
-            candidate_thresholds,
-            reverse=(tail == "upper"),
-        )
+        candidate_thresholds = self._candidate_thresholds(base_threshold, tail, peaks)
 
         for threshold in candidate_thresholds:
-            status, data = self._fit_once(threshold, tail)
+            status, data = self._fit_once(
+                threshold,
+                tail,
+                precomputed=(peaks, boundaries),
+            )
 
             if status == "ok":
                 exceedance_count = len(data["evm_result"].exceedances)
