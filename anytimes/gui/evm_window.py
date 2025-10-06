@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 
-from anytimes.evm import calculate_extreme_value_statistics, declustering_boundaries
+from anytimes.evm import calculate_extreme_value_statistics, decluster_peaks
 from .layout_utils import apply_initial_size
 
 
@@ -70,6 +70,13 @@ class EVMWindow(QDialog):
         self.threshold_spin.setDecimals(4)
         self.threshold_spin.setValue(round(suggested, 4))
         self.threshold_spin.setKeyboardTracking(False)
+
+        self.declustering_spin = QDoubleSpinBox()
+        self.declustering_spin.setDecimals(3)
+        self.declustering_spin.setRange(0.0, 1e9)
+        self.declustering_spin.setSuffix(" s")
+        self.declustering_spin.setKeyboardTracking(False)
+        self.declustering_spin.setValue(0.0)
 
         # Determine an initial reasonable threshold
         threshold = self._auto_threshold(suggested, self.tail_combo.currentText())
@@ -125,6 +132,7 @@ class EVMWindow(QDialog):
         self.pyext_plot_combo.setCurrentIndex(default_index)
 
         self._pyext_widgets: list[QWidget] = []
+        self._builtin_widgets: list[QWidget] = []
 
         #
 
@@ -156,22 +164,15 @@ class EVMWindow(QDialog):
         self.plot_timeseries_with_threshold(threshold)
 
     def _auto_threshold(self, start_thresh, tail):
-        x = self.x
         threshold = start_thresh
         attempts = 0
 
-        boundaries = declustering_boundaries(x, tail)
+        peaks, _ = self._declustered_peaks(tail)
+        comparator = np.greater if tail == "upper" else np.less
 
         while attempts < 10:
-            clustered_peaks = []
-            for start, end in zip(boundaries[:-1], boundaries[1:]):
-                segment = x[start:end]
-                peak = np.max(segment) if tail == "upper" else np.min(segment)
-                if (tail == "upper" and peak > threshold) or (
-                    tail == "lower" and peak < threshold
-                ):
-                    clustered_peaks.append(peak)
-            if len(clustered_peaks) >= 10:
+            exceedances = int(np.count_nonzero(comparator(peaks, threshold)))
+            if exceedances >= 10:
                 break
             threshold *= 0.95 if tail == "upper" else 1.05
             attempts += 1
@@ -227,31 +228,16 @@ class EVMWindow(QDialog):
     def _declustered_peaks(self, tail: str) -> tuple[np.ndarray, np.ndarray]:
         """Return cluster peaks and their boundaries for ``tail``."""
 
-        x = np.asarray(self.x, dtype=float)
-        boundaries = declustering_boundaries(x, tail)
+        window_seconds = max(0.0, float(self.declustering_spin.value()))
 
-        peaks: list[float] = []
-        trimmed_boundaries: list[int] = []
+        peaks, boundaries = decluster_peaks(
+            np.asarray(self.x, dtype=float),
+            tail,
+            t=np.asarray(self.t, dtype=float),
+            window_seconds=window_seconds,
+        )
 
-        if boundaries.size:
-            trimmed_boundaries.append(int(boundaries[0]))
-
-        for start, end in zip(boundaries[:-1], boundaries[1:]):
-            if end <= start:
-                continue
-
-            segment = x[start:end]
-            if segment.size == 0:
-                continue
-
-            peak = float(np.max(segment) if tail == "upper" else np.min(segment))
-            peaks.append(peak)
-            trimmed_boundaries.append(int(end))
-
-        if not peaks:
-            trimmed_boundaries = trimmed_boundaries[:1]
-
-        return np.asarray(peaks, dtype=float), np.asarray(trimmed_boundaries, dtype=int)
+        return peaks, boundaries
 
     def _cluster_exceedances(self, threshold, tail):
         peaks, boundaries = self._declustered_peaks(tail)
@@ -306,6 +292,11 @@ class EVMWindow(QDialog):
         layout.addWidget(self.calc_threshold_btn, row, 2)
         row += 1
 
+        self.declustering_label = QLabel("Declustering period (s):")
+        layout.addWidget(self.declustering_label, row, 0)
+        layout.addWidget(self.declustering_spin, row, 1)
+        row += 1
+
         self.ci_spin = QDoubleSpinBox()
         self.ci_spin.setDecimals(1)
         self.ci_spin.setValue(95.0)
@@ -358,6 +349,8 @@ class EVMWindow(QDialog):
             ]
         )
 
+        self._builtin_widgets.extend([self.declustering_label, self.declustering_spin])
+
         self.canvas_message_checkbox = QCheckBox("Show messages on canvas")
         self.canvas_message_checkbox.setChecked(True)
         self.canvas_message_checkbox.toggled.connect(self.on_canvas_message_toggle)
@@ -407,6 +400,9 @@ class EVMWindow(QDialog):
         for widget in self._pyext_widgets:
             widget.setVisible(is_pyextremes)
 
+        for widget in self._builtin_widgets:
+            widget.setVisible(not is_pyextremes)
+
     def run_evm(self):
         tail = self.tail_combo.currentText()
         threshold = self.threshold_spin.value()
@@ -444,6 +440,7 @@ class EVMWindow(QDialog):
 
     def _fit_once(self, threshold: float, tail: str, *, precomputed=None):
         engine = self.engine_combo.currentData()
+        declustering_window = max(0.0, float(self.declustering_spin.value()))
 
         if precomputed is None:
             clustered_peaks, boundaries = self._cluster_exceedances(threshold, tail)
@@ -540,6 +537,7 @@ class EVMWindow(QDialog):
                 "boundaries": boundaries,
                 "threshold": threshold,
                 "warnings": warnings_text,
+                "declustering_window": declustering_window,
             },
         )
 
@@ -548,6 +546,7 @@ class EVMWindow(QDialog):
         threshold = data["threshold"]
         boundaries = data["boundaries"]
         warnings_text = data["warnings"]
+        declustering_window = float(data.get("declustering_window", 0.0) or 0.0)
 
         c = evm_result.shape
         scale = evm_result.scale
@@ -561,6 +560,12 @@ class EVMWindow(QDialog):
         if self._latest_warning:
             header = f"{header}\n\n{self._latest_warning}"
         result = f"{header}\n\n"
+
+        if evm_result.engine != "pyextremes":
+            if declustering_window > 0.0:
+                result += f"Declustering period: {declustering_window:.3f} s\n\n"
+            else:
+                result += "Declustering: Mean level crossings\n\n"
 
         if evm_result.engine == "pyextremes" and evm_result.metadata:
             meta_lines: list[str] = []
