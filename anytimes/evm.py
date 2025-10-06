@@ -853,6 +853,7 @@ def _calculate_extreme_value_statistics_pyextremes(
                         mticker.FuncFormatter(_format_return_period_tick)
                     )
 
+
                     minor_locator = mticker.LogLocator(
                         base=10.0, subs=tuple(range(2, 10))
                     )
@@ -867,6 +868,7 @@ def _calculate_extreme_value_statistics_pyextremes(
                         )
                     else:
                         ax.xaxis.set_minor_locator(mticker.NullLocator())
+
 
     except Exception:  # pragma: no cover - plotting should not fail analysis
         diagnostic_figure = None

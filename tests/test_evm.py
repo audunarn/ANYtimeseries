@@ -47,6 +47,29 @@ def ts_test_2_peaks(ts_test_2_series):
     }
 
 
+
+@pytest.fixture(scope="module")
+def ts_test_2_peaks_95(ts_test_2_series):
+    t, x = ts_test_2_series
+    return {
+        "upper": cluster_exceedances(
+            x,
+            threshold=38_500.0,
+            tail="upper",
+            t=t,
+            declustering_window=15.75,
+        ),
+        "lower": cluster_exceedances(
+            x,
+            threshold=-40_000.0,
+            tail="lower",
+            t=t,
+            declustering_window=15.0,
+        ),
+    }
+
+
+
 def _synthetic_series():
     rng = np.random.default_rng(42)
     size = 720
@@ -383,6 +406,100 @@ def test_extreme_value_statistics_matches_orcaflex_reference_ts_test_2(
 
     assert se_shape == pytest.approx(expected["shape_se"], abs=5e-4)
     assert se_scale == pytest.approx(expected["scale_se"], abs=5.0)
+
+
+
+@pytest.mark.parametrize(
+    (
+        "tail",
+        "threshold",
+        "expected",
+        "rng_seed",
+    ),
+    [
+        (
+            "upper",
+            38_500.0,
+            {
+                "exceedances": 30,
+                "shape": -0.21794,
+                "scale": 5426.69,
+                "return_level": 49_544.51277436999,
+                "lower_bound": 46_995.176521365334,
+                "upper_bound": 55_647.41436809813,
+                "lower_tolerance": 1_400.0,
+                "upper_tolerance": 3_200.0,
+                "shape_se": 0.18211,
+                "scale_se": 1382.61,
+            },
+            321,
+        ),
+        (
+            "lower",
+            -40_000.0,
+            {
+                "exceedances": 58,
+                "shape": -0.22085,
+                "scale": 6394.12,
+                "return_level": -55_133.34203866422,
+                "lower_bound": -60_927.27862041067,
+                "upper_bound": -52_662.19055975518,
+                "lower_tolerance": 2_400.0,
+                "upper_tolerance": 700.0,
+                "shape_se": 0.12930,
+                "scale_se": 1163.66,
+            },
+            654,
+        ),
+    ],
+)
+def test_extreme_value_statistics_matches_orcaflex_reference_ts_test_2_95(
+    ts_test_2_series, ts_test_2_peaks_95, tail, threshold, expected, rng_seed
+):
+    t, x = ts_test_2_series
+    peaks = ts_test_2_peaks_95[tail]
+
+    res = calculate_extreme_value_statistics(
+        t,
+        x,
+        threshold=threshold,
+        tail=tail,
+        return_periods_hours=(3,),
+        confidence_level=95.0,
+        n_bootstrap=120_000,
+        rng=np.random.default_rng(rng_seed),
+        sample_exceedance_rate=True,
+        clustered_peaks=peaks,
+    )
+
+    assert res.exceedances.size == expected["exceedances"]
+    assert res.shape == pytest.approx(expected["shape"], abs=5e-5)
+    assert res.scale == pytest.approx(expected["scale"], abs=0.5)
+    assert res.return_levels[0] == pytest.approx(expected["return_level"], abs=0.5)
+    assert abs(res.lower_bounds[0] - expected["lower_bound"]) <= expected[
+        "lower_tolerance"
+    ]
+    assert abs(res.upper_bounds[0] - expected["upper_bound"]) <= expected[
+        "upper_tolerance"
+    ]
+
+    if tail == "upper":
+        excesses = res.exceedances - threshold
+    else:
+        excesses = threshold - res.exceedances
+
+    covariance = evm._gpd_parameter_covariance(
+        shape=res.shape,
+        scale=res.scale,
+        excesses=excesses,
+    )
+    assert covariance is not None
+    se_shape = float(np.sqrt(covariance[0, 0]))
+    se_scale = float(np.sqrt(covariance[1, 1]))
+
+    assert se_shape == pytest.approx(expected["shape_se"], abs=5e-4)
+    assert se_scale == pytest.approx(expected["scale_se"], abs=5.0)
+
 
 
 @pytest.mark.skipif(pyextremes is None, reason="pyextremes is not installed")
