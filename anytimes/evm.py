@@ -374,6 +374,13 @@ def _return_levels(
 
 _DEFAULT_RETURN_PERIODS_HOURS = (0.1, 0.5, 1, 3, 5)
 
+# Default multiples of the selected base return-period size that are queried when
+# PyExtremes calculates return levels.  The GUI presents these values as
+# calendar years when the base is set to one year, so including the entire
+# 1–10 range ensures that the textual summary and diagnostic plots both report
+# a 10-year return period by default.
+_PYEXTREMES_DEFAULT_RETURN_PERIOD_MULTIPLES = tuple(range(1, 11))
+
 
 def calculate_extreme_value_statistics(
     t: np.ndarray,
@@ -738,7 +745,10 @@ def _calculate_extreme_value_statistics_pyextremes(
             max_period = min_period * 1.1 if min_period > 0 else 1.0
 
         diagnostic_periods = np.linspace(min_period, max_period, 100, dtype=float)
-        return_periods = np.asarray(_DEFAULT_RETURN_PERIODS_HOURS, dtype=float)
+        return_periods = (
+            np.asarray(_PYEXTREMES_DEFAULT_RETURN_PERIOD_MULTIPLES, dtype=float)
+            * float(base_hours)
+        )
     else:
         return_periods = np.asarray(tuple(return_periods_hours), dtype=float)
         if np.any(return_periods <= 0):
@@ -810,74 +820,55 @@ def _calculate_extreme_value_statistics_pyextremes(
                 title = ax.get_title().strip().lower()
                 if title == "return values plot":
                     x_min, x_max = ax.get_xlim()
-                    dense_ticks: tuple[int, ...] = ()
+                    if not (np.isfinite(x_min) and np.isfinite(x_max)):
+                        continue
 
-                    if (
-                        np.isfinite(x_min)
-                        and np.isfinite(x_max)
-                        and x_max >= 1.0
-                    ):
-                        lower = max(1, int(np.ceil(x_min)))
-                        upper = int(np.floor(x_max))
+                    # Always display the first decade (1–10) so that the grid and
+                    # tick labels explicitly include the 10-year return period.
+                    lower_bound = max(x_min, 1e-6)
+                    upper_bound = max(x_max, 10.0)
 
-                        if upper >= lower:
-                            tick_count = upper - lower + 1
-                            if tick_count <= 15:
-                                dense_ticks = tuple(range(lower, upper + 1))
+                    if ax.get_xscale() != "log":
+                        ax.set_xscale("log")
 
-                    if dense_ticks:
+                    ax.set_xlim(lower_bound, upper_bound)
+                    lower_bound, upper_bound = ax.get_xlim()
 
-                        if ax.get_xscale() != "linear":
-                            ax.set_xscale("linear")
+                    base_locator = mticker.LogLocator(base=10.0)
+                    base_formatter = mticker.LogFormatter(labelOnlyBase=False)
+                    first_decade = set(range(1, 11))
+                    auto_ticks = base_locator.tick_values(lower_bound, upper_bound)
+                    major_ticks = sorted(first_decade | set(auto_ticks))
+                    major_tick_set = set(major_ticks)
 
-
-                        def _format_return_period_tick(value: float, _pos: int) -> str:
-                            if not np.isfinite(value) or value < 1.0:
-                                return ""
+                    def _format_return_period_tick(value: float, _pos: int) -> str:
+                        if not np.isfinite(value) or value <= 0:
+                            return ""
+                        if 1.0 <= value <= 10.0 and abs(value - round(value)) < 1e-6:
                             return f"{int(round(value))}"
+                        return base_formatter(value)
 
-                        ax.xaxis.set_major_locator(
-                            mticker.FixedLocator(list(dense_ticks))
+                    ax.xaxis.set_major_locator(mticker.FixedLocator(major_ticks))
+                    ax.xaxis.set_major_formatter(
+                        mticker.FuncFormatter(_format_return_period_tick)
+                    )
+
+
+                    minor_locator = mticker.LogLocator(
+                        base=10.0, subs=tuple(range(2, 10))
+                    )
+                    minor_ticks = [
+                        tick
+                        for tick in minor_locator.tick_values(lower_bound, upper_bound)
+                        if tick not in major_tick_set
+                    ]
+                    if minor_ticks:
+                        ax.xaxis.set_minor_locator(
+                            mticker.FixedLocator(sorted(minor_ticks))
                         )
-                        ax.xaxis.set_major_formatter(
-                            mticker.FuncFormatter(_format_return_period_tick)
-                        )
-                        ax.xaxis.set_minor_locator(mticker.NullLocator())
                     else:
+                        ax.xaxis.set_minor_locator(mticker.NullLocator())
 
-                        if ax.get_xscale() != "log":
-                            ax.set_xscale("log")
-
-                        locator = mticker.LogLocator(base=10.0)
-                        ax.xaxis.set_major_locator(locator)
-                        ax.xaxis.set_major_formatter(
-                            mticker.LogFormatter(labelOnlyBase=False)
-                        )
-                        minor_locator = mticker.LogLocator(
-                            base=10.0, subs=tuple(range(2, 10))
-                        )
-                        ax.xaxis.set_minor_locator(minor_locator)
-
-                        # Ensure the first decade has clearly visible grid lines at
-                        # integer return periods (1–10) regardless of the auto scale.
-                        first_decade_ticks = [
-                            value
-                            for value in range(1, 11)
-                            if value >= max(1, int(np.ceil(x_min)))
-                            and value <= int(np.floor(x_max))
-                        ]
-                        if first_decade_ticks:
-                            combined_minor = sorted(
-                                set(first_decade_ticks)
-                                | set(
-                                    value
-                                    for value in minor_locator.tick_values(x_min, x_max)
-                                    if value <= x_max
-                                )
-                            )
-                            ax.xaxis.set_minor_locator(
-                                mticker.FixedLocator(combined_minor)
-                            )
 
     except Exception:  # pragma: no cover - plotting should not fail analysis
         diagnostic_figure = None
