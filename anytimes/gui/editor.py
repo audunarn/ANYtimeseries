@@ -2226,6 +2226,8 @@ class TimeSeriesEditorQt(QMainWindow):
     def clear_all_files(self):
         self.tsdbs.clear()
         self.file_paths.clear()
+        self.user_variables.clear()
+        self.work_dir = None
         self.file_list.clear()
         self.refresh_variable_tabs()
 
