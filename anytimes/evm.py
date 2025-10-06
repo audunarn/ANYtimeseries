@@ -716,8 +716,10 @@ def _calculate_extreme_value_statistics_pyextremes(
                                 dense_ticks = tuple(range(lower, upper + 1))
 
                     if dense_ticks:
+
                         if ax.get_xscale() != "linear":
                             ax.set_xscale("linear")
+
 
                         def _format_return_period_tick(value: float, _pos: int) -> str:
                             if not np.isfinite(value) or value < 1.0:
@@ -732,8 +734,10 @@ def _calculate_extreme_value_statistics_pyextremes(
                         )
                         ax.xaxis.set_minor_locator(mticker.NullLocator())
                     else:
+
                         if ax.get_xscale() != "log":
                             ax.set_xscale("log")
+
                         locator = mticker.LogLocator(
                             base=10.0, subs=tuple(range(1, 10))
                         )
