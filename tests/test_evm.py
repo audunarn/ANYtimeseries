@@ -47,6 +47,7 @@ def ts_test_2_peaks(ts_test_2_series):
     }
 
 
+
 @pytest.fixture(scope="module")
 def ts_test_2_peaks_95(ts_test_2_series):
     t, x = ts_test_2_series
@@ -66,6 +67,7 @@ def ts_test_2_peaks_95(ts_test_2_series):
             declustering_window=15.0,
         ),
     }
+
 
 
 def _synthetic_series():
@@ -406,6 +408,7 @@ def test_extreme_value_statistics_matches_orcaflex_reference_ts_test_2(
     assert se_scale == pytest.approx(expected["scale_se"], abs=5.0)
 
 
+
 @pytest.mark.parametrize(
     (
         "tail",
@@ -496,6 +499,7 @@ def test_extreme_value_statistics_matches_orcaflex_reference_ts_test_2_95(
 
     assert se_shape == pytest.approx(expected["shape_se"], abs=5e-4)
     assert se_scale == pytest.approx(expected["scale_se"], abs=5.0)
+
 
 
 @pytest.mark.skipif(pyextremes is None, reason="pyextremes is not installed")

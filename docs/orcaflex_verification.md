@@ -68,6 +68,7 @@ Bootstrap sampling of the parameter covariance produces slightly wider
 confidence intervals, especially for the lower tail where the Monte Carlo
 resamples also vary the cluster rate.
 
+
 ### 95% confidence interval sensitivity study
 
 OrcaFlex also reports a 95% interval when the upper threshold is raised to
@@ -90,6 +91,7 @@ the bootstrap interval remains within ~5% of the OrcaFlex bounds.【F:tests/test
 | Upper 95% confidence limit | -52,662.191 kN·m | -52,105.503 kN·m | 556.687 kN·m |
 | GPD scale (σ) | 6,394.120 | 6,394.105 | 0.015 |
 | GPD shape (ξ) | -0.22085 | -0.22085 | < 1e-5 |
+
 
 ### PyExtremes engine
 
