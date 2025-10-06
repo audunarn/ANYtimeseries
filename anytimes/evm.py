@@ -700,6 +700,7 @@ def _calculate_extreme_value_statistics_pyextremes(
                         mticker.LogLocator(base=10.0, subs=tuple(range(1, 10)))
                     )
                     ax.xaxis.set_minor_formatter(mticker.NullFormatter())
+
     except Exception:  # pragma: no cover - plotting should not fail analysis
         diagnostic_figure = None
 
