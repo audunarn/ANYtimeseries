@@ -7,6 +7,7 @@ from anytimes import evm
 from anytimes.evm import (
     calculate_extreme_value_statistics,
     cluster_exceedances,
+    decluster_peaks,
     declustering_boundaries,
 )
 
@@ -66,6 +67,31 @@ def test_cluster_exceedances_accepts_high_low_aliases():
     peaks_lower = cluster_exceedances(x, threshold_lower, "lower")
     peaks_low = cluster_exceedances(x, threshold_lower, "low")
     np.testing.assert_allclose(peaks_low, peaks_lower)
+
+
+def test_decluster_peaks_merges_clusters_with_window():
+    x = np.array([0.0, 4.0, 0.1, 3.5, -0.2, 2.0, -0.1, 5.0, 0.0])
+    t = np.array([0, 10, 20, 30, 40, 50, 60, 120, 130], dtype=float)
+
+    peaks, bounds = decluster_peaks(x, "upper", t=t, window_seconds=25.0)
+
+    np.testing.assert_allclose(peaks, np.array([4.0, 2.0, 5.0]))
+    np.testing.assert_array_equal(bounds, np.array([0, 4, 7, 9]))
+
+
+def test_cluster_exceedances_respects_declustering_window():
+    x = np.array([0.0, 4.0, 0.1, 3.5, -0.2, 2.0, -0.1, 5.0, 0.0])
+    t = np.array([0, 10, 20, 30, 40, 50, 60, 120, 130], dtype=float)
+
+    peaks = cluster_exceedances(
+        x,
+        threshold=3.0,
+        tail="upper",
+        t=t,
+        declustering_window=25.0,
+    )
+
+    np.testing.assert_allclose(peaks, np.array([4.0, 5.0]))
 
 
 def test_calculate_extreme_value_statistics_matches_known_values():

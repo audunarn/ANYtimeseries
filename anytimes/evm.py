@@ -167,33 +167,142 @@ def declustering_boundaries(signal: np.ndarray, tail: str) -> np.ndarray:
 
 
 
-def cluster_exceedances(x: np.ndarray, threshold: float, tail: str) -> np.ndarray:
-    """Return the cluster peaks that exceed *threshold*.
+def decluster_peaks(
+    x: np.ndarray,
+    tail: str,
+    *,
+    t: np.ndarray | None = None,
+    window_seconds: float = 0.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return declustered peaks and their boundaries.
 
-    The GUI performs a crude declustering by splitting the signal on mean level
-    crossings and picking the most extreme value in each segment. Re-use the
-    same logic here so that the behaviour can be tested without the GUI.  The
-    ``tail`` argument accepts either ``"upper"`` / ``"high"`` or ``"lower"`` /
-    ``"low"`` aliases.
+    The series is first split at mean crossings via
+    :func:`declustering_boundaries`.  If ``window_seconds`` is positive and a
+    matching ``t`` array is provided, adjacent clusters whose peak times are
+    closer together than ``window_seconds`` are merged, keeping the more extreme
+    value for the chosen ``tail``.
     """
 
     tail = _normalise_tail(tail)
 
-    boundaries = declustering_boundaries(x, tail)
+    x_arr = np.asarray(x, dtype=float)
+    if x_arr.size == 0:
+        return np.empty(0, dtype=float), np.array([0], dtype=int)
 
-    clustered_peaks: list[float] = []
+    if t is not None:
+        try:
+            t_arr = np.asarray(t, dtype=float)
+        except Exception:  # pragma: no cover - defensive conversion guard
+            t_arr = None
+        else:
+            if t_arr.shape != x_arr.shape:
+                t_arr = None
+    else:
+        t_arr = None
+
+    boundaries = declustering_boundaries(x_arr, tail)
+
+    peaks: list[float] = []
+    trimmed_boundaries: list[int] = []
+
+    if boundaries.size:
+        trimmed_boundaries.append(int(boundaries[0]))
+
+    window = float(window_seconds) if window_seconds is not None else 0.0
+    comparator = np.greater if tail == "upper" else np.less
+
+    current_peak: float | None = None
+    current_end: int | None = None
+    last_time: float | None = None
+
     for start, end in zip(boundaries[:-1], boundaries[1:]):
         if end <= start:
             continue
-        segment = x[start:end]
-        peak = float(np.max(segment) if tail == "upper" else np.min(segment))
 
-        if (tail == "upper" and peak > threshold) or (
-            tail == "lower" and peak < threshold
+        segment = x_arr[start:end]
+        if segment.size == 0:
+            continue
+
+        if tail == "upper":
+            local_idx = int(np.argmax(segment))
+        else:
+            local_idx = int(np.argmin(segment))
+
+        peak_val = float(segment[local_idx])
+        peak_idx = int(start + local_idx)
+        peak_time = None
+        if t_arr is not None:
+            peak_time = float(t_arr[peak_idx])
+
+        merge = False
+        if (
+            window > 0.0
+            and peak_time is not None
+            and last_time is not None
+            and peak_time - last_time < window
         ):
-            clustered_peaks.append(peak)
+            merge = True
 
-    return np.asarray(clustered_peaks, dtype=float)
+        if current_peak is None or not merge:
+            if current_peak is not None:
+                peaks.append(float(current_peak))
+                if current_end is not None:
+                    trimmed_boundaries.append(int(current_end))
+
+            current_peak = peak_val
+            current_end = int(end)
+            last_time = peak_time
+        else:
+            if comparator(peak_val, current_peak):
+                current_peak = peak_val
+                last_time = peak_time
+            current_end = int(end)
+
+    if current_peak is not None:
+        peaks.append(float(current_peak))
+        if current_end is not None:
+            trimmed_boundaries.append(int(current_end))
+
+    if not peaks:
+        trimmed_boundaries = trimmed_boundaries[:1]
+
+    return np.asarray(peaks, dtype=float), np.asarray(trimmed_boundaries, dtype=int)
+
+
+def cluster_exceedances(
+    x: np.ndarray,
+    threshold: float,
+    tail: str,
+    *,
+    t: np.ndarray | None = None,
+    declustering_window: float | None = None,
+) -> np.ndarray:
+    """Return the cluster peaks that exceed *threshold*.
+
+    ``declustering_window`` defines the minimum separation, in seconds, between
+    successive cluster peaks.  If the supplied ``t`` array is omitted or does
+    not align with ``x``, the window is ignored and clustering falls back to
+    mean-crossing segmentation.
+    """
+
+    window = float(declustering_window) if declustering_window is not None else 0.0
+
+    peaks, _ = decluster_peaks(x, tail, t=t, window_seconds=window)
+
+    if peaks.size == 0:
+        return peaks
+
+    tail = _normalise_tail(tail)
+
+    if tail == "upper":
+        mask = peaks > threshold
+    else:
+        mask = peaks < threshold
+
+    return peaks[mask]
+
+
+
 
 
 
@@ -784,6 +893,7 @@ def _calculate_extreme_value_statistics_pyextremes(
 __all__ = [
     "ExtremeValueResult",
     "calculate_extreme_value_statistics",
+    "decluster_peaks",
     "cluster_exceedances",
 
     "declustering_boundaries",
