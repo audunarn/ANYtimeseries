@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDoubleSpinBox,
     QGridLayout,
+    QLineEdit,
     QLabel,
     QPushButton,
     QSpinBox,
@@ -95,6 +96,10 @@ class EVMWindow(QDialog):
         self.pyext_samples_spin.setRange(50, 10000)
         self.pyext_samples_spin.setSingleStep(50)
         self.pyext_samples_spin.setValue(400)
+
+        self.pyext_return_periods_edit = QLineEdit()
+        self.pyext_return_periods_edit.setPlaceholderText("None")
+        self.pyext_return_periods_edit.setText("None")
 
         self._plotting_positions = [
             ("Empirical CDF (m/n)", "ecdf"),
@@ -323,6 +328,11 @@ class EVMWindow(QDialog):
         layout.addWidget(self.pyext_return_size_spin, row, 1)
         row += 1
 
+        self.pyext_periods_label = QLabel("PyExtremes return periods (hours):")
+        layout.addWidget(self.pyext_periods_label, row, 0)
+        layout.addWidget(self.pyext_return_periods_edit, row, 1, 1, 2)
+        row += 1
+
         self.pyext_samples_label = QLabel("PyExtremes bootstrap samples:")
         layout.addWidget(self.pyext_samples_label, row, 0)
         layout.addWidget(self.pyext_samples_spin, row, 1)
@@ -339,6 +349,8 @@ class EVMWindow(QDialog):
                 self.pyext_r_spin,
                 self.pyext_return_label,
                 self.pyext_return_size_spin,
+                self.pyext_periods_label,
+                self.pyext_return_periods_edit,
                 self.pyext_samples_label,
                 self.pyext_samples_spin,
                 self.pyext_plot_label,
@@ -451,6 +463,31 @@ class EVMWindow(QDialog):
         if engine == "pyextremes":
             r_seconds = self.pyext_r_spin.value()
             return_base = self.pyext_return_size_spin.value()
+
+            periods_text = self.pyext_return_periods_edit.text().strip()
+            if periods_text.lower() in {"", "none"}:
+                return_periods = None
+            else:
+                try:
+                    return_periods = [
+                        float(token)
+                        for token in periods_text.split(",")
+                        if token.strip()
+                    ]
+                except ValueError:
+                    return "error", {
+                        "message": (
+                            "Invalid PyExtremes return periods. Enter a comma-separated "
+                            "list of positive numbers or 'None'."
+                        ),
+                        "threshold": threshold,
+                    }
+                if any(period <= 0 for period in return_periods):
+                    return "error", {
+                        "message": "PyExtremes return periods must be positive.",
+                        "threshold": threshold,
+                    }
+
             pyext_options = {
                 "method": "POT",
                 "r": r_seconds,
@@ -458,6 +495,10 @@ class EVMWindow(QDialog):
                 "n_samples": self.pyext_samples_spin.value(),
                 "plotting_position": self.pyext_plot_combo.currentData(),
             }
+
+        calc_kwargs = {}
+        if engine == "pyextremes":
+            calc_kwargs["return_periods_hours"] = return_periods
 
         try:
             evm_result = calculate_extreme_value_statistics(
@@ -469,6 +510,7 @@ class EVMWindow(QDialog):
                 clustered_peaks=clustered_peaks if engine != "pyextremes" else None,
                 engine=engine,
                 pyextremes_options=pyext_options,
+                **calc_kwargs,
             )
         except Exception as exc:  # pragma: no cover - defensive GUI guard
             return "error", {"message": str(exc), "threshold": threshold}
@@ -546,9 +588,13 @@ class EVMWindow(QDialog):
             if meta_lines:
                 result += "\n".join(meta_lines) + "\n\n"
 
+        if evm_result.return_periods.size >= 2:
+            idx = -2
+        else:
+            idx = -1
         result += (
-            f"The {evm_result.return_periods[-2]:.1f} hour return level is\n"
-            f"{evm_result.return_levels[-2]:.5f} {units}\n\n"
+            f"The {evm_result.return_periods[idx]:.1f} hour return level is\n"
+            f"{evm_result.return_levels[idx]:.5f} {units}\n\n"
         )
         result += (
             "Fitted tail parameters:\n"
@@ -783,7 +829,8 @@ class EVMWindow(QDialog):
         ts_ax.set_title("Time Series")
         ts_ax.set_xlabel("Time")
         ts_ax.set_ylabel(self.ts.name)
-        ts_ax.grid(True)
+        ts_ax.minorticks_on()
+        ts_ax.grid(True, which="both", linestyle="--", alpha=0.5)
         ts_ax.legend()
         ax.plot(durations / 3600, levels, marker="o", label="Return Level")
 
@@ -800,7 +847,8 @@ class EVMWindow(QDialog):
         ax.set_title("Return level plot")
         ax.set_xlabel("Storm duration (hours)")
         ax.set_ylabel("Return level")
-        ax.grid(True)
+        ax.minorticks_on()
+        ax.grid(True, which="both", linestyle="--", alpha=0.5)
         ax.legend()
 
         exceedances = np.asarray(exceedances, dtype=float)
@@ -834,7 +882,8 @@ class EVMWindow(QDialog):
         qax.set_title("Quantile Plot")
         qax.set_xlabel("Theoretical Quantiles")
         qax.set_ylabel("Empirical Quantiles")
-        qax.grid(True)
+        qax.minorticks_on()
+        qax.grid(True, which="both", linestyle="--", alpha=0.5)
         if tail == "lower":
             qax.invert_xaxis()
         qax.legend()
