@@ -17,6 +17,57 @@ except ImportError:  # pragma: no cover - optional dependency guard
     pyextremes = None
 
 
+@pytest.fixture(scope="module")
+def ts_test_2_series():
+    df = pd.read_excel(
+        Path(__file__).with_name("ts_test_2.xlsx"),
+        usecols=["Time", "In-frame connection GY moment"],
+    )
+    return df["Time"].to_numpy(float), df["In-frame connection GY moment"].to_numpy(float)
+
+
+@pytest.fixture(scope="module")
+def ts_test_2_peaks(ts_test_2_series):
+    t, x = ts_test_2_series
+    return {
+        "upper": cluster_exceedances(
+            x,
+            threshold=35_000.0,
+            tail="upper",
+            t=t,
+            declustering_window=12.0,
+        ),
+        "lower": cluster_exceedances(
+            x,
+            threshold=-45_000.0,
+            tail="lower",
+            t=t,
+            declustering_window=12.0,
+        ),
+    }
+
+
+@pytest.fixture(scope="module")
+def ts_test_2_peaks_95(ts_test_2_series):
+    t, x = ts_test_2_series
+    return {
+        "upper": cluster_exceedances(
+            x,
+            threshold=38_500.0,
+            tail="upper",
+            t=t,
+            declustering_window=15.75,
+        ),
+        "lower": cluster_exceedances(
+            x,
+            threshold=-40_000.0,
+            tail="lower",
+            t=t,
+            declustering_window=15.0,
+        ),
+    }
+
+
 def _synthetic_series():
     rng = np.random.default_rng(42)
     size = 720
@@ -278,6 +329,175 @@ def test_extreme_value_statistics_matches_orcaflex_reference(column, tail, thres
     assert se_scale == pytest.approx(expected["scale_se"], abs=5.0)
 
 
+@pytest.mark.parametrize(
+    "tail",
+    ("upper", "lower"),
+)
+def test_extreme_value_statistics_matches_orcaflex_reference_ts_test_2(
+    ts_test_2_series, ts_test_2_peaks, tail
+):
+    t, x = ts_test_2_series
+    peaks = ts_test_2_peaks[tail]
+
+    if tail == "upper":
+        threshold = 35_000.0
+        expected = {
+            "exceedances": 56,
+            "shape": -0.19620859397015492,
+            "scale": 5960.473977212605,
+            "return_level": 49_522.647794285775,
+            "lower_bound": 48_394.09490906861,
+            "upper_bound": 51_104.16659608214,
+            "lower_tolerance": 300.0,
+            "upper_tolerance": 600.0,
+            "shape_se": 0.12857,
+            "scale_se": 1094.2,
+        }
+    else:
+        threshold = -45_000.0
+        expected = {
+            "exceedances": 28,
+            "shape": 0.13726791937643773,
+            "scale": 3216.0783246239043,
+            "return_level": -55_143.75336870394,
+            "lower_bound": -58_121.75806037592,
+            "upper_bound": -53_498.63185755129,
+            "lower_tolerance": 1_400.0,
+            "upper_tolerance": 900.0,
+            "shape_se": 0.32998,
+            "scale_se": 1220.12,
+        }
+
+    res = calculate_extreme_value_statistics(
+        t,
+        x,
+        threshold=threshold,
+        tail=tail,
+        return_periods_hours=(3,),
+        confidence_level=57.0,
+        n_bootstrap=30_000,
+        rng=np.random.default_rng(321),
+        sample_exceedance_rate=True,
+        clustered_peaks=peaks,
+    )
+
+    assert res.exceedances.size == expected["exceedances"]
+    assert res.shape == pytest.approx(expected["shape"], abs=5e-5)
+    assert res.scale == pytest.approx(expected["scale"], abs=0.5)
+    assert res.return_levels[0] == pytest.approx(expected["return_level"], abs=0.5)
+    assert abs(res.lower_bounds[0] - expected["lower_bound"]) <= expected["lower_tolerance"]
+    assert abs(res.upper_bounds[0] - expected["upper_bound"]) <= expected["upper_tolerance"]
+
+    if tail == "upper":
+        excesses = res.exceedances - threshold
+    else:
+        excesses = threshold - res.exceedances
+
+    covariance = evm._gpd_parameter_covariance(
+        shape=res.shape,
+        scale=res.scale,
+        excesses=excesses,
+    )
+    assert covariance is not None
+    se_shape = float(np.sqrt(covariance[0, 0]))
+    se_scale = float(np.sqrt(covariance[1, 1]))
+
+    assert se_shape == pytest.approx(expected["shape_se"], abs=5e-4)
+    assert se_scale == pytest.approx(expected["scale_se"], abs=5.0)
+
+
+@pytest.mark.parametrize(
+    (
+        "tail",
+        "threshold",
+        "expected",
+        "rng_seed",
+    ),
+    [
+        (
+            "upper",
+            38_500.0,
+            {
+                "exceedances": 30,
+                "shape": -0.21794,
+                "scale": 5426.69,
+                "return_level": 49_544.51277436999,
+                "lower_bound": 46_995.176521365334,
+                "upper_bound": 55_647.41436809813,
+                "lower_tolerance": 1_400.0,
+                "upper_tolerance": 3_200.0,
+                "shape_se": 0.18211,
+                "scale_se": 1382.61,
+            },
+            321,
+        ),
+        (
+            "lower",
+            -40_000.0,
+            {
+                "exceedances": 58,
+                "shape": -0.22085,
+                "scale": 6394.12,
+                "return_level": -55_133.34203866422,
+                "lower_bound": -60_927.27862041067,
+                "upper_bound": -52_662.19055975518,
+                "lower_tolerance": 2_400.0,
+                "upper_tolerance": 700.0,
+                "shape_se": 0.12930,
+                "scale_se": 1163.66,
+            },
+            654,
+        ),
+    ],
+)
+def test_extreme_value_statistics_matches_orcaflex_reference_ts_test_2_95(
+    ts_test_2_series, ts_test_2_peaks_95, tail, threshold, expected, rng_seed
+):
+    t, x = ts_test_2_series
+    peaks = ts_test_2_peaks_95[tail]
+
+    res = calculate_extreme_value_statistics(
+        t,
+        x,
+        threshold=threshold,
+        tail=tail,
+        return_periods_hours=(3,),
+        confidence_level=95.0,
+        n_bootstrap=120_000,
+        rng=np.random.default_rng(rng_seed),
+        sample_exceedance_rate=True,
+        clustered_peaks=peaks,
+    )
+
+    assert res.exceedances.size == expected["exceedances"]
+    assert res.shape == pytest.approx(expected["shape"], abs=5e-5)
+    assert res.scale == pytest.approx(expected["scale"], abs=0.5)
+    assert res.return_levels[0] == pytest.approx(expected["return_level"], abs=0.5)
+    assert abs(res.lower_bounds[0] - expected["lower_bound"]) <= expected[
+        "lower_tolerance"
+    ]
+    assert abs(res.upper_bounds[0] - expected["upper_bound"]) <= expected[
+        "upper_tolerance"
+    ]
+
+    if tail == "upper":
+        excesses = res.exceedances - threshold
+    else:
+        excesses = threshold - res.exceedances
+
+    covariance = evm._gpd_parameter_covariance(
+        shape=res.shape,
+        scale=res.scale,
+        excesses=excesses,
+    )
+    assert covariance is not None
+    se_shape = float(np.sqrt(covariance[0, 0]))
+    se_scale = float(np.sqrt(covariance[1, 1]))
+
+    assert se_shape == pytest.approx(expected["shape_se"], abs=5e-4)
+    assert se_scale == pytest.approx(expected["scale_se"], abs=5.0)
+
+
 @pytest.mark.skipif(pyextremes is None, reason="pyextremes is not installed")
 def test_pyextremes_engine_returns_consistent_structure():
     t, x = _synthetic_series()
@@ -400,6 +620,58 @@ def test_pyextremes_engine_allows_default_diagnostic_return_periods():
 
     assert res.metadata is not None
     assert res.metadata.get("diagnostic_return_periods") is None
+
+
+@pytest.mark.skipif(pyextremes is None, reason="pyextremes is not installed")
+def test_pyextremes_engine_matches_ts_test_2_reference(ts_test_2_series):
+    t, x = ts_test_2_series
+
+    res_upper = calculate_extreme_value_statistics(
+        t,
+        x,
+        threshold=35_000.0,
+        tail="upper",
+        return_periods_hours=(3,),
+        confidence_level=57.0,
+        engine="pyextremes",
+        pyextremes_options={
+            "method": "POT",
+            "r": "12s",
+            "return_period_size": "1h",
+            "n_samples": 200,
+            "diagnostic_return_periods": (3,),
+        },
+        rng=np.random.default_rng(123),
+    )
+
+    res_lower = calculate_extreme_value_statistics(
+        t,
+        x,
+        threshold=-45_000.0,
+        tail="lower",
+        return_periods_hours=(3,),
+        confidence_level=57.0,
+        engine="pyextremes",
+        pyextremes_options={
+            "method": "POT",
+            "r": "12s",
+            "return_period_size": "1h",
+            "n_samples": 200,
+            "diagnostic_return_periods": (3,),
+        },
+        rng=np.random.default_rng(456),
+    )
+
+    assert res_upper.exceedances.size == 56
+    assert res_lower.exceedances.size == 28
+
+    assert res_upper.shape == pytest.approx(-0.19620859397015492, abs=5e-5)
+    assert res_upper.scale == pytest.approx(5960.473977212605, abs=1.0)
+    assert res_lower.shape == pytest.approx(0.14685087323557444, abs=5e-5)
+    assert res_lower.scale == pytest.approx(3174.764987409212, abs=1.0)
+
+    assert res_upper.return_levels[0] == pytest.approx(49_522.647794285775, abs=1.0)
+    assert res_lower.return_levels[0] == pytest.approx(-55_158.83217598547, abs=40.0)
 
 
 @pytest.mark.skipif(pyextremes is None, reason="pyextremes is not installed")
