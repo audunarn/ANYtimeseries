@@ -166,9 +166,15 @@ def test_calculate_extreme_value_statistics_matches_known_values():
     assert np.isclose(res.shape, -0.7942124974671382)
     assert np.isclose(res.scale, 4.8572359369876255)
 
-    expected_levels = np.array([6.65656619, 7.1321767, 7.20990746, 7.27154184, 7.28629789])
-    expected_lower = np.array([5.93958204, 6.82033183, 7.01422591, 7.17422058, 7.20959305])
-    expected_upper = np.array([6.97593568, 7.35651581, 7.45919467, 7.57530795, 7.62314262])
+    expected_levels = np.array(
+        [6.65656619, 7.1321767, 7.20990746, 7.27154184, 7.28629789, 7.29878266]
+    )
+    expected_lower = np.array(
+        [5.93958204, 6.82033183, 7.01422591, 7.17422058, 7.20959305, 7.23586908]
+    )
+    expected_upper = np.array(
+        [6.97593568, 7.35651581, 7.45919467, 7.57530795, 7.62314262, 7.66958338]
+    )
 
 
     np.testing.assert_allclose(res.return_levels, expected_levels, rtol=0, atol=1e-6)

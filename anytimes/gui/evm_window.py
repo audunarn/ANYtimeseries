@@ -22,7 +22,11 @@ from PySide6.QtWidgets import (
 )
 
 
-from anytimes.evm import calculate_extreme_value_statistics, decluster_peaks
+from anytimes.evm import (
+    SUMMARY_RETURN_PERIODS_HOURS,
+    calculate_extreme_value_statistics,
+    decluster_peaks,
+)
 from .layout_utils import apply_initial_size
 
 
@@ -473,11 +477,31 @@ class EVMWindow(QDialog):
             return_base = self.pyext_return_size_spin.value()
 
             periods_text = self.pyext_return_periods_edit.text().strip()
+            default_periods = list(SUMMARY_RETURN_PERIODS_HOURS)
+
+            def _merge_periods(user_periods: list[float] | None) -> list[float]:
+                merged: list[float] = []
+
+                def _append_unique(period: float) -> None:
+                    for existing in merged:
+                        if abs(existing - period) <= 1e-9:
+                            return
+                    merged.append(period)
+
+                for period in default_periods:
+                    _append_unique(float(period))
+
+                if user_periods:
+                    for period in user_periods:
+                        _append_unique(float(period))
+
+                return merged
+
             if periods_text.lower() in {"", "none"}:
-                return_periods = None
+                return_periods = _merge_periods(None)
             else:
                 try:
-                    return_periods = [
+                    user_periods = [
                         float(token)
                         for token in periods_text.split(",")
                         if token.strip()
@@ -490,11 +514,12 @@ class EVMWindow(QDialog):
                         ),
                         "threshold": threshold,
                     }
-                if any(period <= 0 for period in return_periods):
+                if any(period <= 0 for period in user_periods):
                     return "error", {
                         "message": "PyExtremes return periods must be positive.",
                         "threshold": threshold,
                     }
+                return_periods = _merge_periods(user_periods)
 
             pyext_options = {
                 "method": "POT",
@@ -604,10 +629,19 @@ class EVMWindow(QDialog):
             if meta_lines:
                 result += "\n".join(meta_lines) + "\n\n"
 
-        if evm_result.return_periods.size >= 2:
-            idx = -2
+        preferred_hour = 3.0
+        idx_candidates = np.where(
+            np.isclose(evm_result.return_periods, preferred_hour, rtol=1e-6, atol=1e-6)
+        )[0]
+        if idx_candidates.size:
+            idx = int(idx_candidates[0])
+        elif evm_result.return_periods.size:
+            idx = int(
+                np.argmin(np.abs(evm_result.return_periods - preferred_hour))
+            )
         else:
-            idx = -1
+            idx = 0
+
         result += (
             f"The {evm_result.return_periods[idx]:.1f} hour return level is\n"
             f"{evm_result.return_levels[idx]:.5f} {units}\n\n"
@@ -623,13 +657,29 @@ class EVMWindow(QDialog):
 
         result += f"Observed maximum value: {max_val:.4f} {units}\n"
         result += f"Return level unit: {units or 'same as input'}\n\n"
+        def _format_hours(value: float) -> str:
+            if abs(value - round(value)) < 1e-8:
+                return f"{int(round(value))}"
+            return f"{value:.1f}".rstrip("0").rstrip(".")
+
         result += f"{self.ci_spin.value():.0f}% Confidence Interval:\n"
-        for rp, lo, up in zip(
-            evm_result.return_periods,
-            evm_result.lower_bounds,
-            evm_result.upper_bounds,
-        ):
-            result += f"{rp:.1f} hr: {lo:.3f} – {up:.3f}\n"
+
+        available_periods = evm_result.return_periods
+        for target in SUMMARY_RETURN_PERIODS_HOURS:
+            matches = np.where(
+                np.isclose(available_periods, target, rtol=1e-6, atol=1e-6)
+            )[0]
+            if matches.size:
+                idx = int(matches[0])
+                lo = evm_result.lower_bounds[idx]
+                up = evm_result.upper_bounds[idx]
+                if np.isfinite(lo) and np.isfinite(up):
+                    interval_text = f"{lo:.3f} – {up:.3f}"
+                else:
+                    interval_text = "n/a – n/a"
+            else:
+                interval_text = "n/a – n/a"
+            result += f"{_format_hours(target)} hr: {interval_text}\n"
 
         self.result_text.setPlainText(result)
 
