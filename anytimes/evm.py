@@ -597,9 +597,12 @@ def _calculate_extreme_value_statistics_pyextremes(
 
     pyext_return_periods = return_periods / float(base_hours)
 
-    diagnostic_return_periods_opt = options.get(
-        "diagnostic_return_periods", return_periods
-    )
+
+    if "diagnostic_return_periods" in options:
+        diagnostic_return_periods_opt = options.get("diagnostic_return_periods")
+    else:
+        diagnostic_return_periods_opt = None
+
     if diagnostic_return_periods_opt is None:
         diagnostic_return_periods = None
     else:

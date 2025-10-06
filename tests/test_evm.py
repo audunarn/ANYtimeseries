@@ -269,6 +269,7 @@ def test_pyextremes_engine_returns_consistent_structure():
             "r": 1.0,
             "return_period_size": "1h",
             "n_samples": 200,
+            "diagnostic_return_periods": (0.5, 1.0, 2.0),
         },
         rng=np.random.default_rng(1234),
     )
@@ -367,7 +368,6 @@ def test_pyextremes_engine_allows_default_diagnostic_return_periods():
             "r": 1.0,
             "return_period_size": "1h",
             "n_samples": 200,
-            "diagnostic_return_periods": None,
         },
         rng=np.random.default_rng(5678),
     )
