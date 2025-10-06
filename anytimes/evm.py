@@ -694,12 +694,45 @@ def _calculate_extreme_value_statistics_pyextremes(
 
                 title = ax.get_title().strip().lower()
                 if title == "return values plot":
-                    locator = mticker.LogLocator(base=10.0, subs=(1.0, 2.0, 5.0))
-                    ax.xaxis.set_major_locator(locator)
-                    ax.xaxis.set_minor_locator(
-                        mticker.LogLocator(base=10.0, subs=tuple(range(1, 10)))
-                    )
-                    ax.xaxis.set_minor_formatter(mticker.NullFormatter())
+                    x_min, x_max = ax.get_xlim()
+                    dense_ticks: tuple[int, ...] = ()
+
+                    if (
+                        np.isfinite(x_min)
+                        and np.isfinite(x_max)
+                        and x_max >= 1.0
+                    ):
+                        lower = max(1, int(np.ceil(x_min)))
+                        upper = int(np.floor(x_max))
+
+                        if upper >= lower:
+                            tick_count = upper - lower + 1
+                            if tick_count <= 15:
+                                dense_ticks = tuple(range(lower, upper + 1))
+
+                    if dense_ticks:
+
+                        def _format_return_period_tick(value: float, _pos: int) -> str:
+                            if not np.isfinite(value) or value < 1.0:
+                                return ""
+                            return f"{int(round(value))}"
+
+                        ax.xaxis.set_major_locator(
+                            mticker.FixedLocator(list(dense_ticks))
+                        )
+                        ax.xaxis.set_major_formatter(
+                            mticker.FuncFormatter(_format_return_period_tick)
+                        )
+                        ax.xaxis.set_minor_locator(mticker.NullLocator())
+                    else:
+                        locator = mticker.LogLocator(
+                            base=10.0, subs=tuple(range(1, 10))
+                        )
+                        ax.xaxis.set_major_locator(locator)
+                        ax.xaxis.set_major_formatter(
+                            mticker.LogFormatter(labelOnlyBase=False)
+                        )
+                        ax.xaxis.set_minor_locator(mticker.NullLocator())
 
     except Exception:  # pragma: no cover - plotting should not fail analysis
         diagnostic_figure = None
