@@ -96,6 +96,29 @@ class EVMWindow(QDialog):
         self.pyext_samples_spin.setSingleStep(50)
         self.pyext_samples_spin.setValue(400)
 
+        self._plotting_positions = [
+            ("Empirical CDF (m/n)", "ecdf"),
+            ("Hazen ((m-0.5)/n)", "hazen"),
+            ("Weibull (m/(n+1))", "weibull"),
+            ("Tukey ((m-1/3)/(n+1/3))", "tukey"),
+            ("Blom ((m-0.375)/(n+0.25))", "blom"),
+            ("Median ((m-0.3)/(n+0.4))", "median"),
+            ("Cunnane ((m-0.4)/(n+0.2))", "cunnane"),
+            ("Gringorten ((m-0.44)/(n+0.12))", "gringorten"),
+            ("Beard ((m-0.31)/(n+0.38))", "beard"),
+        ]
+        self._plotting_position_labels = {
+            value: label for label, value in self._plotting_positions
+        }
+        self.pyext_plot_combo = QComboBox()
+        for label, value in self._plotting_positions:
+            self.pyext_plot_combo.addItem(label, value)
+        default_index = next(
+            (idx for idx, (_, value) in enumerate(self._plotting_positions) if value == "weibull"),
+            0,
+        )
+        self.pyext_plot_combo.setCurrentIndex(default_index)
+
         self._pyext_widgets: list[QWidget] = []
 
         #
@@ -305,6 +328,11 @@ class EVMWindow(QDialog):
         layout.addWidget(self.pyext_samples_spin, row, 1)
         row += 1
 
+        self.pyext_plot_label = QLabel("PyExtremes plotting position:")
+        layout.addWidget(self.pyext_plot_label, row, 0)
+        layout.addWidget(self.pyext_plot_combo, row, 1, 1, 2)
+        row += 1
+
         self._pyext_widgets.extend(
             [
                 self.pyext_r_label,
@@ -313,6 +341,8 @@ class EVMWindow(QDialog):
                 self.pyext_return_size_spin,
                 self.pyext_samples_label,
                 self.pyext_samples_spin,
+                self.pyext_plot_label,
+                self.pyext_plot_combo,
             ]
         )
 
@@ -426,6 +456,7 @@ class EVMWindow(QDialog):
                 "r": r_seconds,
                 "return_period_size": f"{return_base}h",
                 "n_samples": self.pyext_samples_spin.value(),
+                "plotting_position": self.pyext_plot_combo.currentData(),
             }
 
         try:
@@ -506,6 +537,12 @@ class EVMWindow(QDialog):
             distribution = evm_result.metadata.get("distribution")
             if distribution is not None:
                 meta_lines.append(f"Distribution: {distribution}")
+            plotting_position = evm_result.metadata.get("plotting_position")
+            if plotting_position is not None:
+                friendly = self._plotting_position_labels.get(
+                    str(plotting_position).lower(), plotting_position
+                )
+                meta_lines.append(f"Plotting position: {friendly}")
             if meta_lines:
                 result += "\n".join(meta_lines) + "\n\n"
 

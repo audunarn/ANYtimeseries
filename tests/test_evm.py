@@ -283,6 +283,7 @@ def test_pyextremes_engine_returns_consistent_structure():
     assert np.isfinite(res.scale)
     assert res.metadata is not None
     assert "distribution" in res.metadata
+    assert res.metadata.get("plotting_position") == "weibull"
 
 
 @pytest.mark.skipif(pyextremes is None, reason="pyextremes is not installed")
@@ -320,4 +321,45 @@ def test_pyextremes_engine_accepts_low_tail_alias():
     np.testing.assert_allclose(res_low.upper_bounds, res_lower.upper_bounds)
     assert res_low.metadata is not None
     assert res_low.metadata.get("extremes_type") == "low"
+
+
+@pytest.mark.skipif(pyextremes is None, reason="pyextremes is not installed")
+def test_pyextremes_engine_accepts_plotting_position_selection():
+    t, x = _synthetic_series()
+    threshold = 1.2
+
+    res = calculate_extreme_value_statistics(
+        t,
+        x,
+        threshold,
+        tail="upper",
+        return_periods_hours=(0.5, 1.0, 2.0),
+        confidence_level=90.0,
+        engine="pyextremes",
+        pyextremes_options={
+            "r": 1.0,
+            "return_period_size": "1h",
+            "n_samples": 200,
+            "plotting_position": "median",
+        },
+        rng=np.random.default_rng(4321),
+    )
+
+    assert res.metadata is not None
+    assert res.metadata.get("plotting_position") == "median"
+
+
+@pytest.mark.skipif(pyextremes is None, reason="pyextremes is not installed")
+def test_pyextremes_engine_rejects_invalid_plotting_position():
+    t, x = _synthetic_series()
+
+    with pytest.raises(ValueError):
+        calculate_extreme_value_statistics(
+            t,
+            x,
+            threshold=1.2,
+            tail="upper",
+            engine="pyextremes",
+            pyextremes_options={"plotting_position": "invalid"},
+        )
 

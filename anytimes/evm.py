@@ -14,6 +14,19 @@ import numpy as np
 from scipy.stats import genpareto
 
 
+_PYEXTREMES_PLOTTING_POSITIONS = {
+    "ecdf",
+    "hazen",
+    "weibull",
+    "tukey",
+    "blom",
+    "median",
+    "cunnane",
+    "gringorten",
+    "beard",
+}
+
+
 def _gpd_negative_log_likelihood(
     params: np.ndarray, excesses: np.ndarray
 ) -> float:
@@ -495,6 +508,17 @@ def _calculate_extreme_value_statistics_pyextremes(
         "extremes_type": extremes_type,
     }
 
+    plotting_position_opt = options.get("plotting_position", "weibull")
+    if plotting_position_opt is None:
+        plotting_position = "weibull"
+    else:
+        plotting_position = str(plotting_position_opt).lower()
+    if plotting_position not in _PYEXTREMES_PLOTTING_POSITIONS:
+        raise ValueError(
+            f"Unsupported pyextremes plotting_position '{plotting_position_opt}'"
+        )
+    metadata["plotting_position"] = plotting_position
+
     if method == "POT":
         r_value = options.get("r")
         if r_value is None:
@@ -599,6 +623,7 @@ def _calculate_extreme_value_statistics_pyextremes(
             return_period=pyext_return_periods,
             return_period_size=return_period_size,
             alpha=alpha,
+            plotting_position=plotting_position,
         )
     except Exception:  # pragma: no cover - plotting should not fail analysis
         diagnostic_figure = None
