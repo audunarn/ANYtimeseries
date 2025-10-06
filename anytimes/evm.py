@@ -372,7 +372,11 @@ def _return_levels(
 
 
 
-_DEFAULT_RETURN_PERIODS_HOURS = (0.1, 0.5, 1, 3, 5)
+#: Return periods (in hours) that are always reported in textual summaries and
+#: used when no explicit selection is provided by the caller.
+SUMMARY_RETURN_PERIODS_HOURS = (0.1, 0.5, 1.0, 3.0, 5.0, 10.0)
+
+_DEFAULT_RETURN_PERIODS_HOURS = SUMMARY_RETURN_PERIODS_HOURS
 
 # Default multiples of the selected base return-period size that are queried when
 # PyExtremes calculates return levels.  The GUI presents these values as
@@ -745,10 +749,7 @@ def _calculate_extreme_value_statistics_pyextremes(
             max_period = min_period * 1.1 if min_period > 0 else 1.0
 
         diagnostic_periods = np.linspace(min_period, max_period, 100, dtype=float)
-        return_periods = (
-            np.asarray(_PYEXTREMES_DEFAULT_RETURN_PERIOD_MULTIPLES, dtype=float)
-            * float(base_hours)
-        )
+        return_periods = np.asarray(SUMMARY_RETURN_PERIODS_HOURS, dtype=float)
     else:
         return_periods = np.asarray(tuple(return_periods_hours), dtype=float)
         if np.any(return_periods <= 0):
@@ -818,56 +819,44 @@ def _calculate_extreme_value_statistics_pyextremes(
                 ax.set_axisbelow(True)
 
                 title = ax.get_title().strip().lower()
-                if title == "return values plot":
+                if title in {"return value plot", "return values plot"}:
                     x_min, x_max = ax.get_xlim()
                     if not (np.isfinite(x_min) and np.isfinite(x_max)):
                         continue
 
-                    # Always display the first decade (1–10) so that the grid and
-                    # tick labels explicitly include the 10-year return period.
-                    lower_bound = max(x_min, 1e-6)
-                    upper_bound = max(x_max, 10.0)
+                    preferred_hours = np.asarray(
+                        SUMMARY_RETURN_PERIODS_HOURS, dtype=float
+                    )
+                    preferred = preferred_hours / float(base_hours)
+                    preferred = preferred[np.isfinite(preferred) & (preferred > 0)]
+                    if preferred.size == 0:
+                        continue
+
+                    lower_bound = min(x_min, preferred.min())
+                    upper_bound = max(x_max, preferred.max())
 
                     if ax.get_xscale() != "log":
                         ax.set_xscale("log")
 
                     ax.set_xlim(lower_bound, upper_bound)
-                    lower_bound, upper_bound = ax.get_xlim()
-
-                    base_locator = mticker.LogLocator(base=10.0)
-                    base_formatter = mticker.LogFormatter(labelOnlyBase=False)
-                    first_decade = set(range(1, 11))
-                    auto_ticks = base_locator.tick_values(lower_bound, upper_bound)
-                    major_ticks = sorted(first_decade | set(auto_ticks))
-                    major_tick_set = set(major_ticks)
 
                     def _format_return_period_tick(value: float, _pos: int) -> str:
-                        if not np.isfinite(value) or value <= 0:
+                        hours = value * float(base_hours)
+                        if not np.isfinite(hours) or hours <= 0:
                             return ""
-                        if 1.0 <= value <= 10.0 and abs(value - round(value)) < 1e-6:
-                            return f"{int(round(value))}"
-                        return base_formatter(value)
+                        if abs(hours - round(hours)) < 1e-6 and hours >= 1.0:
+                            return f"{int(round(hours))}"
+                        if hours >= 1.0:
+                            return f"{hours:.1f}".rstrip("0").rstrip(".")
+                        return f"{hours:.2f}".rstrip("0").rstrip(".")
 
-                    ax.xaxis.set_major_locator(mticker.FixedLocator(major_ticks))
+                    ax.xaxis.set_major_locator(
+                        mticker.FixedLocator(sorted(set(preferred)))
+                    )
                     ax.xaxis.set_major_formatter(
                         mticker.FuncFormatter(_format_return_period_tick)
                     )
-
-
-                    minor_locator = mticker.LogLocator(
-                        base=10.0, subs=tuple(range(2, 10))
-                    )
-                    minor_ticks = [
-                        tick
-                        for tick in minor_locator.tick_values(lower_bound, upper_bound)
-                        if tick not in major_tick_set
-                    ]
-                    if minor_ticks:
-                        ax.xaxis.set_minor_locator(
-                            mticker.FixedLocator(sorted(minor_ticks))
-                        )
-                    else:
-                        ax.xaxis.set_minor_locator(mticker.NullLocator())
+                    ax.xaxis.set_minor_locator(mticker.NullLocator())
 
 
     except Exception:  # pragma: no cover - plotting should not fail analysis
@@ -909,6 +898,7 @@ __all__ = [
     "calculate_extreme_value_statistics",
     "decluster_peaks",
     "cluster_exceedances",
+    "SUMMARY_RETURN_PERIODS_HOURS",
 
     "declustering_boundaries",
 
