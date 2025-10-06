@@ -228,7 +228,7 @@ class EVMWindow(QDialog):
     def _declustered_peaks(self, tail: str) -> tuple[np.ndarray, np.ndarray]:
         """Return cluster peaks and their boundaries for ``tail``."""
 
-        window_seconds = max(0.0, float(self.declustering_spin.value()))
+        window_seconds = self._current_declustering_window_seconds()
 
         peaks, boundaries = decluster_peaks(
             np.asarray(self.x, dtype=float),
@@ -238,6 +238,17 @@ class EVMWindow(QDialog):
         )
 
         return peaks, boundaries
+
+    def _current_declustering_window_seconds(self) -> float:
+        """Return the active declustering window in seconds for the current engine."""
+
+        engine = self.engine_combo.currentData()
+        if engine == "pyextremes":
+            value = self.pyext_r_spin.value()
+        else:
+            value = self.declustering_spin.value()
+
+        return max(0.0, float(value))
 
     def _cluster_exceedances(self, threshold, tail):
         peaks, boundaries = self._declustered_peaks(tail)
@@ -440,7 +451,7 @@ class EVMWindow(QDialog):
 
     def _fit_once(self, threshold: float, tail: str, *, precomputed=None):
         engine = self.engine_combo.currentData()
-        declustering_window = max(0.0, float(self.declustering_spin.value()))
+        declustering_window = self._current_declustering_window_seconds()
 
         if precomputed is None:
             clustered_peaks, boundaries = self._cluster_exceedances(threshold, tail)
@@ -458,7 +469,7 @@ class EVMWindow(QDialog):
 
         pyext_options = None
         if engine == "pyextremes":
-            r_seconds = self.pyext_r_spin.value()
+            r_seconds = declustering_window
             return_base = self.pyext_return_size_spin.value()
 
             periods_text = self.pyext_return_periods_edit.text().strip()
