@@ -17,6 +17,7 @@ dependencies = [
     "scipy",
     "PySide6",
     "matplotlib",
+    "pyextremes",
 ]
 
 [project.scripts]
