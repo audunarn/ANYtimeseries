@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Mapping, Sequence
 
+import matplotlib.ticker as mticker
 import numpy as np
 from scipy.stats import genpareto
 
@@ -690,6 +691,16 @@ def _calculate_extreme_value_statistics_pyextremes(
             for ax in diagnostic_figure.axes:
                 ax.grid(True, linestyle="--", alpha=0.5)
                 ax.set_axisbelow(True)
+
+                title = ax.get_title().strip().lower()
+                if title == "return values plot":
+                    locator = mticker.LogLocator(base=10.0, subs=(1.0, 2.0, 5.0))
+                    ax.xaxis.set_major_locator(locator)
+                    ax.xaxis.set_minor_locator(
+                        mticker.LogLocator(base=10.0, subs=tuple(range(1, 10)))
+                    )
+                    ax.xaxis.set_minor_formatter(mticker.NullFormatter())
+
     except Exception:  # pragma: no cover - plotting should not fail analysis
         diagnostic_figure = None
 
