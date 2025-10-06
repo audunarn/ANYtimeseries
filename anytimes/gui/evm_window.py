@@ -108,6 +108,7 @@ class EVMWindow(QDialog):
         self.plot_area = QWidget()
         self.plot_layout = QVBoxLayout(self.plot_area)
         self.fig = Figure(figsize=(6, 4))
+        self._base_figure = self.fig
         self.fig_canvas = FigureCanvasQTAgg(self.fig)
         self.plot_layout.addWidget(self.fig_canvas)
         self._evm_ran = False
@@ -163,7 +164,25 @@ class EVMWindow(QDialog):
 
         return float(np.median(positive))
 
+    def _set_canvas_figure(self, figure: Figure) -> None:
+        """Ensure the matplotlib canvas is showing ``figure``."""
+
+        current_canvas = self.fig_canvas
+        if current_canvas.figure is figure:
+            self.fig = figure
+            return
+
+        self.plot_layout.removeWidget(current_canvas)
+        current_canvas.setParent(None)
+        current_canvas.deleteLater()
+
+        self.fig_canvas = FigureCanvasQTAgg(figure)
+        self.plot_layout.addWidget(self.fig_canvas)
+        self.fig = figure
+
     def plot_timeseries_with_threshold(self, threshold):
+
+        self._set_canvas_figure(self._base_figure)
 
         self.fig.clear()
         ax = self.fig.add_subplot(111)
@@ -320,6 +339,7 @@ class EVMWindow(QDialog):
         if not self._show_canvas_messages:
             return
 
+        self._set_canvas_figure(self._base_figure)
         self.fig.clear()
         self.fig.text(
             0.5,
@@ -525,6 +545,7 @@ class EVMWindow(QDialog):
             evm_result.upper_bounds,
             tail=tail,
             warnings=self._latest_warning,
+            diagnostic_figure=getattr(evm_result, "diagnostic_figure", None),
         )
         self._evm_ran = True
 
@@ -697,16 +718,28 @@ class EVMWindow(QDialog):
         *,
         tail: str,
         warnings: str | None = None,
+        diagnostic_figure: Figure | None = None,
     ):
+        if diagnostic_figure is not None:
+            self._set_canvas_figure(diagnostic_figure)
+            if warnings and self._show_canvas_messages:
+                diagnostic_figure.suptitle(warnings, color="red", fontsize=10)
+                try:
+                    diagnostic_figure.tight_layout(rect=[0, 0, 1, 0.93])
+                except ValueError:
+                    pass
+            self.fig_canvas.draw()
+            return
+
         from scipy.stats import genpareto
 
+        self._set_canvas_figure(self._base_figure)
 
         self.fig.clear()
         self.fig.set_size_inches(14, 4)
         ts_ax = self.fig.add_subplot(1, 3, 1)
         ax = self.fig.add_subplot(1, 3, 2)
         qax = self.fig.add_subplot(1, 3, 3)
-
 
         ts_ax.plot(self.t, self.x, label="Time series")
         ts_ax.axhline(threshold, color="red", linestyle="--", label="Threshold")
@@ -786,6 +819,7 @@ class EVMWindow(QDialog):
         if not self._show_canvas_messages:
             return
 
+        self._set_canvas_figure(self._base_figure)
         self.fig.clear()
         ax = self.fig.add_subplot(111)
         ax.axis("off")
@@ -806,6 +840,7 @@ class EVMWindow(QDialog):
 
         if not checked:
             # Clear any existing message/warning from the canvas when disabled.
+            self._set_canvas_figure(self._base_figure)
             self.fig.clear()
             self.fig_canvas.draw()
 

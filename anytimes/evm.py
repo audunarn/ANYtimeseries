@@ -105,6 +105,7 @@ class ExtremeValueResult:
     exceedance_rate: float
     engine: str = "builtin"
     metadata: Mapping[str, object] | None = None
+    diagnostic_figure: object | None = None
 
 
 @contextmanager
@@ -436,6 +437,7 @@ def _calculate_extreme_value_statistics_builtin(
         exceedance_rate=float(exceed_rate),
         engine="builtin",
         metadata={"method": "scipy_genpareto"},
+        diagnostic_figure=None,
     )
 
 
@@ -591,6 +593,16 @@ def _calculate_extreme_value_statistics_pyextremes(
 
     return_levels, ci_lower, ci_upper = return_values
 
+    diagnostic_figure = None
+    try:
+        diagnostic_figure, _ = eva.plot_diagnostic(
+            return_period=pyext_return_periods,
+            return_period_size=return_period_size,
+            alpha=alpha,
+        )
+    except Exception:  # pragma: no cover - plotting should not fail analysis
+        diagnostic_figure = None
+
     return_levels = np.asarray(return_levels, dtype=float)
     if return_levels.ndim == 0:
         return_levels = return_levels[np.newaxis]
@@ -618,6 +630,7 @@ def _calculate_extreme_value_statistics_pyextremes(
         exceedance_rate=float(exceed_rate),
         engine="pyextremes",
         metadata=metadata,
+        diagnostic_figure=diagnostic_figure,
     )
 
 
