@@ -1463,6 +1463,78 @@ class TimeSeriesEditorQt(QMainWindow):
             label = label.split(":", 1)[-1]
             return re_suffix.sub("", label)
 
+        def _append_segment(ts, offset, last_dt, merged_segments, merged_time_parts):
+            if ts is None:
+                return offset, last_dt
+
+            data = self.apply_filters(ts)
+            mask = self.get_time_window(ts)
+            if isinstance(mask, slice):
+                y_segment = data[mask]
+                t_segment = ts.t[mask]
+            else:
+                if not mask.any():
+                    return offset, last_dt
+                y_segment = data[mask]
+                t_segment = ts.t[mask]
+
+            if y_segment.size == 0:
+                return offset, last_dt
+
+            y_segment = np.asarray(y_segment)
+            raw_time = np.asarray(t_segment)
+
+            if raw_time.dtype.kind == "O":
+                try:
+                    raw_time = raw_time.astype("datetime64[ns]")
+                except (TypeError, ValueError):
+                    raw_time = raw_time.astype(float)
+
+            if np.issubdtype(raw_time.dtype, np.datetime64):
+                raw_time = raw_time.astype("datetime64[ns]").astype("int64") / 1e9
+            elif np.issubdtype(raw_time.dtype, np.timedelta64):
+                raw_time = raw_time.astype("timedelta64[ns]").astype("int64") / 1e9
+            else:
+                raw_time = raw_time.astype(float, copy=False)
+
+            if raw_time.size:
+                local_time = raw_time - raw_time[0]
+            else:
+                local_time = np.zeros_like(raw_time, dtype=float)
+
+            local_time = np.asarray(local_time, dtype=float)
+
+            dt_value = getattr(ts, "dt", None)
+            if dt_value not in (None, 0):
+                dt_value = float(dt_value)
+            else:
+                dt_value = None
+
+            diffs = np.diff(local_time)
+            if dt_value in (None, 0):
+                if diffs.size:
+                    dt_value = float(np.median(diffs))
+                elif last_dt not in (None, 0):
+                    dt_value = float(last_dt)
+                else:
+                    dt_value = 0.0
+
+            merged_segments.append(y_segment)
+            merged_time_parts.append(local_time + offset)
+
+            if dt_value not in (None, 0):
+                last_dt = float(dt_value)
+
+            if local_time.size:
+                if dt_value not in (None, 0):
+                    offset = offset + local_time[-1] + float(dt_value)
+                else:
+                    offset = offset + local_time[-1]
+            elif dt_value not in (None, 0):
+                offset = offset + float(dt_value)
+
+            return offset, last_dt
+
         if not per_file_mode:
             merged_segments = []
             merged_time_parts = []
@@ -1472,46 +1544,9 @@ class TimeSeriesEditorQt(QMainWindow):
             for _, varname in zip(selected_keys, normalized_keys):
                 for tsdb in self.tsdbs:
                     ts = tsdb.getm().get(varname)
-                    if ts is None:
-                        continue
-
-                    data = self.apply_filters(ts)
-                    mask = self.get_time_window(ts)
-                    if isinstance(mask, slice):
-                        y_segment = data[mask]
-                        t_segment = ts.t[mask]
-                    else:
-                        if not mask.any():
-                            continue
-                        y_segment = data[mask]
-                        t_segment = ts.t[mask]
-
-                    if y_segment.size == 0:
-                        continue
-
-                    dt = getattr(ts, "dt", None)
-                    if dt in (None, 0):
-                        local_t = np.asarray(t_segment)
-                        if local_t.size > 1:
-                            if np.issubdtype(local_t.dtype, np.datetime64):
-                                local_t = local_t.astype("datetime64[ns]").astype("int64") / 1e9
-                            dt = float(np.median(np.diff(local_t)))
-                        elif last_dt not in (None, 0):
-                            dt = last_dt
-                        else:
-                            dt = 0.0
-
-                    idx = np.arange(y_segment.size, dtype=float)
-                    local_time = idx * float(dt) if dt else np.zeros_like(idx)
-
-                    merged_segments.append(np.asarray(y_segment))
-                    merged_time_parts.append(local_time + offset)
-
-                    if dt:
-                        last_dt = float(dt)
-                        offset = merged_time_parts[-1][-1] + float(dt)
-                    elif merged_time_parts[-1].size:
-                        offset = merged_time_parts[-1][-1]
+                    offset, last_dt = _append_segment(
+                        ts, offset, last_dt, merged_segments, merged_time_parts
+                    )
 
             if merged_segments:
                 merged_x = np.concatenate(merged_segments)
@@ -1554,46 +1589,9 @@ class TimeSeriesEditorQt(QMainWindow):
 
                 for _, varname in zip(source_labels, varnames):
                     ts = tsdb.getm().get(varname)
-                    if ts is None:
-                        continue
-
-                    data = self.apply_filters(ts)
-                    mask = self.get_time_window(ts)
-                    if isinstance(mask, slice):
-                        y_segment = data[mask]
-                        t_segment = ts.t[mask]
-                    else:
-                        if not mask.any():
-                            continue
-                        y_segment = data[mask]
-                        t_segment = ts.t[mask]
-
-                    if y_segment.size == 0:
-                        continue
-
-                    dt = getattr(ts, "dt", None)
-                    if dt in (None, 0):
-                        local_t = np.asarray(t_segment)
-                        if local_t.size > 1:
-                            if np.issubdtype(local_t.dtype, np.datetime64):
-                                local_t = local_t.astype("datetime64[ns]").astype("int64") / 1e9
-                            dt = float(np.median(np.diff(local_t)))
-                        elif last_dt not in (None, 0):
-                            dt = last_dt
-                        else:
-                            dt = 0.0
-
-                    idx = np.arange(y_segment.size, dtype=float)
-                    local_time = idx * float(dt) if dt else np.zeros_like(idx)
-
-                    merged_segments.append(np.asarray(y_segment))
-                    merged_time_parts.append(local_time + offset)
-
-                    if dt:
-                        last_dt = float(dt)
-                        offset = merged_time_parts[-1][-1] + float(dt)
-                    elif merged_time_parts[-1].size:
-                        offset = merged_time_parts[-1][-1]
+                    offset, last_dt = _append_segment(
+                        ts, offset, last_dt, merged_segments, merged_time_parts
+                    )
 
                 if not merged_segments:
                     continue
