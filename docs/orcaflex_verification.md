@@ -68,6 +68,31 @@ Bootstrap sampling of the parameter covariance produces slightly wider
 confidence intervals, especially for the lower tail where the Monte Carlo
 resamples also vary the cluster rate.
 
+
+### 95% confidence interval sensitivity study
+
+OrcaFlex also reports a 95% interval when the upper threshold is raised to
+38.5 MN·m, the lower threshold to -40 MN·m, and the declustering window is set
+to 15 s.  Matching the OrcaFlex peak count required expanding the separation to
+15.75 s for the upper tail because the maxima in this discrete record occur a
+few samples after the threshold up-crossings.  Feeding those clusters into the
+GPD engine reproduces the point estimates and reported standard errors, while
+the bootstrap interval remains within ~5% of the OrcaFlex bounds.【F:tests/test_evm.py†L47-L64】【F:tests/test_evm.py†L409-L499】
+
+| Quantity | OrcaFlex 11.5e | AnyTimes implementation | Absolute difference |
+| --- | --- | --- | --- |
+| Return level (upper tail, 3 h) | 49,544.513 kN·m | 49,544.551 kN·m | 0.039 kN·m |
+| Lower 95% confidence limit | 46,995.177 kN·m | 45,873.894 kN·m | 1,121.283 kN·m |
+| Upper 95% confidence limit | 55,647.414 kN·m | 52,986.773 kN·m | 2,660.641 kN·m |
+| GPD scale (σ) | 5,426.690 | 5,426.695 | 0.005 |
+| GPD shape (ξ) | -0.21794 | -0.21794 | < 1e-5 |
+| Return level (lower tail, 3 h) | -55,133.342 kN·m | -55,133.391 kN·m | 0.049 kN·m |
+| Lower 95% confidence limit | -60,927.279 kN·m | -58,772.971 kN·m | 2,154.307 kN·m |
+| Upper 95% confidence limit | -52,662.191 kN·m | -52,105.503 kN·m | 556.687 kN·m |
+| GPD scale (σ) | 6,394.120 | 6,394.105 | 0.015 |
+| GPD shape (ξ) | -0.22085 | -0.22085 | < 1e-5 |
+
+
 ### PyExtremes engine
 
 Running the same benchmark through the optional `pyextremes` backend yields an
