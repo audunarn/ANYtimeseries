@@ -159,3 +159,38 @@ def test_merge_common_name_with_colon_not_misclassified(qt_app, message_spy, mon
         assert expected not in tsdb.getm()
     assert not message_spy["crit"]
     assert not message_spy["warn"]
+
+
+def test_merge_preserves_irregular_time_steps(qt_app, message_spy, monkeypatch):
+    files = ["file1.ts"]
+    t1 = np.array([0.0, 1.0, 11.0, 21.0])
+    x1 = np.arange(t1.size, dtype=float)
+    ts1 = TimeSeries("VarA", t1, x1)
+    ts1.dt = None
+
+    t2 = np.array([0.0, 2.0, 5.0])
+    x2 = np.arange(t2.size, dtype=float) + 100.0
+    ts2 = TimeSeries("VarB", t2, x2)
+    ts2.dt = None
+
+    tsdb = DummyDB({"VarA": ts1, "VarB": ts2})
+
+    editor = _build_editor(monkeypatch, [tsdb], files)
+    editor.var_checkboxes["VarA"].setChecked(True)
+    editor.var_checkboxes["VarB"].setChecked(True)
+
+    editor.merge_selected_series()
+    qt_app.processEvents()
+
+    created = [name for name in tsdb.getm() if name.startswith("merge(")]
+    assert len(created) == 1
+    merged = tsdb.getm()[created[0]]
+
+    assert merged.x.size == t1.size + t2.size
+    assert np.allclose(merged.t[: t1.size], t1)
+
+    second_segment = merged.t[t1.size :]
+    assert np.allclose(second_segment - second_segment[0], t2 - t2[0])
+    assert second_segment[0] > t1[-1]
+    assert not message_spy["crit"]
+    assert not message_spy["warn"]
