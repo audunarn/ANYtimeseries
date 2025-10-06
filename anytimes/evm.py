@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Mapping, Sequence
 
+import matplotlib.ticker as mticker
 import numpy as np
 from scipy.stats import genpareto
 
@@ -262,13 +263,16 @@ def _return_levels(
 
 
 
+_DEFAULT_RETURN_PERIODS_HOURS = (0.1, 0.5, 1, 3, 5)
+
+
 def calculate_extreme_value_statistics(
     t: np.ndarray,
     x: np.ndarray,
     threshold: float,
     *,
     tail: str = "upper",
-    return_periods_hours: Sequence[float] = (0.1, 0.5, 1, 3, 5),
+    return_periods_hours: Sequence[float] | None = _DEFAULT_RETURN_PERIODS_HOURS,
     confidence_level: float = 95.0,
     n_bootstrap: int = 500,
     rng: np.random.Generator | None = None,
@@ -290,12 +294,17 @@ def calculate_extreme_value_statistics(
 
     engine_key = (engine or "builtin").lower()
     if engine_key in {"builtin", "gpd", "scipy"}:
+        builtin_return_periods = (
+            _DEFAULT_RETURN_PERIODS_HOURS
+            if return_periods_hours is None
+            else return_periods_hours
+        )
         return _calculate_extreme_value_statistics_builtin(
             t,
             x,
             threshold,
             tail=tail,
-            return_periods_hours=return_periods_hours,
+            return_periods_hours=builtin_return_periods,
             confidence_level=confidence_level,
             n_bootstrap=n_bootstrap,
             rng=rng,
@@ -324,7 +333,7 @@ def _calculate_extreme_value_statistics_builtin(
     threshold: float,
     *,
     tail: str,
-    return_periods_hours: Sequence[float],
+    return_periods_hours: Sequence[float] | None,
     confidence_level: float,
     n_bootstrap: int,
     rng: np.random.Generator | None,
@@ -581,10 +590,6 @@ def _calculate_extreme_value_statistics_pyextremes(
 
     exceed_rate = exceedances.size / duration_hours
 
-    return_periods = np.asarray(tuple(return_periods_hours), dtype=float)
-    if np.any(return_periods <= 0):
-        raise ValueError("Return periods must be positive")
-
     return_period_size = _coerce_timedelta(
         options.get("return_period_size", "1h"),
         argument="return_period_size",
@@ -595,7 +600,42 @@ def _calculate_extreme_value_statistics_pyextremes(
     if base_hours <= 0:
         raise ValueError("return_period_size must be positive")
 
-    pyext_return_periods = return_periods / float(base_hours)
+    if return_periods_hours is None:
+        from pyextremes.extremes import return_periods as _pyext_return_periods
+
+        observed_return_values = _pyext_return_periods.get_return_periods(
+            ts=series,
+            extremes=eva.extremes,
+            extremes_method=method,
+            extremes_type=extremes_type,
+            block_size=options.get("block_size") if method == "BM" else None,
+            return_period_size=return_period_size,
+            plotting_position=plotting_position,
+        )
+
+        observed_periods = observed_return_values.loc[:, "return period"].astype(float)
+        if observed_periods.empty:
+            raise ValueError("PyExtremes did not identify any return periods")
+
+        min_period = float(np.nanmin(observed_periods))
+        max_period = float(np.nanmax(observed_periods))
+
+        if not np.isfinite(min_period) or not np.isfinite(max_period):
+            raise ValueError("PyExtremes produced invalid return periods")
+
+        if max_period <= min_period:
+            max_period = min_period * 1.1 if min_period > 0 else 1.0
+
+        pyext_return_periods = np.linspace(min_period, max_period, 100, dtype=float)
+        return_periods = pyext_return_periods * float(base_hours)
+        metadata["return_periods_hours"] = tuple(return_periods)
+    else:
+        return_periods = np.asarray(tuple(return_periods_hours), dtype=float)
+        if np.any(return_periods <= 0):
+            raise ValueError("Return periods must be positive")
+
+        pyext_return_periods = return_periods / float(base_hours)
+        metadata["return_periods_hours"] = tuple(return_periods)
 
 
     if "diagnostic_return_periods" in options:
@@ -604,7 +644,7 @@ def _calculate_extreme_value_statistics_pyextremes(
         diagnostic_return_periods_opt = None
 
     if diagnostic_return_periods_opt is None:
-        diagnostic_return_periods = None
+        diagnostic_return_periods = pyext_return_periods
     else:
         diagnostic_return_periods = np.asarray(
             tuple(diagnostic_return_periods_opt), dtype=float
@@ -647,6 +687,19 @@ def _calculate_extreme_value_statistics_pyextremes(
             alpha=alpha,
             plotting_position=plotting_position,
         )
+        if diagnostic_figure is not None:
+            for ax in diagnostic_figure.axes:
+                ax.grid(True, linestyle="--", alpha=0.5)
+                ax.set_axisbelow(True)
+
+                title = ax.get_title().strip().lower()
+                if title == "return values plot":
+                    locator = mticker.LogLocator(base=10.0, subs=(1.0, 2.0, 5.0))
+                    ax.xaxis.set_major_locator(locator)
+                    ax.xaxis.set_minor_locator(
+                        mticker.LogLocator(base=10.0, subs=tuple(range(1, 10)))
+                    )
+                    ax.xaxis.set_minor_formatter(mticker.NullFormatter())
     except Exception:  # pragma: no cover - plotting should not fail analysis
         diagnostic_figure = None
 

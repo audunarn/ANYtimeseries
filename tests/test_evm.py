@@ -377,6 +377,37 @@ def test_pyextremes_engine_allows_default_diagnostic_return_periods():
 
 
 @pytest.mark.skipif(pyextremes is None, reason="pyextremes is not installed")
+def test_pyextremes_engine_accepts_none_return_periods():
+    t, x = _synthetic_series()
+    threshold = 1.2
+
+    res = calculate_extreme_value_statistics(
+        t,
+        x,
+        threshold,
+        tail="upper",
+        return_periods_hours=None,
+        confidence_level=90.0,
+        engine="pyextremes",
+        pyextremes_options={
+            "r": 1.0,
+            "return_period_size": "1h",
+            "n_samples": 120,
+        },
+        rng=np.random.default_rng(13579),
+    )
+
+    assert res.engine == "pyextremes"
+    assert res.return_periods.ndim == 1
+    assert res.return_periods.size >= 2
+    assert np.all(np.isfinite(res.return_periods))
+    assert res.metadata is not None
+    stored_periods = res.metadata.get("return_periods_hours")
+    assert isinstance(stored_periods, tuple)
+    assert len(stored_periods) == res.return_periods.size
+
+
+@pytest.mark.skipif(pyextremes is None, reason="pyextremes is not installed")
 def test_pyextremes_engine_rejects_invalid_plotting_position():
     t, x = _synthetic_series()
 
