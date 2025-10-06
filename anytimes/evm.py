@@ -597,6 +597,26 @@ def _calculate_extreme_value_statistics_pyextremes(
 
     pyext_return_periods = return_periods / float(base_hours)
 
+    if "diagnostic_return_periods" in options:
+        diagnostic_return_periods_opt = options.get("diagnostic_return_periods")
+    else:
+        diagnostic_return_periods_opt = None
+    if diagnostic_return_periods_opt is None:
+        diagnostic_return_periods = None
+    else:
+        diagnostic_return_periods = np.asarray(
+            tuple(diagnostic_return_periods_opt), dtype=float
+        )
+        if np.any(diagnostic_return_periods <= 0):
+            raise ValueError("diagnostic_return_periods must be positive")
+        diagnostic_return_periods = diagnostic_return_periods / float(base_hours)
+
+    metadata["diagnostic_return_periods"] = (
+        None
+        if diagnostic_return_periods_opt is None
+        else tuple(np.asarray(diagnostic_return_periods_opt, dtype=float))
+    )
+
     alpha = float(confidence_level) / 100.0
     alpha = min(max(alpha, 1e-6), 0.999999)
 
@@ -620,7 +640,7 @@ def _calculate_extreme_value_statistics_pyextremes(
     diagnostic_figure = None
     try:
         diagnostic_figure, _ = eva.plot_diagnostic(
-            return_period=pyext_return_periods,
+            return_period=diagnostic_return_periods,
             return_period_size=return_period_size,
             alpha=alpha,
             plotting_position=plotting_position,

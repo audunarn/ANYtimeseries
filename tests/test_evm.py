@@ -269,6 +269,7 @@ def test_pyextremes_engine_returns_consistent_structure():
             "r": 1.0,
             "return_period_size": "1h",
             "n_samples": 200,
+            "diagnostic_return_periods": (0.5, 1.0, 2.0),
         },
         rng=np.random.default_rng(1234),
     )
@@ -284,6 +285,7 @@ def test_pyextremes_engine_returns_consistent_structure():
     assert res.metadata is not None
     assert "distribution" in res.metadata
     assert res.metadata.get("plotting_position") == "weibull"
+    assert res.metadata.get("diagnostic_return_periods") == (0.5, 1.0, 2.0)
 
 
 @pytest.mark.skipif(pyextremes is None, reason="pyextremes is not installed")
@@ -347,6 +349,31 @@ def test_pyextremes_engine_accepts_plotting_position_selection():
 
     assert res.metadata is not None
     assert res.metadata.get("plotting_position") == "median"
+
+
+@pytest.mark.skipif(pyextremes is None, reason="pyextremes is not installed")
+def test_pyextremes_engine_allows_default_diagnostic_return_periods():
+    t, x = _synthetic_series()
+    threshold = 1.2
+
+    res = calculate_extreme_value_statistics(
+        t,
+        x,
+        threshold,
+        tail="upper",
+        return_periods_hours=(0.5, 1.0, 2.0),
+        confidence_level=90.0,
+        engine="pyextremes",
+        pyextremes_options={
+            "r": 1.0,
+            "return_period_size": "1h",
+            "n_samples": 200,
+        },
+        rng=np.random.default_rng(5678),
+    )
+
+    assert res.metadata is not None
+    assert res.metadata.get("diagnostic_return_periods") is None
 
 
 @pytest.mark.skipif(pyextremes is None, reason="pyextremes is not installed")
