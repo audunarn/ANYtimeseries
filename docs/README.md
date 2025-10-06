@@ -130,11 +130,13 @@ Selecting **Show statistic for selected variables** opens a table with descripti
 
 ## Extreme Value Statistics Window
 
-Launched from **Open Extreme Value Statistics Tool**, this dialog estimates return levels using a Generalized Pareto distribution. Features include:
+Launched from **Open Extreme Value Statistics Tool**, this dialog estimates return levels using either the built-in SciPy fitter or the optional `pyextremes` engine. Features include:
 
+- Engine selector to switch between the original Generalized Pareto fit and a PyExtremes Peaks-Over-Threshold pipeline.
 - Tail selection (**upper** or **lower**).
 - Threshold spin box with **Calc Threshold** helper.
 - Confidence level input for bootstrap intervals.
+- PyExtremes-specific controls for the declustering window, return-period base and bootstrap sample count.
 - **Run EVM** performs the analysis and updates the result text.
 - Plots of the raw time series with threshold, return level curve and a quantile comparison.
 

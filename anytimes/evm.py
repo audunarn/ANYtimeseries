@@ -1,8 +1,14 @@
-"""Utility functions for Extreme Value (Generalized Pareto) analysis."""
+"""Utility functions for Extreme Value analysis.
+
+This module contains both the original built-in Generalized Pareto
+implementation as well as an optional interface to the ``pyextremes``
+package.  The GUI can now choose between the two engines at run time.
+"""
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Mapping, Sequence
 
 import numpy as np
 from scipy.stats import genpareto
@@ -73,9 +79,20 @@ def _gpd_parameter_covariance(
     return covariance
 
 
+def _normalise_tail(tail: str) -> str:
+    """Return the canonical tail label (``"upper"`` or ``"lower"``)."""
+
+    tail_key = tail.lower()
+    if tail_key in {"upper", "high"}:
+        return "upper"
+    if tail_key in {"lower", "low"}:
+        return "lower"
+    raise ValueError("tail must be 'upper'/'high' or 'lower'/'low'")
+
+
 @dataclass(frozen=True)
 class ExtremeValueResult:
-    """Container for Generalized Pareto extreme value analysis results."""
+    """Container for extreme value analysis results."""
 
     return_periods: np.ndarray
     return_levels: np.ndarray
@@ -86,6 +103,24 @@ class ExtremeValueResult:
     exceedances: np.ndarray
     threshold: float
     exceedance_rate: float
+    engine: str = "builtin"
+    metadata: Mapping[str, object] | None = None
+
+
+@contextmanager
+def _temporary_numpy_seed(seed: int | None):
+    """Context manager that temporarily sets the global NumPy RNG seed."""
+
+    if seed is None:
+        yield
+        return
+
+    state = np.random.get_state()
+    np.random.seed(int(seed) & 0xFFFF_FFFF)
+    try:
+        yield
+    finally:
+        np.random.set_state(state)
 
 
 
@@ -95,8 +130,11 @@ def declustering_boundaries(signal: np.ndarray, tail: str) -> np.ndarray:
     The GUI declustering routine separates the record whenever it crosses the
     mean level and then keeps the most extreme value from each segment.  This
     helper mirrors that behaviour so that both the GUI and the reusable module
-    use identical clustering logic.
+    use identical clustering logic.  ``tail`` may be supplied as ``"upper"`` /
+    ``"high"`` for maxima or ``"lower"`` / ``"low"`` for minima.
     """
+
+    tail = _normalise_tail(tail)
 
     if signal.size == 0:
         return np.array([0], dtype=int)
@@ -119,12 +157,12 @@ def cluster_exceedances(x: np.ndarray, threshold: float, tail: str) -> np.ndarra
 
     The GUI performs a crude declustering by splitting the signal on mean level
     crossings and picking the most extreme value in each segment. Re-use the
-    same logic here so that the behaviour can be tested without the GUI.
+    same logic here so that the behaviour can be tested without the GUI.  The
+    ``tail`` argument accepts either ``"upper"`` / ``"high"`` or ``"lower"`` /
+    ``"low"`` aliases.
     """
 
-    if tail not in {"upper", "lower"}:
-        raise ValueError("tail must be 'upper' or 'lower'")
-
+    tail = _normalise_tail(tail)
 
     boundaries = declustering_boundaries(x, tail)
 
@@ -148,6 +186,8 @@ def _prepare_tail_arrays(
     t: np.ndarray, x: np.ndarray, tail: str
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return sorted copies of ``t`` and ``x`` suitable for analysis."""
+
+    tail = _normalise_tail(tail)
 
     if t.shape != x.shape:
         raise ValueError("t and x must have matching shapes")
@@ -220,37 +260,66 @@ def calculate_extreme_value_statistics(
     rng: np.random.Generator | None = None,
     clustered_peaks: np.ndarray | None = None,
     sample_exceedance_rate: bool = False,
+    engine: str = "builtin",
+    pyextremes_options: Mapping[str, object] | None = None,
 ) -> ExtremeValueResult:
-    """Estimate return levels using the Generalized Pareto distribution.
+    """Estimate return levels for the requested extreme value ``engine``.
 
-    Parameters
-    ----------
-    t, x:
-        Time stamps and samples of the signal.
-    threshold:
-        Level above which exceedances are analysed.
-    tail:
-        "upper" for high extremes, "lower" for low extremes.
-    return_periods_hours:
-        Iterable of return periods (in hours) for which to compute levels.
-    confidence_level:
-        Percent confidence level for the bootstrap interval.
-    n_bootstrap:
-        Number of multivariate normal samples used to approximate the
-        confidence interval.  Set to zero to skip the interval calculation.
-    rng:
-        Optional :class:`numpy.random.Generator` for deterministic bootstrapping.
-    sample_exceedance_rate:
-        If ``True``, include Poisson variability in the storm occurrence rate
-        when bootstrapping return levels.
+    The default ``engine='builtin'`` reproduces the historical behaviour using
+    SciPy's Generalized Pareto fitting.  Selecting ``engine='pyextremes'``
+    dispatches the computation to :mod:`pyextremes` while keeping the return
+    signature identical.  ``tail`` accepts both ``"upper"`` / ``"high"`` and
+    ``"lower"`` / ``"low"`` labels.
     """
 
-    if tail not in {"upper", "lower"}:
-        raise ValueError("tail must be 'upper' or 'lower'")
+    tail = _normalise_tail(tail)
 
+    engine_key = (engine or "builtin").lower()
+    if engine_key in {"builtin", "gpd", "scipy"}:
+        return _calculate_extreme_value_statistics_builtin(
+            t,
+            x,
+            threshold,
+            tail=tail,
+            return_periods_hours=return_periods_hours,
+            confidence_level=confidence_level,
+            n_bootstrap=n_bootstrap,
+            rng=rng,
+            clustered_peaks=clustered_peaks,
+            sample_exceedance_rate=sample_exceedance_rate,
+        )
+
+    if engine_key == "pyextremes":
+        return _calculate_extreme_value_statistics_pyextremes(
+            t,
+            x,
+            threshold,
+            tail=tail,
+            return_periods_hours=return_periods_hours,
+            confidence_level=confidence_level,
+            rng=rng,
+            options=pyextremes_options or {},
+        )
+
+    raise ValueError(f"Unknown extreme value engine '{engine}'")
+
+
+def _calculate_extreme_value_statistics_builtin(
+    t: np.ndarray,
+    x: np.ndarray,
+    threshold: float,
+    *,
+    tail: str,
+    return_periods_hours: Sequence[float],
+    confidence_level: float,
+    n_bootstrap: int,
+    rng: np.random.Generator | None,
+    clustered_peaks: np.ndarray | None,
+    sample_exceedance_rate: bool,
+) -> ExtremeValueResult:
+    """Original Generalized Pareto implementation used by the GUI."""
 
     t, x = _prepare_tail_arrays(np.asarray(t, dtype=float), np.asarray(x, dtype=float), tail)
-
 
     if clustered_peaks is None:
         clustered_peaks = cluster_exceedances(x, threshold, tail)
@@ -259,7 +328,6 @@ def calculate_extreme_value_statistics(
     if clustered_peaks.size == 0:
         raise ValueError("No exceedances found above the provided threshold")
 
-
     if tail == "upper":
         excesses = clustered_peaks - threshold
     else:
@@ -267,7 +335,7 @@ def calculate_extreme_value_statistics(
     if np.any(excesses <= 0):
         raise ValueError("Threshold must be exceeded by all clustered peaks")
 
-    shape, loc, scale = genpareto.fit(excesses, floc=0)
+    shape, _loc, scale = genpareto.fit(excesses, floc=0)
 
     duration_seconds = float(t[-1] - t[0])
     duration_hours = duration_seconds / 3600.0
@@ -365,9 +433,191 @@ def calculate_extreme_value_statistics(
         scale=float(scale),
         exceedances=clustered_peaks,
         threshold=float(threshold),
-
         exceedance_rate=float(exceed_rate),
+        engine="builtin",
+        metadata={"method": "scipy_genpareto"},
+    )
 
+
+def _calculate_extreme_value_statistics_pyextremes(
+    t: np.ndarray,
+    x: np.ndarray,
+    threshold: float,
+    *,
+    tail: str,
+    return_periods_hours: Sequence[float],
+    confidence_level: float,
+    rng: np.random.Generator | None,
+    options: Mapping[str, object],
+) -> ExtremeValueResult:
+    """Estimate return levels using :mod:`pyextremes`."""
+
+    try:
+        import pandas as pd
+        from pyextremes import EVA
+    except ImportError as exc:  # pragma: no cover - defensive guard
+        raise ImportError(
+            "pyextremes must be installed to use engine='pyextremes'"
+        ) from exc
+
+    t_arr, x_arr = _prepare_tail_arrays(
+        np.asarray(t, dtype=float), np.asarray(x, dtype=float), tail
+    )
+
+    if t_arr.size < 2:
+        raise ValueError("At least two samples are required for extreme value analysis")
+
+    start_time = pd.Timestamp("1970-01-01")
+    offsets = pd.to_timedelta(t_arr - t_arr[0], unit="s")
+    index = start_time + offsets
+    series = pd.Series(x_arr, index=index, name="signal")
+
+    method = str(options.get("method", "POT")).upper()
+    extremes_type = "high" if tail == "upper" else "low"
+
+    eva = EVA(series)
+
+    def _coerce_timedelta(value, *, default_unit="s", argument="value"):
+        if value is None:
+            return None
+        if isinstance(value, pd.Timedelta):
+            return value
+        if isinstance(value, str):
+            return pd.to_timedelta(value)
+        if isinstance(value, (int, float)):
+            return pd.to_timedelta(value, unit=default_unit)
+        raise TypeError(f"Invalid type for {argument}: {type(value)!r}")
+
+    metadata: dict[str, object] = {
+        "method": method,
+        "extremes_type": extremes_type,
+    }
+
+    if method == "POT":
+        r_value = options.get("r")
+        if r_value is None:
+            diffs = np.diff(t_arr)
+            positive_diffs = diffs[diffs > 0]
+            if positive_diffs.size:
+                median_step = float(np.median(positive_diffs))
+            else:
+                median_step = 0.0
+            r_td = _coerce_timedelta(median_step, argument="r")
+        else:
+            r_td = _coerce_timedelta(r_value, argument="r")
+
+        eva.get_extremes(
+            method="POT",
+            extremes_type=extremes_type,
+            threshold=float(threshold),
+            r=r_td,
+        )
+        metadata["declustering_window"] = r_td
+    elif method == "BM":
+        block_size = options.get("block_size", "24h")
+        block_td = _coerce_timedelta(block_size, argument="block_size")
+        eva.get_extremes(
+            method="BM",
+            extremes_type=extremes_type,
+            block_size=block_td,
+        )
+        metadata["block_size"] = block_td
+    else:
+        raise ValueError(f"Unsupported pyextremes method '{method}'")
+
+    distribution = options.get("distribution")
+    if distribution is None:
+        distribution = "genpareto" if method == "POT" else "genextreme"
+
+    fit_kwargs = dict(options.get("fit_kwargs", {}))
+    eva.fit_model(distribution=distribution, **fit_kwargs)
+    metadata["distribution"] = distribution
+
+    exceedances = eva.extremes.values
+    if exceedances.size == 0:
+        raise ValueError("PyExtremes did not identify any exceedances")
+
+    params = dict(eva.model.distribution.mle_parameters)
+    shape = params.get("c")
+    if shape is None:
+        shape = params.get("shape")
+    if shape is None:
+        shape = params.get("xi")
+    scale = params.get("scale")
+
+    shape = float(shape) if shape is not None else float("nan")
+    scale = float(scale) if scale is not None else float("nan")
+
+    duration_seconds = float(t_arr[-1] - t_arr[0])
+    duration_hours = duration_seconds / 3600.0
+    if duration_hours <= 0:
+        raise ValueError("Time array must span a non-zero duration")
+
+    exceed_rate = exceedances.size / duration_hours
+
+    return_periods = np.asarray(tuple(return_periods_hours), dtype=float)
+    if np.any(return_periods <= 0):
+        raise ValueError("Return periods must be positive")
+
+    return_period_size = _coerce_timedelta(
+        options.get("return_period_size", "1h"),
+        argument="return_period_size",
+    )
+    metadata["return_period_size"] = return_period_size
+
+    base_hours = return_period_size / np.timedelta64(1, "h")
+    if base_hours <= 0:
+        raise ValueError("return_period_size must be positive")
+
+    pyext_return_periods = return_periods / float(base_hours)
+
+    alpha = float(confidence_level) / 100.0
+    alpha = min(max(alpha, 1e-6), 0.999999)
+
+    n_samples = int(options.get("n_samples", 400))
+    metadata["n_samples"] = n_samples
+
+    seed = None
+    if rng is not None:
+        seed = int(rng.integers(0, 2**31 - 1))
+
+    with _temporary_numpy_seed(seed):
+        return_values = eva.get_return_value(
+            return_period=pyext_return_periods,
+            return_period_size=return_period_size,
+            alpha=alpha,
+            n_samples=n_samples,
+        )
+
+    return_levels, ci_lower, ci_upper = return_values
+
+    return_levels = np.asarray(return_levels, dtype=float)
+    if return_levels.ndim == 0:
+        return_levels = return_levels[np.newaxis]
+
+    def _as_array(value) -> np.ndarray:
+        if value is None:
+            return np.full(return_levels.shape, np.nan)
+        arr = np.asarray(value, dtype=float)
+        if arr.ndim == 0:
+            arr = arr[np.newaxis]
+        return arr
+
+    lower_bounds = _as_array(ci_lower)
+    upper_bounds = _as_array(ci_upper)
+
+    return ExtremeValueResult(
+        return_periods=return_periods,
+        return_levels=return_levels,
+        lower_bounds=lower_bounds,
+        upper_bounds=upper_bounds,
+        shape=shape,
+        scale=scale,
+        exceedances=np.asarray(exceedances, dtype=float),
+        threshold=float(threshold),
+        exceedance_rate=float(exceed_rate),
+        engine="pyextremes",
+        metadata=metadata,
     )
 
 

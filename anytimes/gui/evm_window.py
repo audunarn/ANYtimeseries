@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QLabel,
     QPushButton,
+    QSpinBox,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -50,6 +51,13 @@ class EVMWindow(QDialog):
         self.x = self.ts.x
         self.t = self.ts.t
 
+        self.engine_combo = QComboBox()
+        self.engine_combo.addItem("Built-in (GPD)", "builtin")
+        self.engine_combo.addItem("PyExtremes (POT)", "pyextremes")
+        self.engine_combo.currentIndexChanged.connect(self.on_engine_changed)
+
+        self.distribution_label = QLabel("Distribution: Generalized Pareto (built-in)")
+
         self.tail_combo = QComboBox()
         self.tail_combo.addItems(["upper", "lower"])
         self.tail_combo.setCurrentText("upper")
@@ -68,6 +76,27 @@ class EVMWindow(QDialog):
         self.threshold_spin.editingFinished.connect(self.on_manual_threshold)
 
         self._manual_threshold = threshold
+
+        self.pyext_r_spin = QDoubleSpinBox()
+        self.pyext_r_spin.setDecimals(3)
+        self.pyext_r_spin.setRange(0.0, 1e9)
+        self.pyext_r_spin.setSuffix(" s")
+        self.pyext_r_spin.setKeyboardTracking(False)
+        self.pyext_r_spin.setValue(round(self._suggest_pyextremes_window(), 3))
+
+        self.pyext_return_size_spin = QDoubleSpinBox()
+        self.pyext_return_size_spin.setDecimals(3)
+        self.pyext_return_size_spin.setRange(0.001, 1e6)
+        self.pyext_return_size_spin.setSuffix(" h")
+        self.pyext_return_size_spin.setKeyboardTracking(False)
+        self.pyext_return_size_spin.setValue(1.0)
+
+        self.pyext_samples_spin = QSpinBox()
+        self.pyext_samples_spin.setRange(50, 10000)
+        self.pyext_samples_spin.setSingleStep(50)
+        self.pyext_samples_spin.setValue(400)
+
+        self._pyext_widgets: list[QWidget] = []
 
         #
 
@@ -119,6 +148,20 @@ class EVMWindow(QDialog):
             attempts += 1
 
         return threshold
+
+    def _suggest_pyextremes_window(self) -> float:
+        """Return a representative declustering window in seconds."""
+
+        t = np.asarray(self.t, dtype=float)
+        if t.size < 2:
+            return 0.0
+
+        diffs = np.diff(np.sort(t))
+        positive = diffs[diffs > 0]
+        if positive.size == 0:
+            return 0.0
+
+        return float(np.median(positive))
 
     def plot_timeseries_with_threshold(self, threshold):
 
@@ -201,23 +244,58 @@ class EVMWindow(QDialog):
     def build_inputs(self):
         layout = QGridLayout(self.inputs_widget)
 
-        layout.addWidget(QLabel("Distribution: Generalized Pareto"), 0, 0, 1, 3)
+        row = 0
+        layout.addWidget(QLabel("Extreme value engine:"), row, 0)
+        layout.addWidget(self.engine_combo, row, 1, 1, 2)
+        row += 1
 
-        layout.addWidget(QLabel("Threshold:"), 1, 0)
-        layout.addWidget(self.threshold_spin, 1, 1)
+        layout.addWidget(self.distribution_label, row, 0, 1, 3)
+        row += 1
+
+        layout.addWidget(QLabel("Threshold:"), row, 0)
+        layout.addWidget(self.threshold_spin, row, 1)
         self.calc_threshold_btn = QPushButton("Calc Threshold")
         self.calc_threshold_btn.clicked.connect(self.on_calc_threshold)
-        layout.addWidget(self.calc_threshold_btn, 1, 2)
+        layout.addWidget(self.calc_threshold_btn, row, 2)
+        row += 1
 
         self.ci_spin = QDoubleSpinBox()
         self.ci_spin.setDecimals(1)
         self.ci_spin.setValue(95.0)
-        layout.addWidget(QLabel("Extremes to analyse:"), 2, 0)
-        layout.addWidget(self.tail_combo, 2, 1)
+        layout.addWidget(QLabel("Extremes to analyse:"), row, 0)
+        layout.addWidget(self.tail_combo, row, 1)
+        row += 1
 
-        layout.addWidget(QLabel("Confidence level (%):"), 3, 0)
-        layout.addWidget(self.ci_spin, 3, 1)
+        layout.addWidget(QLabel("Confidence level (%):"), row, 0)
+        layout.addWidget(self.ci_spin, row, 1)
         self.ci_spin.valueChanged.connect(self.on_ci_changed)
+        row += 1
+
+        self.pyext_r_label = QLabel("PyExtremes declustering window:")
+        layout.addWidget(self.pyext_r_label, row, 0)
+        layout.addWidget(self.pyext_r_spin, row, 1)
+        row += 1
+
+        self.pyext_return_label = QLabel("PyExtremes return-period base:")
+        layout.addWidget(self.pyext_return_label, row, 0)
+        layout.addWidget(self.pyext_return_size_spin, row, 1)
+        row += 1
+
+        self.pyext_samples_label = QLabel("PyExtremes bootstrap samples:")
+        layout.addWidget(self.pyext_samples_label, row, 0)
+        layout.addWidget(self.pyext_samples_spin, row, 1)
+        row += 1
+
+        self._pyext_widgets.extend(
+            [
+                self.pyext_r_label,
+                self.pyext_r_spin,
+                self.pyext_return_label,
+                self.pyext_return_size_spin,
+                self.pyext_samples_label,
+                self.pyext_samples_spin,
+            ]
+        )
 
         self.canvas_message_checkbox = QCheckBox("Show messages on canvas")
         self.canvas_message_checkbox.setChecked(True)
@@ -225,13 +303,16 @@ class EVMWindow(QDialog):
 
         run_btn = QPushButton("Run EVM")
         run_btn.clicked.connect(self.run_evm)
-        layout.addWidget(run_btn, 4, 0, 1, 2)
+        layout.addWidget(run_btn, row, 0, 1, 2)
 
         iterate_btn = QPushButton("Iterate Fit")
         iterate_btn.clicked.connect(self.on_iterate_fit)
-        layout.addWidget(iterate_btn, 4, 2)
+        layout.addWidget(iterate_btn, row, 2)
+        row += 1
 
-        layout.addWidget(self.canvas_message_checkbox, 5, 0, 1, 3)
+        layout.addWidget(self.canvas_message_checkbox, row, 0, 1, 3)
+
+        self.on_engine_changed(self.engine_combo.currentIndex())
 
     def show_canvas_message(self, message: str):
         """Display *message* on the plot canvas."""
@@ -250,6 +331,19 @@ class EVMWindow(QDialog):
             fontsize=11,
         )
         self.fig_canvas.draw()
+
+    def on_engine_changed(self, index: int) -> None:
+        engine = self.engine_combo.itemData(index)
+        is_pyextremes = engine == "pyextremes"
+
+        self.distribution_label.setText(
+            "Distribution: PyExtremes (Generalized Pareto)"
+            if is_pyextremes
+            else "Distribution: Generalized Pareto (built-in)"
+        )
+
+        for widget in self._pyext_widgets:
+            widget.setVisible(is_pyextremes)
 
     def run_evm(self):
         tail = self.tail_combo.currentText()
@@ -287,6 +381,8 @@ class EVMWindow(QDialog):
 
 
     def _fit_once(self, threshold: float, tail: str, *, precomputed=None):
+        engine = self.engine_combo.currentData()
+
         if precomputed is None:
             clustered_peaks, boundaries = self._cluster_exceedances(threshold, tail)
         else:
@@ -298,8 +394,19 @@ class EVMWindow(QDialog):
             else:
                 clustered_peaks = peaks[peaks < threshold]
 
-        if len(clustered_peaks) < 10:
+        if engine != "pyextremes" and len(clustered_peaks) < 10:
             return "insufficient", {"count": len(clustered_peaks), "threshold": threshold}
+
+        pyext_options = None
+        if engine == "pyextremes":
+            r_seconds = self.pyext_r_spin.value()
+            return_base = self.pyext_return_size_spin.value()
+            pyext_options = {
+                "method": "POT",
+                "r": r_seconds,
+                "return_period_size": f"{return_base}h",
+                "n_samples": self.pyext_samples_spin.value(),
+            }
 
         try:
             evm_result = calculate_extreme_value_statistics(
@@ -308,10 +415,18 @@ class EVMWindow(QDialog):
                 threshold,
                 tail=tail,
                 confidence_level=self.ci_spin.value(),
-                clustered_peaks=clustered_peaks,
+                clustered_peaks=clustered_peaks if engine != "pyextremes" else None,
+                engine=engine,
+                pyextremes_options=pyext_options,
             )
         except Exception as exc:  # pragma: no cover - defensive GUI guard
             return "error", {"message": str(exc), "threshold": threshold}
+
+        if engine == "pyextremes" and len(evm_result.exceedances) < 10:
+            return (
+                "insufficient",
+                {"count": len(evm_result.exceedances), "threshold": threshold},
+            )
 
         c = evm_result.shape
 
@@ -349,16 +464,37 @@ class EVMWindow(QDialog):
         units = ""
         max_val = np.max(self.x) if tail == "upper" else np.min(self.x)
 
-        header = f"Extreme value statistics: {self.ts.name}"
+        header = f"Extreme value statistics ({self.engine_combo.currentText()}): {self.ts.name}"
         if self._latest_warning:
             header = f"{header}\n\n{self._latest_warning}"
         result = f"{header}\n\n"
+
+        if evm_result.engine == "pyextremes" and evm_result.metadata:
+            meta_lines: list[str] = []
+            method = evm_result.metadata.get("method")
+            if isinstance(method, str):
+                meta_lines.append(f"PyExtremes method: {method}")
+            rp_size = evm_result.metadata.get("return_period_size")
+            if rp_size is not None:
+                meta_lines.append(f"Return-period base: {rp_size}")
+            decluster = evm_result.metadata.get("declustering_window")
+            if decluster is not None:
+                meta_lines.append(f"Declustering window: {decluster}")
+            samples = evm_result.metadata.get("n_samples")
+            if samples is not None:
+                meta_lines.append(f"Bootstrap samples: {samples}")
+            distribution = evm_result.metadata.get("distribution")
+            if distribution is not None:
+                meta_lines.append(f"Distribution: {distribution}")
+            if meta_lines:
+                result += "\n".join(meta_lines) + "\n\n"
+
         result += (
             f"The {evm_result.return_periods[-2]:.1f} hour return level is\n"
             f"{evm_result.return_levels[-2]:.5f} {units}\n\n"
         )
         result += (
-            "Fitted GPD parameters:\n"
+            "Fitted tail parameters:\n"
             f"Sigma: {scale:.4f}\n"
             f"Xi: {c:.4f}\n"
             f"Exceedances used: {len(evm_result.exceedances)}\n"

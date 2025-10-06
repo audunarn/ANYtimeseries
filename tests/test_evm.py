@@ -10,6 +10,11 @@ from anytimes.evm import (
     declustering_boundaries,
 )
 
+try:
+    import pyextremes  # noqa: F401
+except ImportError:  # pragma: no cover - optional dependency guard
+    pyextremes = None
+
 
 def _synthetic_series():
     rng = np.random.default_rng(42)
@@ -49,6 +54,20 @@ def test_cluster_exceedances_matches_expected_profile():
     np.testing.assert_allclose(clusters[: expected_first.size], expected_first, rtol=0, atol=1e-6)
 
 
+def test_cluster_exceedances_accepts_high_low_aliases():
+    _, x = _synthetic_series()
+
+    threshold_upper = 1.2
+    peaks_upper = cluster_exceedances(x, threshold_upper, "upper")
+    peaks_high = cluster_exceedances(x, threshold_upper, "high")
+    np.testing.assert_allclose(peaks_high, peaks_upper)
+
+    threshold_lower = -0.3
+    peaks_lower = cluster_exceedances(x, threshold_lower, "lower")
+    peaks_low = cluster_exceedances(x, threshold_lower, "low")
+    np.testing.assert_allclose(peaks_low, peaks_lower)
+
+
 def test_calculate_extreme_value_statistics_matches_known_values():
     t, x = _synthetic_series()
     threshold = 1.2
@@ -76,6 +95,7 @@ def test_calculate_extreme_value_statistics_matches_known_values():
     np.testing.assert_allclose(res.return_levels, expected_levels, rtol=0, atol=1e-6)
     np.testing.assert_allclose(res.lower_bounds, expected_lower, rtol=0, atol=1e-6)
     np.testing.assert_allclose(res.upper_bounds, expected_upper, rtol=0, atol=1e-6)
+    assert res.engine == "builtin"
 
 
 
@@ -230,4 +250,74 @@ def test_extreme_value_statistics_matches_orcaflex_reference(column, tail, thres
 
     assert se_shape == pytest.approx(expected["shape_se"], abs=5e-4)
     assert se_scale == pytest.approx(expected["scale_se"], abs=5.0)
+
+
+@pytest.mark.skipif(pyextremes is None, reason="pyextremes is not installed")
+def test_pyextremes_engine_returns_consistent_structure():
+    t, x = _synthetic_series()
+    threshold = 1.2
+
+    res = calculate_extreme_value_statistics(
+        t,
+        x,
+        threshold,
+        tail="upper",
+        return_periods_hours=(0.5, 1.0, 2.0),
+        confidence_level=90.0,
+        engine="pyextremes",
+        pyextremes_options={
+            "r": 1.0,
+            "return_period_size": "1h",
+            "n_samples": 200,
+        },
+        rng=np.random.default_rng(1234),
+    )
+
+    assert res.engine == "pyextremes"
+    assert res.exceedances.size >= 10
+    assert res.return_levels.shape == (3,)
+    assert np.all(np.isfinite(res.return_levels))
+    assert np.all(np.isfinite(res.lower_bounds))
+    assert np.all(np.isfinite(res.upper_bounds))
+    assert np.isfinite(res.shape)
+    assert np.isfinite(res.scale)
+    assert res.metadata is not None
+    assert "distribution" in res.metadata
+
+
+@pytest.mark.skipif(pyextremes is None, reason="pyextremes is not installed")
+def test_pyextremes_engine_accepts_low_tail_alias():
+    t, x = _synthetic_series()
+    threshold = -0.3
+
+    base_kwargs = dict(
+        t=t,
+        x=x,
+        threshold=threshold,
+        return_periods_hours=(0.5, 1.5),
+        confidence_level=85.0,
+        engine="pyextremes",
+        pyextremes_options={
+            "r": 1.0,
+            "return_period_size": "1h",
+            "n_samples": 150,
+        },
+    )
+
+    res_lower = calculate_extreme_value_statistics(
+        tail="lower",
+        rng=np.random.default_rng(999),
+        **base_kwargs,
+    )
+    res_low = calculate_extreme_value_statistics(
+        tail="low",
+        rng=np.random.default_rng(999),
+        **base_kwargs,
+    )
+
+    np.testing.assert_allclose(res_low.return_levels, res_lower.return_levels)
+    np.testing.assert_allclose(res_low.lower_bounds, res_lower.lower_bounds)
+    np.testing.assert_allclose(res_low.upper_bounds, res_lower.upper_bounds)
+    assert res_low.metadata is not None
+    assert res_low.metadata.get("extremes_type") == "low"
 
