@@ -803,7 +803,8 @@ def _calculate_extreme_value_statistics_pyextremes(
         )
         if diagnostic_figure is not None:
             for ax in diagnostic_figure.axes:
-                ax.grid(True, linestyle="--", alpha=0.5)
+                ax.grid(True, which="major", linestyle="--", alpha=0.5)
+                ax.grid(True, which="minor", linestyle=":", alpha=0.3)
                 ax.set_axisbelow(True)
 
                 title = ax.get_title().strip().lower()
@@ -847,14 +848,36 @@ def _calculate_extreme_value_statistics_pyextremes(
                         if ax.get_xscale() != "log":
                             ax.set_xscale("log")
 
-                        locator = mticker.LogLocator(
-                            base=10.0, subs=tuple(range(1, 10))
-                        )
+                        locator = mticker.LogLocator(base=10.0)
                         ax.xaxis.set_major_locator(locator)
                         ax.xaxis.set_major_formatter(
                             mticker.LogFormatter(labelOnlyBase=False)
                         )
-                        ax.xaxis.set_minor_locator(mticker.NullLocator())
+                        minor_locator = mticker.LogLocator(
+                            base=10.0, subs=tuple(range(2, 10))
+                        )
+                        ax.xaxis.set_minor_locator(minor_locator)
+
+                        # Ensure the first decade has clearly visible grid lines at
+                        # integer return periods (1–10) regardless of the auto scale.
+                        first_decade_ticks = [
+                            value
+                            for value in range(1, 11)
+                            if value >= max(1, int(np.ceil(x_min)))
+                            and value <= int(np.floor(x_max))
+                        ]
+                        if first_decade_ticks:
+                            combined_minor = sorted(
+                                set(first_decade_ticks)
+                                | set(
+                                    value
+                                    for value in minor_locator.tick_values(x_min, x_max)
+                                    if value <= x_max
+                                )
+                            )
+                            ax.xaxis.set_minor_locator(
+                                mticker.FixedLocator(combined_minor)
+                            )
 
     except Exception:  # pragma: no cover - plotting should not fail analysis
         diagnostic_figure = None
