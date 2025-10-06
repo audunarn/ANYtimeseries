@@ -600,6 +600,8 @@ def _calculate_extreme_value_statistics_pyextremes(
     if base_hours <= 0:
         raise ValueError("return_period_size must be positive")
 
+    diagnostic_periods: np.ndarray | None = None
+
     if return_periods_hours is None:
         from pyextremes.extremes import return_periods as _pyext_return_periods
 
@@ -626,16 +628,16 @@ def _calculate_extreme_value_statistics_pyextremes(
         if max_period <= min_period:
             max_period = min_period * 1.1 if min_period > 0 else 1.0
 
-        pyext_return_periods = np.linspace(min_period, max_period, 100, dtype=float)
-        return_periods = pyext_return_periods * float(base_hours)
-        metadata["return_periods_hours"] = tuple(return_periods)
+        diagnostic_periods = np.linspace(min_period, max_period, 100, dtype=float)
+        return_periods = np.asarray(_DEFAULT_RETURN_PERIODS_HOURS, dtype=float)
     else:
         return_periods = np.asarray(tuple(return_periods_hours), dtype=float)
         if np.any(return_periods <= 0):
             raise ValueError("Return periods must be positive")
 
-        pyext_return_periods = return_periods / float(base_hours)
-        metadata["return_periods_hours"] = tuple(return_periods)
+    metadata["return_periods_hours"] = tuple(return_periods)
+
+    pyext_return_periods = return_periods / float(base_hours)
 
 
     if "diagnostic_return_periods" in options:
@@ -644,7 +646,10 @@ def _calculate_extreme_value_statistics_pyextremes(
         diagnostic_return_periods_opt = None
 
     if diagnostic_return_periods_opt is None:
-        diagnostic_return_periods = pyext_return_periods
+        if diagnostic_periods is not None:
+            diagnostic_return_periods = diagnostic_periods
+        else:
+            diagnostic_return_periods = pyext_return_periods
     else:
         diagnostic_return_periods = np.asarray(
             tuple(diagnostic_return_periods_opt), dtype=float
@@ -712,6 +717,10 @@ def _calculate_extreme_value_statistics_pyextremes(
 
                     if dense_ticks:
 
+                        if ax.get_xscale() != "linear":
+                            ax.set_xscale("linear")
+
+
                         def _format_return_period_tick(value: float, _pos: int) -> str:
                             if not np.isfinite(value) or value < 1.0:
                                 return ""
@@ -725,6 +734,10 @@ def _calculate_extreme_value_statistics_pyextremes(
                         )
                         ax.xaxis.set_minor_locator(mticker.NullLocator())
                     else:
+
+                        if ax.get_xscale() != "log":
+                            ax.set_xscale("log")
+
                         locator = mticker.LogLocator(
                             base=10.0, subs=tuple(range(1, 10))
                         )
