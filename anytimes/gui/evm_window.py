@@ -5,6 +5,7 @@ import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -299,6 +300,7 @@ class EVMWindow(QDialog):
                 show_clusters = True
 
             eva.plot_extremes(ax=ax, show_clusters=show_clusters)
+            self._apply_dark_mode_to_pyextremes_axes(ax)
         except Exception:  # pragma: no cover - plotting should not abort GUI flow
             self.show_extremes_message("Failed to draw PyExtremes extremes plot.")
             return
@@ -360,6 +362,49 @@ class EVMWindow(QDialog):
             value = self.declustering_spin.value()
 
         return max(0.0, float(value))
+
+    def _is_dark_theme_active(self) -> bool:
+        """Return ``True`` when the application palette corresponds to dark mode."""
+
+        window_color = self.palette().color(QPalette.Window)
+        return window_color.name().lower() in {"#31363b", "#232629"}
+
+    def _apply_dark_mode_to_pyextremes_axes(self, ax):
+        """Restyle the PyExtremes plot so it matches the dark application theme."""
+
+        if not self._is_dark_theme_active():
+            return
+
+        figure_bg = "#31363b"
+        axes_bg = "#232629"
+        text_color = "#eff0f1"
+        grid_color = "#6c7074"
+
+        self.extremes_fig.patch.set_facecolor(figure_bg)
+        ax.set_facecolor(axes_bg)
+
+        ax.tick_params(axis="both", colors=text_color, which="both")
+        ax.xaxis.label.set_color(text_color)
+        ax.yaxis.label.set_color(text_color)
+        ax.title.set_color(text_color)
+        ax.xaxis.offsetText.set_color(text_color)
+        ax.yaxis.offsetText.set_color(text_color)
+
+        for spine in ax.spines.values():
+            spine.set_color(text_color)
+
+        for grid_line in ax.get_xgridlines() + ax.get_ygridlines():
+            grid_line.set_color(grid_color)
+
+        for text in ax.texts:
+            text.set_color(text_color)
+
+        legend = ax.get_legend()
+        if legend is not None:
+            legend.get_frame().set_facecolor(axes_bg)
+            legend.get_frame().set_edgecolor(text_color)
+            for text in legend.get_texts():
+                text.set_color(text_color)
 
     def _cluster_exceedances(self, threshold, tail):
         peaks, boundaries = self._declustered_peaks(tail)
