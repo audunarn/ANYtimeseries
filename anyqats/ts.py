@@ -80,41 +80,73 @@ class TimeSeries(object):
     def __init__(self, name, t, x, parent=None, dtg_ref=None, kind=None, unit=None):
         # TODO: diagnose t series on initiation. check for nans, infs etc. before storing data on self.
 
-        # check input parameters
-        assert t.size == x.size, "Time and data must be of equal length."
-        assert isinstance(dtg_ref, (datetime, np.datetime64)) or dtg_ref is None, \
-            "Expected 'dtg_ref' datetime object or None"
-        assert isinstance(x[0], (int, np.int32, np.int64, float, np.float32, np.float64)), \
-            f"Data (x) must be integers or floats not '{type(x[0])}'."
+        # convert to numpy arrays (handles lists, pandas Series/Index, etc.)
+        t_arr = np.asarray(t)
+        x_arr = np.asarray(x)
+
+        assert t_arr.size == x_arr.size, "Time and data must be of equal length."
+        if t_arr.size == 0:
+            raise ValueError("Time and data arrays must contain at least one value.")
+
+        t_flat = np.ravel(t_arr)
+        x_flat = np.ravel(x_arr)
+
+        def _to_datetime(value):
+            """Convert *value* to ``datetime`` if it is a ``numpy.datetime64``."""
+            if isinstance(value, np.datetime64):
+                if np.isnat(value):
+                    raise ValueError("NaT values are not supported in TimeSeries time arrays.")
+                # Cast to microseconds – Python's datetime has microsecond resolution.
+                micros = int(value.astype("datetime64[us]").astype("int64"))
+                return datetime(1970, 1, 1) + timedelta(microseconds=micros)
+            return value
+
+        if isinstance(dtg_ref, np.datetime64):
+            dtg_ref = _to_datetime(dtg_ref)
+
+        if dtg_ref is not None and not isinstance(dtg_ref, datetime):
+            raise TypeError("Expected 'dtg_ref' datetime object or None")
+
+        t0 = _to_datetime(t_flat[0])
+        if np.issubdtype(t_flat.dtype, np.datetime64):
+            t_values = np.array([_to_datetime(val) for val in t_flat], dtype=object)
+            t0 = t_values[0]
+        else:
+            t_values = t_flat
 
         self.name = name
         self.kind = kind
         self.unit = unit
         self.parent = parent
 
-        if isinstance(t[0], np.datetime64):
-            # convert from numpy datetime (pandas, nptdms)
-            t = np.array(t).astype(datetime)
-
-        if isinstance(dtg_ref, np.datetime64):
-            # tolist() returns a single date time
-            # https://stackoverflow.com/questions/13703720/converting-between-datetime-timestamp-and-datetime64/13753918#13753918
-            dtg_ref = dtg_ref.tolist()
-
-        if isinstance(t[0], datetime):
-            # handle time specified as datetime
-            self._dtg_ref = dtg_ref if dtg_ref is not None else t[0]
-            self._dtg_time = t  # time as datetime
-            self._t = np.array([(_ - self._dtg_ref).total_seconds() for _ in t])    # time as floats
-        elif isinstance(t[0], (int, np.int32, np.int64, float, np.float32, np.float64)):
-            # time as integer and floats
-            self._t = np.array(t).flatten().astype(float)
+        if isinstance(t0, datetime):
+            # handle time specified as datetime (also pandas.Timestamp)
+            self._dtg_ref = dtg_ref if dtg_ref is not None else t0
+            self._dtg_time = np.array(t_values, dtype=object)
+            self._t = np.array([(_ - self._dtg_ref).total_seconds() for _ in self._dtg_time])
+        elif isinstance(t0, (int, np.integer, float, np.floating)):
+            # time as integers/floats
+            try:
+                self._t = np.asarray(t_values, dtype=float)
+            except (TypeError, ValueError) as exc:
+                raise TypeError(
+                    "time must be given as array of floats or datetime objects, "
+                    f"not '{type(t_flat[0])}'."
+                ) from exc
             self._dtg_ref = dtg_ref
             self._dtg_time = None
         else:
-            raise TypeError(f"time must be given as array of floats or datetime objects, not '{type(t[0])}'.")
+            raise TypeError(
+                "time must be given as array of floats or datetime objects, "
+                f"not '{type(t_flat[0])}'."
+            )
 
-        self.x = np.array(x).flatten().astype(float)
+        try:
+            self.x = np.asarray(x_flat, dtype=float)
+        except (TypeError, ValueError) as exc:
+            raise TypeError(
+                f"Data (x) must be integers or floats not '{type(x_flat[0])}'."
+            ) from exc
 
     def __copy__(self):
         """

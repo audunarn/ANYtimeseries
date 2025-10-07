@@ -17,6 +17,23 @@ except ImportError:  # pragma: no cover - optional dependency guard
     pyextremes = None
 
 
+def test_coerce_pyextremes_timedelta_accepts_year_suffix():
+    td = evm._coerce_pyextremes_timedelta("1y")
+    expected = pd.to_timedelta(365.2425, unit="D")
+    assert td == expected
+
+
+def test_coerce_pyextremes_timedelta_is_case_insensitive():
+    td = evm._coerce_pyextremes_timedelta("0.5Y")
+    expected = pd.to_timedelta(0.5 * 365.2425, unit="D")
+    assert td == expected
+
+
+def test_coerce_pyextremes_timedelta_rejects_unknown_units():
+    with pytest.raises(ValueError, match="Unsupported unit 'm'"):
+        evm._coerce_pyextremes_timedelta("1m")
+
+
 @pytest.fixture(scope="module")
 def ts_test_2_series():
     df = pd.read_excel(

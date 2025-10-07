@@ -8,7 +8,8 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Mapping, Sequence
+import re
+from typing import Any, Mapping, Sequence
 
 import matplotlib.ticker as mticker
 import numpy as np
@@ -583,6 +584,89 @@ def _calculate_extreme_value_statistics_builtin(
     )
 
 
+_MEAN_TROPICAL_YEAR_DAYS = 365.2425
+_DURATION_STRING_RE = re.compile(r"^\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+))\s*([a-zA-Z]+)\s*$")
+_SUPPORTED_DURATION_UNIT_ALIASES = {
+    "s": "s",
+    "sec": "s",
+    "secs": "s",
+    "second": "s",
+    "seconds": "s",
+    "h": "h",
+    "hour": "h",
+    "hours": "h",
+    "d": "d",
+    "day": "d",
+    "days": "d",
+    "y": "y",
+}
+
+
+def _coerce_pyextremes_timedelta(
+    value: object,
+    *,
+    default_unit: str = "s",
+    argument: str = "value",
+    pd_module: Any | None = None,
+):
+    """Return a :class:`pandas.Timedelta` from *value*.
+
+    The helper mirrors :func:`pandas.to_timedelta` but augments it with support for
+    a ``"y"`` suffix that represents a mean tropical year (365.2425 days).  It
+    also accepts case-insensitive unit suffixes "s", "h", and "d".
+    """
+
+    if pd_module is None:
+        import pandas as pd_module  # type: ignore[import-not-found]
+
+    if value is None:
+        return None
+
+    pd = pd_module
+
+    if isinstance(value, pd.Timedelta):
+        return value
+
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            raise ValueError(f"Invalid value for {argument}: {value!r}")
+        for unit_match in re.finditer(r"[A-Za-z]+", text):
+            alias = unit_match.group(0)
+            canonical = _SUPPORTED_DURATION_UNIT_ALIASES.get(alias.lower())
+            if canonical is None:
+                raise ValueError(
+                    f"Unsupported unit '{alias}' for {argument}"
+                )
+
+        match = _DURATION_STRING_RE.match(text)
+        if match:
+            magnitude = float(match.group(1))
+            unit_alias = match.group(2).lower()
+            canonical = _SUPPORTED_DURATION_UNIT_ALIASES.get(unit_alias)
+            if canonical is None:
+                raise ValueError(
+                    f"Unsupported unit '{match.group(2)}' for {argument}"
+                )
+
+            if canonical == "y":
+                magnitude *= _MEAN_TROPICAL_YEAR_DAYS
+                unit = "D"
+            elif canonical == "d":
+                unit = "D"
+            else:
+                unit = canonical
+
+            return pd.to_timedelta(magnitude, unit=unit)
+
+        return pd.to_timedelta(text)
+
+    if isinstance(value, (int, float)):
+        return pd.to_timedelta(value, unit=default_unit)
+
+    raise TypeError(f"Invalid type for {argument}: {type(value)!r}")
+
+
 def _calculate_extreme_value_statistics_pyextremes(
     t: np.ndarray,
     x: np.ndarray,
@@ -621,17 +705,6 @@ def _calculate_extreme_value_statistics_pyextremes(
 
     eva = EVA(series)
 
-    def _coerce_timedelta(value, *, default_unit="s", argument="value"):
-        if value is None:
-            return None
-        if isinstance(value, pd.Timedelta):
-            return value
-        if isinstance(value, str):
-            return pd.to_timedelta(value)
-        if isinstance(value, (int, float)):
-            return pd.to_timedelta(value, unit=default_unit)
-        raise TypeError(f"Invalid type for {argument}: {type(value)!r}")
-
     metadata: dict[str, object] = {
         "method": method,
         "extremes_type": extremes_type,
@@ -658,9 +731,11 @@ def _calculate_extreme_value_statistics_pyextremes(
                 median_step = float(np.median(positive_diffs))
             else:
                 median_step = 0.0
-            r_td = _coerce_timedelta(median_step, argument="r")
+            r_td = _coerce_pyextremes_timedelta(
+                median_step, argument="r", pd_module=pd
+            )
         else:
-            r_td = _coerce_timedelta(r_value, argument="r")
+            r_td = _coerce_pyextremes_timedelta(r_value, argument="r", pd_module=pd)
 
         eva.get_extremes(
             method="POT",
@@ -671,7 +746,9 @@ def _calculate_extreme_value_statistics_pyextremes(
         metadata["declustering_window"] = r_td
     elif method == "BM":
         block_size = options.get("block_size", "24h")
-        block_td = _coerce_timedelta(block_size, argument="block_size")
+        block_td = _coerce_pyextremes_timedelta(
+            block_size, argument="block_size", pd_module=pd
+        )
         eva.get_extremes(
             method="BM",
             extremes_type=extremes_type,
@@ -711,9 +788,10 @@ def _calculate_extreme_value_statistics_pyextremes(
 
     exceed_rate = exceedances.size / duration_hours
 
-    return_period_size = _coerce_timedelta(
+    return_period_size = _coerce_pyextremes_timedelta(
         options.get("return_period_size", "1h"),
         argument="return_period_size",
+        pd_module=pd,
     )
     metadata["return_period_size"] = return_period_size
 
