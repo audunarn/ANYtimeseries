@@ -27,6 +27,7 @@ from anytimes.evm import (
     SUMMARY_RETURN_PERIODS_HOURS,
     calculate_extreme_value_statistics,
     decluster_peaks,
+    ExtremeValueResult,
 )
 from .layout_utils import apply_initial_size
 
@@ -146,8 +147,19 @@ class EVMWindow(QDialog):
         self.inputs_widget = QWidget()
         self.result_text = QTextEdit()
         self.result_text.setReadOnly(True)
+
+        self.extremes_plot_area = QWidget()
+        self.extremes_plot_layout = QVBoxLayout(self.extremes_plot_area)
+        self.extremes_plot_layout.setContentsMargins(0, 0, 0, 0)
+        self.extremes_plot_layout.setSpacing(0)
+        self.extremes_fig = Figure(figsize=(5, 4))
+        self.extremes_canvas = FigureCanvasQTAgg(self.extremes_fig)
+        self.extremes_plot_layout.addWidget(self.extremes_canvas)
+
         self.plot_area = QWidget()
         self.plot_layout = QVBoxLayout(self.plot_area)
+        self.plot_layout.setContentsMargins(0, 0, 0, 0)
+        self.plot_layout.setSpacing(0)
         self.fig = Figure(figsize=(6, 4))
         self._base_figure = self.fig
         self.fig_canvas = FigureCanvasQTAgg(self.fig)
@@ -156,6 +168,10 @@ class EVMWindow(QDialog):
 
         self._latest_warning: str | None = None
         self._show_canvas_messages = True
+        self._last_evm_result: ExtremeValueResult | None = None
+        self._extremes_placeholder = (
+            "Run the analysis to view the extremes over threshold plot."
+        )
 
 
         self.build_inputs()
@@ -163,8 +179,15 @@ class EVMWindow(QDialog):
 
         main_layout.addWidget(self.inputs_widget)
 
+        text_plot_splitter = QSplitter(Qt.Horizontal)
+        text_plot_splitter.addWidget(self.result_text)
+        text_plot_splitter.addWidget(self.extremes_plot_area)
+        text_plot_splitter.setStretchFactor(0, 2)
+        text_plot_splitter.setStretchFactor(1, 3)
+        text_plot_splitter.setChildrenCollapsible(False)
+
         splitter = QSplitter(Qt.Vertical)
-        splitter.addWidget(self.result_text)
+        splitter.addWidget(text_plot_splitter)
         splitter.addWidget(self.plot_area)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 2)
@@ -173,8 +196,8 @@ class EVMWindow(QDialog):
 
         main_layout.addWidget(splitter)
 
-        # Show initial time series with the suggested threshold
-        self.plot_timeseries_with_threshold(threshold)
+        # Show initial extremes plot with the suggested threshold
+        self.update_extremes_plot(threshold)
 
     def _auto_threshold(self, start_thresh, tail):
         threshold = start_thresh
@@ -222,12 +245,87 @@ class EVMWindow(QDialog):
         self.plot_layout.addWidget(self.fig_canvas)
         self.fig = figure
 
+    def show_extremes_message(self, message: str) -> None:
+        """Display *message* on the extremes plot canvas."""
+
+        self.extremes_fig.clear()
+        self.extremes_fig.text(
+            0.5,
+            0.5,
+            message,
+            ha="center",
+            va="center",
+            wrap=True,
+            fontsize=11,
+        )
+        self.extremes_canvas.draw()
+
+    def plot_pyextremes_extremes(self, evm_result: ExtremeValueResult) -> None:
+        """Render the PyExtremes extremes plot on the dedicated canvas."""
+
+        metadata = evm_result.metadata
+        eva = None
+        getter = None
+
+        if metadata is not None:
+            maybe_getter = getattr(metadata, "get", None)
+            if callable(maybe_getter):
+                getter = maybe_getter
+                eva = getter("eva", None)
+            else:
+                try:
+                    eva = metadata["eva"]  # type: ignore[index]
+                except Exception:
+                    eva = None
+
+        if eva is None:
+            self.show_extremes_message("PyExtremes could not provide an extremes plot.")
+            return
+
+        self.extremes_fig.clear()
+        ax = self.extremes_fig.add_subplot(111)
+
+        try:
+            show_clusters = False
+            method = None
+            if getter is not None:
+                method = getter("method", None)
+            elif metadata is not None:
+                try:
+                    method = metadata["method"]  # type: ignore[index]
+                except Exception:
+                    method = None
+            if isinstance(method, str) and method.upper() == "POT":
+                show_clusters = True
+
+            eva.plot_extremes(ax=ax, show_clusters=show_clusters)
+        except Exception:  # pragma: no cover - plotting should not abort GUI flow
+            self.show_extremes_message("Failed to draw PyExtremes extremes plot.")
+            return
+
+        self.extremes_canvas.draw()
+
+    def update_extremes_plot(
+        self,
+        threshold: float,
+        evm_result: ExtremeValueResult | None = None,
+    ) -> None:
+        """Update the extremes canvas based on the active engine."""
+
+        engine = self.engine_combo.currentData()
+        if engine == "pyextremes":
+            if evm_result is not None and evm_result.engine == "pyextremes":
+                self.plot_pyextremes_extremes(evm_result)
+            else:
+                self.show_extremes_message(self._extremes_placeholder)
+            return
+
+        self.plot_timeseries_with_threshold(threshold)
+
     def plot_timeseries_with_threshold(self, threshold):
 
-        self._set_canvas_figure(self._base_figure)
-
-        self.fig.clear()
-        ax = self.fig.add_subplot(111)
+        self.extremes_fig.clear()
+        ax = self.extremes_fig.add_subplot(111)
 
         ax.plot(self.t, self.x, label="Time series")
         ax.axhline(threshold, color="red", linestyle="--", label="Threshold")
@@ -236,7 +334,7 @@ class EVMWindow(QDialog):
         ax.set_ylabel(self.ts.name)
         ax.grid(True)
         ax.legend()
-        self.fig_canvas.draw()
+        self.extremes_canvas.draw()
 
     def _declustered_peaks(self, tail: str) -> tuple[np.ndarray, np.ndarray]:
         """Return cluster peaks and their boundaries for ``tail``."""
@@ -285,8 +383,9 @@ class EVMWindow(QDialog):
         self.threshold_spin.setValue(threshold)
 
         self._manual_threshold = threshold
+        self._last_evm_result = None
 
-        self.plot_timeseries_with_threshold(threshold)
+        self.update_extremes_plot(threshold)
         peaks, _ = self._cluster_exceedances(threshold, self.tail_combo.currentText())
         self.result_text.setPlainText(f"Exceedances used: {len(peaks)}")
         self._evm_ran = False
@@ -296,7 +395,8 @@ class EVMWindow(QDialog):
         suggested = 0.8 * np.max(self.x) if tail == "upper" else 0.8 * np.min(self.x)
         threshold = self._auto_threshold(suggested, tail)
         self.threshold_spin.setValue(round(threshold, 4))
-        self.plot_timeseries_with_threshold(threshold)
+        self._last_evm_result = None
+        self.update_extremes_plot(threshold)
 
     def build_inputs(self):
         layout = QGridLayout(self.inputs_widget)
@@ -427,6 +527,14 @@ class EVMWindow(QDialog):
         for widget in self._builtin_widgets:
             widget.setVisible(not is_pyextremes)
 
+        matching_result = (
+            self._last_evm_result
+            if self._last_evm_result is not None
+            and self._last_evm_result.engine == engine
+            else None
+        )
+        self.update_extremes_plot(self.threshold_spin.value(), matching_result)
+
     def run_evm(self):
         tail = self.tail_combo.currentText()
         threshold = self.threshold_spin.value()
@@ -442,6 +550,7 @@ class EVMWindow(QDialog):
                 "Adjust the threshold or tail selection and try again."
             )
             self._latest_warning = None
+            self._last_evm_result = None
             QMessageBox.warning(
                 self,
                 "Too Few Points",
@@ -449,12 +558,15 @@ class EVMWindow(QDialog):
             )
             self.result_text.setPlainText(message)
             self.show_canvas_message(message)
+            self.update_extremes_plot(threshold)
             self._evm_ran = False
         else:
             message = f"Extreme value analysis failed: {data['message']}"
             self._latest_warning = None
+            self._last_evm_result = None
             self.result_text.setPlainText(message)
             self.show_canvas_message(message)
+            self.update_extremes_plot(threshold)
             self._evm_ran = False
 
     def on_ci_changed(self, value):
@@ -692,6 +804,9 @@ class EVMWindow(QDialog):
 
         self.result_text.setPlainText(result)
 
+        self._last_evm_result = evm_result
+        self.update_extremes_plot(threshold, evm_result)
+
         self.plot_diagnostics(
             evm_result.return_periods * 3600,
             evm_result.return_levels,
@@ -792,6 +907,8 @@ class EVMWindow(QDialog):
 
         self.result_text.setPlainText("Iterating to find a stable fit...")
         self._evm_ran = False
+        self._last_evm_result = None
+        self.update_extremes_plot(self.threshold_spin.value())
 
         best_success: dict | None = None
         best_with_warning: dict | None = None
