@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QSpinBox,
+    QSplitter,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -161,8 +162,16 @@ class EVMWindow(QDialog):
 
 
         main_layout.addWidget(self.inputs_widget)
-        main_layout.addWidget(self.result_text, stretch=1)
-        main_layout.addWidget(self.plot_area, stretch=2)
+
+        splitter = QSplitter(Qt.Vertical)
+        splitter.addWidget(self.result_text)
+        splitter.addWidget(self.plot_area)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 2)
+        splitter.setChildrenCollapsible(False)
+        splitter.setSizes([200, 400])
+
+        main_layout.addWidget(splitter)
 
         # Show initial time series with the suggested threshold
         self.plot_timeseries_with_threshold(threshold)
