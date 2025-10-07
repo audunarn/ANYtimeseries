@@ -647,6 +647,7 @@ def _calculate_extreme_value_statistics_pyextremes(
             f"Unsupported pyextremes plotting_position '{plotting_position_opt}'"
         )
     metadata["plotting_position"] = plotting_position
+    metadata["eva"] = eva
 
     if method == "POT":
         r_value = options.get("r")
