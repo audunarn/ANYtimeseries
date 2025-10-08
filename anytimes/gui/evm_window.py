@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDoubleSpinBox,
     QGridLayout,
+    QHBoxLayout,
     QLineEdit,
     QLabel,
     QPushButton,
@@ -38,6 +39,20 @@ class EVMWindow(QDialog):
     #: Using too many points tends to bias the tail fit towards the bulk of
     #: the distribution rather than the extremes we want to model.
     _MAX_CLUSTERED_EXCEEDANCES = 120
+
+    _SECONDS_PER_UNIT = {
+        "s": 1.0,
+        "h": 3600.0,
+        "d": 86400.0,
+        "y": 365.2425 * 86400.0,
+    }
+
+    _DURATION_UNIT_OPTIONS = [
+        ("Seconds (s)", "s"),
+        ("Hours (h)", "h"),
+        ("Days (d)", "d"),
+        ("Years (y)", "y"),
+    ]
 
     def __init__(self, tsdb, var_name, parent=None):
         super().__init__(parent)
@@ -95,16 +110,28 @@ class EVMWindow(QDialog):
         self.pyext_r_spin = QDoubleSpinBox()
         self.pyext_r_spin.setDecimals(3)
         self.pyext_r_spin.setRange(0.0, 1e9)
-        self.pyext_r_spin.setSuffix(" s")
         self.pyext_r_spin.setKeyboardTracking(False)
         self.pyext_r_spin.setValue(round(self._suggest_pyextremes_window(), 3))
+
+        self.pyext_r_unit_combo = QComboBox()
+        self._populate_duration_unit_combo(self.pyext_r_unit_combo, default="s")
+        self._pyext_r_unit = "s"
+        self.pyext_r_unit_combo.currentIndexChanged.connect(
+            self._on_pyext_r_unit_changed
+        )
 
         self.pyext_return_size_spin = QDoubleSpinBox()
         self.pyext_return_size_spin.setDecimals(3)
         self.pyext_return_size_spin.setRange(0.001, 1e6)
-        self.pyext_return_size_spin.setSuffix(" h")
         self.pyext_return_size_spin.setKeyboardTracking(False)
         self.pyext_return_size_spin.setValue(1.0)
+
+        self.pyext_return_unit_combo = QComboBox()
+        self._populate_duration_unit_combo(self.pyext_return_unit_combo, default="h")
+        self._pyext_return_unit = "h"
+        self.pyext_return_unit_combo.currentIndexChanged.connect(
+            self._on_pyext_return_unit_changed
+        )
 
         self.pyext_samples_spin = QSpinBox()
         self.pyext_samples_spin.setRange(50, 10000)
@@ -229,6 +256,78 @@ class EVMWindow(QDialog):
             return 0.0
 
         return float(np.median(positive))
+
+    def _populate_duration_unit_combo(
+        self, combo: QComboBox, *, default: str
+    ) -> None:
+        """Populate *combo* with supported duration units."""
+
+        combo.clear()
+        for label, unit in self._DURATION_UNIT_OPTIONS:
+            combo.addItem(label, unit)
+
+        default_index = combo.findData(default)
+        if default_index < 0:
+            default_index = 0
+        combo.setCurrentIndex(default_index)
+
+    def _duration_seconds_from_unit(self, unit: str | None) -> float:
+        """Return the number of seconds represented by *unit*."""
+
+        if not unit:
+            return self._SECONDS_PER_UNIT["s"]
+
+        try:
+            return self._SECONDS_PER_UNIT[unit]
+        except KeyError:  # pragma: no cover - defensive guard
+            return self._SECONDS_PER_UNIT["s"]
+
+    def _convert_value_between_units(
+        self, value: float, *, from_unit: str, to_unit: str
+    ) -> float:
+        """Convert *value* from *from_unit* to *to_unit*."""
+
+        seconds = value * self._duration_seconds_from_unit(from_unit)
+        divisor = self._duration_seconds_from_unit(to_unit)
+        if divisor == 0:
+            return 0.0
+        return seconds / divisor
+
+    def _on_pyext_r_unit_changed(self) -> None:
+        new_unit = self.pyext_r_unit_combo.currentData()
+        if not new_unit:
+            return
+
+        old_unit = self._pyext_r_unit
+        if old_unit == new_unit:
+            return
+
+        value = self.pyext_r_spin.value()
+        converted = self._convert_value_between_units(
+            value, from_unit=old_unit, to_unit=new_unit
+        )
+        self.pyext_r_spin.blockSignals(True)
+        self.pyext_r_spin.setValue(converted)
+        self.pyext_r_spin.blockSignals(False)
+        self._pyext_r_unit = new_unit
+
+    def _on_pyext_return_unit_changed(self) -> None:
+        new_unit = self.pyext_return_unit_combo.currentData()
+        if not new_unit:
+            return
+
+        old_unit = self._pyext_return_unit
+        if old_unit == new_unit:
+            return
+
+        value = self.pyext_return_size_spin.value()
+        converted = self._convert_value_between_units(
+            value, from_unit=old_unit, to_unit=new_unit
+        )
+        self.pyext_return_size_spin.blockSignals(True)
+        self.pyext_return_size_spin.setValue(converted)
+        self.pyext_return_size_spin.blockSignals(False)
+        self._pyext_return_unit = new_unit
 
     def _set_canvas_figure(self, figure: Figure) -> None:
         """Ensure the matplotlib canvas is showing ``figure``."""
@@ -357,7 +456,9 @@ class EVMWindow(QDialog):
 
         engine = self.engine_combo.currentData()
         if engine == "pyextremes":
-            value = self.pyext_r_spin.value()
+            unit = self.pyext_r_unit_combo.currentData()
+            factor = self._duration_seconds_from_unit(unit)
+            value = self.pyext_r_spin.value() * factor
         else:
             value = self.declustering_spin.value()
 
@@ -480,12 +581,26 @@ class EVMWindow(QDialog):
 
         self.pyext_r_label = QLabel("PyExtremes declustering window:")
         layout.addWidget(self.pyext_r_label, row, 0)
-        layout.addWidget(self.pyext_r_spin, row, 1)
+
+        self.pyext_r_widget = QWidget()
+        r_layout = QHBoxLayout(self.pyext_r_widget)
+        r_layout.setContentsMargins(0, 0, 0, 0)
+        r_layout.setSpacing(6)
+        r_layout.addWidget(self.pyext_r_spin)
+        r_layout.addWidget(self.pyext_r_unit_combo)
+        layout.addWidget(self.pyext_r_widget, row, 1)
         row += 1
 
         self.pyext_return_label = QLabel("PyExtremes return-period base:")
         layout.addWidget(self.pyext_return_label, row, 0)
-        layout.addWidget(self.pyext_return_size_spin, row, 1)
+
+        self.pyext_return_widget = QWidget()
+        return_layout = QHBoxLayout(self.pyext_return_widget)
+        return_layout.setContentsMargins(0, 0, 0, 0)
+        return_layout.setSpacing(6)
+        return_layout.addWidget(self.pyext_return_size_spin)
+        return_layout.addWidget(self.pyext_return_unit_combo)
+        layout.addWidget(self.pyext_return_widget, row, 1)
         row += 1
 
         self.pyext_periods_label = QLabel("PyExtremes return periods (hours):")
@@ -506,9 +621,9 @@ class EVMWindow(QDialog):
         self._pyext_widgets.extend(
             [
                 self.pyext_r_label,
-                self.pyext_r_spin,
+                self.pyext_r_widget,
                 self.pyext_return_label,
-                self.pyext_return_size_spin,
+                self.pyext_return_widget,
                 self.pyext_periods_label,
                 self.pyext_return_periods_edit,
                 self.pyext_samples_label,
@@ -641,6 +756,8 @@ class EVMWindow(QDialog):
         if engine == "pyextremes":
             r_seconds = declustering_window
             return_base = self.pyext_return_size_spin.value()
+            return_unit = self.pyext_return_unit_combo.currentData() or "h"
+            return_period_size = f"{return_base}{return_unit}"
 
             periods_text = self.pyext_return_periods_edit.text().strip()
             default_periods = list(SUMMARY_RETURN_PERIODS_HOURS)
@@ -690,7 +807,7 @@ class EVMWindow(QDialog):
             pyext_options = {
                 "method": "POT",
                 "r": r_seconds,
-                "return_period_size": f"{return_base}h",
+                "return_period_size": return_period_size,
                 "n_samples": self.pyext_samples_spin.value(),
                 "plotting_position": self.pyext_plot_combo.currentData(),
             }
