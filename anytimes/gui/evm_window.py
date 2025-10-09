@@ -31,6 +31,7 @@ from anytimes.evm import (
     decluster_peaks,
     ExtremeValueResult,
 )
+from anyqats.signal import average_frequency
 from .layout_utils import apply_initial_size
 
 
@@ -257,6 +258,62 @@ class EVMWindow(QDialog):
 
         return float(np.median(positive))
 
+    def _collect_pyextremes_settings(self) -> tuple[dict[str, object], list[float]]:
+        """Return current PyExtremes configuration and return periods."""
+
+        return_base = self.pyext_return_size_spin.value()
+        return_unit = self.pyext_return_unit_combo.currentData() or "h"
+        return_period_size = f"{return_base}{return_unit}"
+
+        periods_text = self.pyext_return_periods_edit.text().strip()
+        default_periods = list(SUMMARY_RETURN_PERIODS_HOURS)
+
+        def _merge_periods(user_periods: list[float] | None) -> list[float]:
+            merged: list[float] = []
+
+            def _append_unique(period: float) -> None:
+                for existing in merged:
+                    if abs(existing - period) <= 1e-9:
+                        return
+                merged.append(period)
+
+            for period in default_periods:
+                _append_unique(float(period))
+
+            if user_periods:
+                for period in user_periods:
+                    _append_unique(float(period))
+
+            return merged
+
+        if periods_text.lower() in {"", "none"}:
+            return_periods = _merge_periods(None)
+        else:
+            try:
+                user_periods = [
+                    float(token)
+                    for token in periods_text.split(",")
+                    if token.strip()
+                ]
+            except ValueError as exc:
+                raise ValueError(
+                    "Invalid PyExtremes return periods. Enter a comma-separated "
+                    "list of positive numbers or 'None'."
+                ) from exc
+            if any(period <= 0 for period in user_periods):
+                raise ValueError("PyExtremes return periods must be positive.")
+            return_periods = _merge_periods(user_periods)
+
+        options = {
+            "method": "POT",
+            "r": self._current_declustering_window_seconds(),
+            "return_period_size": return_period_size,
+            "n_samples": self.pyext_samples_spin.value(),
+            "plotting_position": self.pyext_plot_combo.currentData(),
+        }
+
+        return options, return_periods
+
     def _populate_duration_unit_combo(
         self, combo: QComboBox, *, default: str
     ) -> None:
@@ -464,11 +521,6 @@ class EVMWindow(QDialog):
         if t_arr.size < 2:
             return [0.0]
 
-        sorted_times = np.sort(t_arr)
-        diffs = np.diff(sorted_times)
-        positive = diffs[diffs > 0]
-        duration = float(sorted_times[-1] - sorted_times[0])
-
         candidates: set[float] = {0.0}
 
         current_value = float(max(0.0, self.declustering_spin.value()))
@@ -479,36 +531,26 @@ class EVMWindow(QDialog):
         if suggested > 0.0:
             candidates.add(suggested)
 
-        if positive.size:
-            base = float(np.median(positive))
-            if not np.isfinite(base) or base <= 0.0:
-                base = float(np.mean(positive))
+        try:
+            freq = average_frequency(t_arr, np.asarray(self.x, dtype=float))
+        except Exception:
+            freq = float("nan")
 
-            min_positive = float(np.min(positive))
-            max_positive = float(np.max(positive))
-
-            lower = max(min_positive, base)
-            upper = max(max_positive, lower)
-
-            if duration > 0.0:
-                upper = min(upper * 10.0, duration)
-            else:
-                upper = upper * 10.0
-
-            if upper <= lower:
-                upper = lower * 5.0
-
+        if np.isfinite(freq) and freq > 0.0:
+            tz = 1.0 / freq
+            lower = 0.1 * tz
+            upper = 20.0 * tz
             if upper > 0.0 and lower > 0.0:
-                ratio = upper / lower if lower else float("inf")
-                if ratio > 1.5:
-                    sweep = np.geomspace(lower, upper, num=12)
-                else:
-                    sweep = np.linspace(lower, upper, num=12)
+                sweep = np.geomspace(lower, upper, num=10)
                 for value in sweep:
                     if value > 0.0 and np.isfinite(value):
                         candidates.add(float(value))
-        elif duration > 0.0:
-            candidates.add(duration / 10.0)
+
+        if len(candidates) == 1:
+            sorted_times = np.sort(t_arr)
+            duration = float(sorted_times[-1] - sorted_times[0])
+            if duration > 0.0:
+                candidates.add(duration / 10.0)
 
         ordered = sorted({float(round(val, 6)) for val in candidates if val >= 0.0})
         return ordered
@@ -822,64 +864,15 @@ class EVMWindow(QDialog):
             return "insufficient", {"count": len(clustered_peaks), "threshold": threshold}
 
         pyext_options = None
+        return_periods = None
         if engine == "pyextremes":
-            r_seconds = declustering_window
-            return_base = self.pyext_return_size_spin.value()
-            return_unit = self.pyext_return_unit_combo.currentData() or "h"
-            return_period_size = f"{return_base}{return_unit}"
+            try:
+                base_options, return_periods = self._collect_pyextremes_settings()
+            except ValueError as exc:
+                return "error", {"message": str(exc), "threshold": threshold}
 
-            periods_text = self.pyext_return_periods_edit.text().strip()
-            default_periods = list(SUMMARY_RETURN_PERIODS_HOURS)
-
-            def _merge_periods(user_periods: list[float] | None) -> list[float]:
-                merged: list[float] = []
-
-                def _append_unique(period: float) -> None:
-                    for existing in merged:
-                        if abs(existing - period) <= 1e-9:
-                            return
-                    merged.append(period)
-
-                for period in default_periods:
-                    _append_unique(float(period))
-
-                if user_periods:
-                    for period in user_periods:
-                        _append_unique(float(period))
-
-                return merged
-
-            if periods_text.lower() in {"", "none"}:
-                return_periods = _merge_periods(None)
-            else:
-                try:
-                    user_periods = [
-                        float(token)
-                        for token in periods_text.split(",")
-                        if token.strip()
-                    ]
-                except ValueError:
-                    return "error", {
-                        "message": (
-                            "Invalid PyExtremes return periods. Enter a comma-separated "
-                            "list of positive numbers or 'None'."
-                        ),
-                        "threshold": threshold,
-                    }
-                if any(period <= 0 for period in user_periods):
-                    return "error", {
-                        "message": "PyExtremes return periods must be positive.",
-                        "threshold": threshold,
-                    }
-                return_periods = _merge_periods(user_periods)
-
-            pyext_options = {
-                "method": "POT",
-                "r": r_seconds,
-                "return_period_size": return_period_size,
-                "n_samples": self.pyext_samples_spin.value(),
-                "plotting_position": self.pyext_plot_combo.currentData(),
-            }
+            pyext_options = dict(base_options)
+            pyext_options["r"] = declustering_window
 
         calc_kwargs = {}
         if engine == "pyextremes":
@@ -933,18 +926,20 @@ class EVMWindow(QDialog):
         """Plot GPD parameters against candidate declustering periods."""
 
         engine = self.engine_combo.currentData()
-        if engine == "pyextremes":
-            message = (
-                "Declustering sweeps are only available for the built-in engine. "
-                "Switch to the built-in GPD option to evaluate declustering periods."
-            )
-            self.result_text.setPlainText(message)
-            self.show_canvas_message(message)
-            return
-
         threshold = self.threshold_spin.value()
         tail = self.tail_combo.currentText()
         windows = self._candidate_declustering_windows()
+
+        base_pyext_options: dict[str, object] | None = None
+        pyext_return_periods: list[float] | None = None
+        if engine == "pyextremes":
+            try:
+                base_pyext_options, pyext_return_periods = self._collect_pyextremes_settings()
+            except ValueError as exc:
+                message = str(exc)
+                self.result_text.setPlainText(message)
+                self.show_canvas_message(message)
+                return
 
         xi_values: list[float] = []
         sigma_values: list[float] = []
@@ -954,44 +949,74 @@ class EVMWindow(QDialog):
         x_arr = np.asarray(self.x, dtype=float)
 
         for window_seconds in windows:
-            peaks, _ = self._declustered_peaks_for_window(tail, window_seconds)
-            if peaks.size == 0:
-                exceedance_counts.append(0)
-                xi_values.append(np.nan)
-                sigma_values.append(np.nan)
-                continue
+            if engine == "pyextremes":
+                options = dict(base_pyext_options or {})
+                options["r"] = window_seconds
+                try:
+                    evm_result = calculate_extreme_value_statistics(
+                        t_arr,
+                        x_arr,
+                        threshold,
+                        tail=tail,
+                        confidence_level=self.ci_spin.value(),
+                        engine="pyextremes",
+                        pyextremes_options=options,
+                        return_periods_hours=pyext_return_periods,
+                    )
+                except Exception:
+                    exceedance_counts.append(0)
+                    xi_values.append(np.nan)
+                    sigma_values.append(np.nan)
+                    continue
 
-            if tail == "upper":
-                clustered = peaks[peaks > threshold]
+                exceedance_counts.append(int(len(evm_result.exceedances)))
+
+                if len(evm_result.exceedances) < 10:
+                    xi_values.append(np.nan)
+                    sigma_values.append(np.nan)
+                    continue
+
+                xi_values.append(float(evm_result.shape))
+                sigma_values.append(float(evm_result.scale))
             else:
-                clustered = peaks[peaks < threshold]
+                peaks, _ = self._declustered_peaks_for_window(tail, window_seconds)
+                if peaks.size == 0:
+                    exceedance_counts.append(0)
+                    xi_values.append(np.nan)
+                    sigma_values.append(np.nan)
+                    continue
 
-            clustered = np.asarray(clustered, dtype=float)
-            exceedance_counts.append(int(clustered.size))
+                if tail == "upper":
+                    clustered = peaks[peaks > threshold]
+                else:
+                    clustered = peaks[peaks < threshold]
 
-            if clustered.size < 10:
-                xi_values.append(np.nan)
-                sigma_values.append(np.nan)
-                continue
+                clustered = np.asarray(clustered, dtype=float)
+                exceedance_counts.append(int(clustered.size))
 
-            try:
-                evm_result = calculate_extreme_value_statistics(
-                    t_arr,
-                    x_arr,
-                    threshold,
-                    tail=tail,
-                    confidence_level=self.ci_spin.value(),
-                    n_bootstrap=0,
-                    clustered_peaks=clustered,
-                    engine="builtin",
-                )
-            except Exception:
-                xi_values.append(np.nan)
-                sigma_values.append(np.nan)
-                continue
+                if clustered.size < 10:
+                    xi_values.append(np.nan)
+                    sigma_values.append(np.nan)
+                    continue
 
-            xi_values.append(float(evm_result.shape))
-            sigma_values.append(float(evm_result.scale))
+                try:
+                    evm_result = calculate_extreme_value_statistics(
+                        t_arr,
+                        x_arr,
+                        threshold,
+                        tail=tail,
+                        confidence_level=self.ci_spin.value(),
+                        n_bootstrap=0,
+                        clustered_peaks=clustered,
+                        engine="builtin",
+                    )
+                except Exception:
+                    xi_values.append(np.nan)
+                    sigma_values.append(np.nan)
+                    continue
+
+                xi_values.append(float(evm_result.shape))
+                sigma_values.append(float(evm_result.scale))
 
         if not windows:
             message = "Unable to determine candidate declustering periods for the sweep."
