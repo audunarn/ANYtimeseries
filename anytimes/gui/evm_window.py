@@ -441,15 +441,77 @@ class EVMWindow(QDialog):
         """Return cluster peaks and their boundaries for ``tail``."""
 
         window_seconds = self._current_declustering_window_seconds()
+        return self._declustered_peaks_for_window(tail, window_seconds)
+
+    def _declustered_peaks_for_window(
+        self, tail: str, window_seconds: float
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Return cluster peaks for ``tail`` using ``window_seconds``."""
 
         peaks, boundaries = decluster_peaks(
             np.asarray(self.x, dtype=float),
             tail,
             t=np.asarray(self.t, dtype=float),
-            window_seconds=window_seconds,
+            window_seconds=max(0.0, float(window_seconds)),
         )
 
         return peaks, boundaries
+
+    def _candidate_declustering_windows(self) -> list[float]:
+        """Return representative declustering windows (seconds) for sweeps."""
+
+        t_arr = np.asarray(self.t, dtype=float)
+        if t_arr.size < 2:
+            return [0.0]
+
+        sorted_times = np.sort(t_arr)
+        diffs = np.diff(sorted_times)
+        positive = diffs[diffs > 0]
+        duration = float(sorted_times[-1] - sorted_times[0])
+
+        candidates: set[float] = {0.0}
+
+        current_value = float(max(0.0, self.declustering_spin.value()))
+        if current_value > 0.0:
+            candidates.add(current_value)
+
+        suggested = float(max(0.0, self._suggest_pyextremes_window()))
+        if suggested > 0.0:
+            candidates.add(suggested)
+
+        if positive.size:
+            base = float(np.median(positive))
+            if not np.isfinite(base) or base <= 0.0:
+                base = float(np.mean(positive))
+
+            min_positive = float(np.min(positive))
+            max_positive = float(np.max(positive))
+
+            lower = max(min_positive, base)
+            upper = max(max_positive, lower)
+
+            if duration > 0.0:
+                upper = min(upper * 10.0, duration)
+            else:
+                upper = upper * 10.0
+
+            if upper <= lower:
+                upper = lower * 5.0
+
+            if upper > 0.0 and lower > 0.0:
+                ratio = upper / lower if lower else float("inf")
+                if ratio > 1.5:
+                    sweep = np.geomspace(lower, upper, num=12)
+                else:
+                    sweep = np.linspace(lower, upper, num=12)
+                for value in sweep:
+                    if value > 0.0 and np.isfinite(value):
+                        candidates.add(float(value))
+        elif duration > 0.0:
+            candidates.add(duration / 10.0)
+
+        ordered = sorted({float(round(val, 6)) for val in candidates if val >= 0.0})
+        return ordered
 
     def _current_declustering_window_seconds(self) -> float:
         """Return the active declustering window in seconds for the current engine."""
@@ -567,6 +629,11 @@ class EVMWindow(QDialog):
         layout.addWidget(self.declustering_spin, row, 1)
         row += 1
 
+        self.declustering_sweep_btn = QPushButton("Plot Declustering Sweep")
+        self.declustering_sweep_btn.clicked.connect(self.on_plot_declustering_sweep)
+        layout.addWidget(self.declustering_sweep_btn, row, 0, 1, 3)
+        row += 1
+
         self.ci_spin = QDoubleSpinBox()
         self.ci_spin.setDecimals(1)
         self.ci_spin.setValue(95.0)
@@ -633,7 +700,9 @@ class EVMWindow(QDialog):
             ]
         )
 
-        self._builtin_widgets.extend([self.declustering_label, self.declustering_spin])
+        self._builtin_widgets.extend(
+            [self.declustering_label, self.declustering_spin, self.declustering_sweep_btn]
+        )
 
         self.canvas_message_checkbox = QCheckBox("Show messages on canvas")
         self.canvas_message_checkbox.setChecked(True)
@@ -859,6 +928,150 @@ class EVMWindow(QDialog):
                 "declustering_window": declustering_window,
             },
         )
+
+    def on_plot_declustering_sweep(self) -> None:
+        """Plot GPD parameters against candidate declustering periods."""
+
+        engine = self.engine_combo.currentData()
+        if engine == "pyextremes":
+            message = (
+                "Declustering sweeps are only available for the built-in engine. "
+                "Switch to the built-in GPD option to evaluate declustering periods."
+            )
+            self.result_text.setPlainText(message)
+            self.show_canvas_message(message)
+            return
+
+        threshold = self.threshold_spin.value()
+        tail = self.tail_combo.currentText()
+        windows = self._candidate_declustering_windows()
+
+        xi_values: list[float] = []
+        sigma_values: list[float] = []
+        exceedance_counts: list[int] = []
+
+        t_arr = np.asarray(self.t, dtype=float)
+        x_arr = np.asarray(self.x, dtype=float)
+
+        for window_seconds in windows:
+            peaks, _ = self._declustered_peaks_for_window(tail, window_seconds)
+            if peaks.size == 0:
+                exceedance_counts.append(0)
+                xi_values.append(np.nan)
+                sigma_values.append(np.nan)
+                continue
+
+            if tail == "upper":
+                clustered = peaks[peaks > threshold]
+            else:
+                clustered = peaks[peaks < threshold]
+
+            clustered = np.asarray(clustered, dtype=float)
+            exceedance_counts.append(int(clustered.size))
+
+            if clustered.size < 10:
+                xi_values.append(np.nan)
+                sigma_values.append(np.nan)
+                continue
+
+            try:
+                evm_result = calculate_extreme_value_statistics(
+                    t_arr,
+                    x_arr,
+                    threshold,
+                    tail=tail,
+                    confidence_level=self.ci_spin.value(),
+                    n_bootstrap=0,
+                    clustered_peaks=clustered,
+                    engine="builtin",
+                )
+            except Exception:
+                xi_values.append(np.nan)
+                sigma_values.append(np.nan)
+                continue
+
+            xi_values.append(float(evm_result.shape))
+            sigma_values.append(float(evm_result.scale))
+
+        if not windows:
+            message = "Unable to determine candidate declustering periods for the sweep."
+            self.result_text.setPlainText(message)
+            self.show_canvas_message(message)
+            return
+
+        xi_arr = np.asarray(xi_values, dtype=float)
+        sigma_arr = np.asarray(sigma_values, dtype=float)
+        windows_arr = np.asarray(windows, dtype=float)
+
+        if np.all(~np.isfinite(xi_arr)) and np.all(~np.isfinite(sigma_arr)):
+            message = (
+                "Declustering sweep could not produce valid fits. Try lowering the "
+                "threshold or selecting a different tail."
+            )
+            self.result_text.setPlainText(message)
+            self.show_canvas_message(message)
+            return
+
+        self._set_canvas_figure(self._base_figure)
+        self.fig.clear()
+        ax = self.fig.add_subplot(111)
+
+        ax.plot(
+            windows_arr,
+            xi_arr,
+            marker="o",
+            label="Shape ξ",
+        )
+        ax.set_xlabel("Declustering period (s)")
+        ax.set_ylabel("Shape ξ")
+        ax.grid(True, linestyle="--", alpha=0.5)
+
+        ax_sigma = ax.twinx()
+        ax_sigma.plot(
+            windows_arr,
+            sigma_arr,
+            marker="s",
+            color="#d62728",
+            label="Scale σᵤ",
+        )
+        ax_sigma.set_ylabel("Scale σᵤ")
+
+        positive_mask = windows_arr > 0
+        finite_windows = windows_arr[positive_mask]
+        if finite_windows.size >= 2 and np.all(positive_mask):
+            span = float(finite_windows.max() / finite_windows.min())
+            if span > 50:
+                ax.set_xscale("log")
+
+        handles = ax.get_lines() + ax_sigma.get_lines()
+        labels = [line.get_label() for line in handles]
+        if handles:
+            ax.legend(handles, labels, loc="best")
+
+        self.fig.tight_layout()
+        self.fig_canvas.draw()
+
+        summary_lines = [
+            "Declustering sweep summary:",
+            f"Threshold: {threshold:.4f}",
+            f"Tail: {tail}",
+            "",
+            f"{'Window (s)':>12}  {'Exceedances':>12}  {'ξ':>8}  {'σᵤ':>8}",
+        ]
+        for window_seconds, count, xi_val, sigma_val in zip(
+            windows_arr, exceedance_counts, xi_arr, sigma_arr
+        ):
+            if np.isfinite(xi_val) and np.isfinite(sigma_val):
+                xi_text = f"{xi_val:.4f}"
+                sigma_text = f"{sigma_val:.4f}"
+            else:
+                xi_text = "n/a"
+                sigma_text = "n/a"
+            summary_lines.append(
+                f"{window_seconds:12.3f}  {count:12d}  {xi_text:>8}  {sigma_text:>8}"
+            )
+
+        self.result_text.setPlainText("\n".join(summary_lines))
 
     def _handle_successful_fit(self, data: dict, tail: str) -> None:
         evm_result = data["evm_result"]
