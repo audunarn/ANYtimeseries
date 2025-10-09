@@ -523,7 +523,7 @@ class EVMWindow(QDialog):
 
         candidates: set[float] = {0.0}
 
-        current_value = float(max(0.0, self.declustering_spin.value()))
+        current_value = self._current_declustering_window_seconds()
         if current_value > 0.0:
             candidates.add(current_value)
 
@@ -742,9 +742,7 @@ class EVMWindow(QDialog):
             ]
         )
 
-        self._builtin_widgets.extend(
-            [self.declustering_label, self.declustering_spin, self.declustering_sweep_btn]
-        )
+        self._builtin_widgets.extend([self.declustering_label, self.declustering_spin])
 
         self.canvas_message_checkbox = QCheckBox("Show messages on canvas")
         self.canvas_message_checkbox.setChecked(True)
