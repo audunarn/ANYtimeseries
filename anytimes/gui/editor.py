@@ -799,9 +799,9 @@ class TimeSeriesEditorQt(QMainWindow):
                 self.calc_variables.append(safe)
                 self.calc_var_filemap[safe] = "common"
         for key in getattr(self, "user_variables", set()):
-            safe = f"c_{_safe(key)}"
+            safe = f"u_{_safe(key)}"
             if safe not in self.calc_variables:
-                filename = next((os.path.basename(fp) for tsdb, fp in zip(self.tsdbs, self.file_paths) if key in tsdb.getm()), "")
+                filename = next((os.path.basename(fp) for tsdb, fp in zip(self.tsdbs, self.file_paths) if key in tsdb.getm()), "user variable")
                 self.calc_variables.append(safe)
                 self.calc_var_filemap[safe] = filename
 
@@ -966,7 +966,7 @@ class TimeSeriesEditorQt(QMainWindow):
             for k, vecs in aligned_common.items():
                 ctx[f"c_{_safe(k)}"] = vecs[file_idx]
             for k, vecs in aligned_u_global.items():
-                ctx[f"c_{_safe(k)}"] = vecs[file_idx]
+                ctx[f"u_{_safe(k)}"] = vecs[file_idx]
             for tok, vec in aligned_u_perfile.items():
                 ctx[f"u_{tok}"] = vec
 
