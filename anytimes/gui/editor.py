@@ -7,9 +7,10 @@ import os
 import re
 import subprocess
 import sys
+import traceback
 import warnings
 from array import array
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 import anyqats as qats
 import numpy as np
@@ -101,6 +102,11 @@ class TimeSeriesEditorQt(QMainWindow):
         # Reuse a single style instance when toggling themes to avoid
         # crashes from Python garbage-collecting temporary QStyle objects
         self._fusion_style = QStyleFactory.create("Fusion")
+
+        # Track the latest embedded plot so theme toggles can refresh it for
+        # non-matplotlib engines without reloading the entire UI.
+        self._last_plot_call: tuple[Callable[..., None], tuple, dict] | None = None
+        self._refreshing_plot = False
 
 
 
@@ -2617,6 +2623,10 @@ class TimeSeriesEditorQt(QMainWindow):
 
         self.rebuild_var_lookup()
 
+        # Clear any cached plot state; a new successful render will store it
+        # again if embedding is active.
+        self._clear_last_plot_call()
+
         mark_extrema = (
             hasattr(self, "plot_extrema_cb") and self.plot_extrema_cb.isChecked()
         )
@@ -2944,6 +2954,9 @@ class TimeSeriesEditorQt(QMainWindow):
                     self._temp_plot_file = tmp.name
                     self.plot_view.load(QUrl.fromLocalFile(tmp.name))
                     self.plot_view.show()
+                    self._remember_plot_call(
+                        self.plot_selected, mode=mode, grid=grid
+                    )
                 else:
                     self.plot_view.hide()
                     show(layout)
@@ -3033,6 +3046,9 @@ class TimeSeriesEditorQt(QMainWindow):
                     self._temp_plot_file = tmp.name
                     self.plot_view.load(QUrl.fromLocalFile(tmp.name))
                     self.plot_view.show()
+                    self._remember_plot_call(
+                        self.plot_selected, mode=mode, grid=grid
+                    )
                 else:
                     self.plot_view.hide()
                     fig.show(renderer="browser")
@@ -3091,12 +3107,24 @@ class TimeSeriesEditorQt(QMainWindow):
                     "No series matched the selection.",
                 )
                 return
+            engine = (
+                self.plot_engine_combo.currentText()
+                if hasattr(self, "plot_engine_combo")
+                else ""
+            ).lower()
             self._plot_lines(
                 traces,
                 title="Rolling Mean" if mode == "rolling" else "Time-series Plot",
                 y_label=self.yaxis_label.text() or "Value",
                 mark_extrema=mark_extrema,
             )
+            embed_cb = getattr(self, "embed_plot_cb", None)
+            if (
+                embed_cb is not None
+                and embed_cb.isChecked()
+                and engine in {"plotly", "bokeh"}
+            ):
+                self._remember_plot_call(self.plot_selected, mode=mode, grid=grid)
             return
 
         # ----------------------------------------------------------------------
@@ -3186,6 +3214,7 @@ class TimeSeriesEditorQt(QMainWindow):
         4.  The resulting DataFrame is fed to Plotly Express for an animated
             3-D scatter, one colour per triplet.
         """
+        self._clear_last_plot_call()
         self.rebuild_var_lookup()
         import os, itertools, warnings
         import numpy as np
@@ -3342,6 +3371,9 @@ class TimeSeriesEditorQt(QMainWindow):
                 self.plot_view.load(QUrl.fromLocalFile(tmp.name))
 
                 self.plot_view.show()
+                self._remember_plot_call(
+                    self.animate_xyz_scatter_many, dt_resample=dt_resample
+                )
             else:
                 self.plot_view.hide()
                 # Ensure Plotly opens in the system browser when not embedding
@@ -3359,6 +3391,8 @@ class TimeSeriesEditorQt(QMainWindow):
         traces → list of dicts with keys
                  't', 'y', 'label', 'alpha', 'is_mean'
         """
+        self._clear_last_plot_call()
+
         engine = (
             self.plot_engine_combo.currentText()
             if hasattr(self, "plot_engine_combo")
@@ -3474,6 +3508,13 @@ class TimeSeriesEditorQt(QMainWindow):
                 self.plot_view.load(QUrl.fromLocalFile(tmp.name))
 
                 self.plot_view.show()
+                self._remember_plot_call(
+                    self._plot_lines,
+                    traces,
+                    title,
+                    y_label,
+                    mark_extrema=mark_extrema,
+                )
             else:
                 self.plot_view.hide()
                 show(layout)
@@ -3549,6 +3590,13 @@ class TimeSeriesEditorQt(QMainWindow):
                 self.plot_view.load(QUrl.fromLocalFile(tmp.name))
 
                 self.plot_view.show()
+                self._remember_plot_call(
+                    self._plot_lines,
+                    traces,
+                    title,
+                    y_label,
+                    mark_extrema=mark_extrema,
+                )
             else:
                 self.plot_view.hide()
                 # Ensure Plotly opens in the system browser when not embedding
@@ -4148,6 +4196,43 @@ class TimeSeriesEditorQt(QMainWindow):
         self.plot_view.setStyleSheet("background-color:#eff0f1;border:0px;")
 
 
+    def _clear_last_plot_call(self) -> None:
+        self._last_plot_call = None
+
+
+    def _remember_plot_call(
+        self, callback: Callable[..., None], /, *args, **kwargs
+    ) -> None:
+        self._last_plot_call = (callback, args, kwargs)
+
+
+    def _refresh_embedded_plot(self) -> None:
+        if self._last_plot_call is None:
+            return
+        embed_cb = getattr(self, "embed_plot_cb", None)
+        if embed_cb is None or not embed_cb.isChecked():
+            return
+        if not self.plot_view.isVisible():
+            return
+        engine = (
+            self.plot_engine_combo.currentText().lower()
+            if hasattr(self, "plot_engine_combo")
+            else ""
+        )
+        if engine not in {"plotly", "bokeh"}:
+            return
+        callback, args, kwargs = self._last_plot_call
+        if callback is None or self._refreshing_plot:
+            return
+        self._refreshing_plot = True
+        try:
+            callback(*args, **kwargs)
+        except Exception:
+            traceback.print_exc()
+        finally:
+            self._refreshing_plot = False
+
+
     def toggle_dark_theme(self, state):
 
         # ``state`` comes from the checkbox signal but using ``isChecked`` is
@@ -4158,7 +4243,19 @@ class TimeSeriesEditorQt(QMainWindow):
             self.apply_light_palette()
         # Refresh any open Matplotlib canvases so the new palette is used
         for canvas in self.findChildren(FigureCanvasQTAgg):
-            canvas.draw()
+            # ``draw_idle`` schedules a redraw without blocking the UI thread,
+            # keeping the theme toggle responsive even when large Matplotlib
+            # figures are embedded. Fall back to ``draw`` for older backends
+            # that might not provide the idle variant.
+            draw_fn = getattr(canvas, "draw_idle", None)
+            if callable(draw_fn):
+                draw_fn()
+            else:
+                canvas.draw()
+
+        # Refresh embedded HTML-based plots (Plotly/Bokeh) so their templates
+        # follow the new palette.
+        self._refresh_embedded_plot()
 
     def _on_engine_changed(self, text):
         """Update layout when the plotting engine selection changes."""
