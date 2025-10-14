@@ -63,6 +63,9 @@ pip install anytimes
 ```
 
 For running on Windows without a Python environment installed, download the `.exe` file from [releases][2].
+If you prefer to build the executable yourself, follow the
+[PyInstaller packaging guide](docs/pyinstaller.md) to produce a standalone
+`ANYtimeSeries.exe` from the sources.
 
 ## Requirements
 
