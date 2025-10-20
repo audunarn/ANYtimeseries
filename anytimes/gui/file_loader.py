@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QTableWidget,
@@ -229,7 +230,18 @@ class FileLoader:
             e = QLineEdit(defaults[typ])
             default_inputs[typ] = e
             def_layout.addWidget(e, row, 1)
-        right_side.addWidget(default_group)
+
+        applied_group = QGroupBox("Applied Selections")
+        applied_layout = QVBoxLayout(applied_group)
+        applied_summary = QPlainTextEdit()
+        applied_summary.setReadOnly(True)
+        applied_summary.setPlaceholderText("Selections applied with the button will appear here.")
+        applied_layout.addWidget(applied_summary)
+
+        default_summary_layout = QHBoxLayout()
+        default_summary_layout.addWidget(default_group)
+        default_summary_layout.addWidget(applied_group)
+        right_side.addLayout(default_summary_layout)
 
         tabs = QTabWidget()
         right_side.addWidget(tabs)
@@ -885,6 +897,51 @@ class FileLoader:
 
         apply_specs = {}
 
+        def _format_applied_label(spec):
+            obj_name, var_name, extra_val, label_val = spec
+            base = f"{obj_name} : {var_name}"
+            details = []
+            if label_val and label_val != var_name:
+                details.append(str(label_val))
+            if extra_val not in (None, ""):
+                details.append(str(extra_val))
+            if details:
+                base = f"{base} ({', '.join(details)})"
+            return base
+
+        def update_applied_summary():
+            if not apply_specs:
+                applied_summary.setPlainText("No selections applied yet.")
+                return
+
+            counts = {}
+            for specs in apply_specs.values():
+                seen = set()
+                for spec in specs:
+                    if spec in seen:
+                        continue
+                    counts[spec] = counts.get(spec, 0) + 1
+                    seen.add(spec)
+
+            def sort_key(item):
+                spec, count = item
+                obj_name, var_name, extra_val, label_val = spec
+                return (
+                    -count,
+                    obj_name,
+                    var_name,
+                    "" if label_val is None else str(label_val),
+                    "" if extra_val is None else str(extra_val),
+                )
+
+            lines = [
+                f"{count} x sim files -> {_format_applied_label(spec)}"
+                for spec, count in sorted(counts.items(), key=sort_key)
+            ]
+            applied_summary.setPlainText("\n".join(lines))
+
+        update_applied_summary()
+
         file_group = QGroupBox("Select Sims for this selection")
         file_layout = QVBoxLayout(file_group)
         file_checks = {}
@@ -967,8 +1024,14 @@ class FileLoader:
                 for var in sel_vars:
                     for ex, label in self._parse_extras(obj, st["extra_entry"].text()):
                         specs.append((obj_name, var, ex, label))
+
             for fp in selected:
-                apply_specs[fp] = specs.copy()
+                existing_specs = apply_specs.setdefault(fp, [])
+                existing_lookup = set(existing_specs)
+                for spec in specs:
+                    if spec not in existing_lookup:
+                        existing_specs.append(spec)
+                        existing_lookup.add(spec)
 
                 st_target = per_file_state[fp]
                 for name, cb in st_target["obj_vars"].items():
@@ -981,6 +1044,7 @@ class FileLoader:
                 file_checks[fp].setChecked(False)
             status_label.setText(f"Stored selection for {len(selected)} file(s)")
             apply_btn.setEnabled(False)
+            update_applied_summary()
 
         apply_btn.clicked.connect(apply_selection)
 
@@ -1017,7 +1081,8 @@ class FileLoader:
             else:
                 self._strip_rule = None
 
-            out_specs.update(apply_specs)
+            for fp, specs in apply_specs.items():
+                out_specs[fp] = list(specs)
 
             for fp, st in per_file_state.items():
                 if fp in out_specs:
