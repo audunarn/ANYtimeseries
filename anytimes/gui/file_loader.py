@@ -40,6 +40,11 @@ from .utils import (
 )
 from .layout_utils import apply_initial_size
 
+try:  # Optional dependency used when working with OrcaFlex files
+    import OrcFxAPI  # type: ignore
+except ImportError:  # pragma: no cover - library is optional
+    OrcFxAPI = None
+
 class FileLoader:
     def __init__(self, orcaflex_varmap=None, parent_gui=None):
         self.orcaflex_varmap = orcaflex_varmap or {}
@@ -1027,11 +1032,9 @@ class FileLoader:
 
             for fp in selected:
                 existing_specs = apply_specs.setdefault(fp, [])
-                existing_lookup = set(existing_specs)
                 for spec in specs:
-                    if spec not in existing_lookup:
+                    if not any(self._specs_match(spec, existing) for existing in existing_specs):
                         existing_specs.append(spec)
-                        existing_lookup.add(spec)
 
                 st_target = per_file_state[fp]
                 for name, cb in st_target["obj_vars"].items():
@@ -1594,6 +1597,49 @@ class FileLoader:
             return extras if extras else [(None, None)]
 
         return [(None, None)]
+
+    def _specs_match(self, spec_a, spec_b):
+        """Check if two selection specs should be considered the same."""
+        if len(spec_a) != len(spec_b):
+            return False
+        return all(
+            self._spec_item_match(a, b) for a, b in zip(spec_a, spec_b)
+        )
+
+    def _spec_item_match(self, item_a, item_b):
+        if item_a is item_b:
+            return True
+        if type(item_a) is not type(item_b):
+            return False
+        try:
+            if item_a == item_b:
+                return True
+        except Exception:
+            pass
+
+        if OrcFxAPI and hasattr(OrcFxAPI, "ObjectExtra"):
+            extra_type = OrcFxAPI.ObjectExtra
+            if isinstance(item_a, extra_type) and isinstance(item_b, extra_type):
+                comparable_attrs = (
+                    "ArcLength",
+                    "NodeNum",
+                    "X",
+                    "Y",
+                    "Z",
+                )
+                compared = False
+                for attr in comparable_attrs:
+                    if hasattr(item_a, attr) or hasattr(item_b, attr):
+                        compared = True
+                        if getattr(item_a, attr, None) != getattr(item_b, attr, None):
+                            return False
+                if compared:
+                    return True
+                return repr(item_a) == repr(item_b)
+        try:
+            return repr(item_a) == repr(item_b)
+        except Exception:
+            return False
 
     def _load_orcaflex_data_from_specs(self, model, selection_specs):
         try:
