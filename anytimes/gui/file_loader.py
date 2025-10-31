@@ -919,14 +919,19 @@ class FileLoader:
                 applied_summary.setPlainText("No selections applied yet.")
                 return
 
-            counts = {}
+            counts = []
             for specs in apply_specs.values():
-                seen = set()
+                seen = []
                 for spec in specs:
-                    if spec in seen:
+                    if any(self._specs_match(spec, other) for other in seen):
                         continue
-                    counts[spec] = counts.get(spec, 0) + 1
-                    seen.add(spec)
+                    for idx, (existing_spec, count) in enumerate(counts):
+                        if self._specs_match(spec, existing_spec):
+                            counts[idx] = (existing_spec, count + 1)
+                            break
+                    else:
+                        counts.append((spec, 1))
+                    seen.append(spec)
 
             def sort_key(item):
                 spec, count = item
@@ -941,7 +946,7 @@ class FileLoader:
 
             lines = [
                 f"{count} x sim files -> {_format_applied_label(spec)}"
-                for spec, count in sorted(counts.items(), key=sort_key)
+                for spec, count in sorted(counts, key=sort_key)
             ]
             applied_summary.setPlainText("\n".join(lines))
 
