@@ -10,6 +10,7 @@ from anyqats import TimeSeries
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 from PySide6.QtCore import QEvent, Qt, QTimer
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -266,20 +267,6 @@ class StatsDialog(QDialog):
                 "ignore", message="Tight layout not applied*", category=UserWarning
             )
             fig.tight_layout()
-        canvas.draw()
-
-    @staticmethod
-    def _tight_draw(fig, canvas) -> None:
-        """Redraw canvas with a tight layout.
-
-        Matplotlib requires a draw call before ``tight_layout`` can correctly
-        calculate text bounding boxes when embedded in Qt.  Without this the
-        axes may be misaligned or labels can be clipped.  Drawing once before
-        and after ``tight_layout`` ensures a stable layout across all plots.
-        """
-
-        canvas.draw()
-        fig.tight_layout()
         canvas.draw()
 
     def update_data(self):
