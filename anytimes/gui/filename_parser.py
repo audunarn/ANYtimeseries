@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Dict
+from typing import Dict, Optional
 
 
 def parse_general_filename(filename: str) -> dict:
@@ -20,7 +20,7 @@ def parse_general_filename(filename: str) -> dict:
     places.  For instance ``Hs0_3`` becomes ``{"Hs": 0.3}``.
     """
 
-    base = os.path.basename(filename).rsplit(".", 1)[0]
+    base = os.path.basename(filename)
     tokens = base.split("_")
 
     result = {}
@@ -59,6 +59,15 @@ def parse_general_filename(filename: str) -> dict:
     return result
 
 
+def choose_parse_target(*candidates: Optional[str]) -> str:
+    """Return the first non-empty candidate name for filename parsing."""
+
+    for candidate in candidates:
+        if candidate:
+            return candidate
+    return ""
+
+
 def parse_embedded_values(name: str) -> Dict[str, float]:
     """Backward-compatible wrapper for the general filename parser."""
 
@@ -68,4 +77,8 @@ def parse_embedded_values(name: str) -> Dict[str, float]:
     return parse_general_filename(name)
 
 
-__all__ = ["parse_embedded_values", "parse_general_filename"]
+__all__ = [
+    "choose_parse_target",
+    "parse_embedded_values",
+    "parse_general_filename",
+]

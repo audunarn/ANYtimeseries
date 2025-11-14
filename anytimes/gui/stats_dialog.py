@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (
 
 from .sortable_table_widget_item import SortableTableWidgetItem
 from .layout_utils import apply_initial_size
-from .filename_parser import parse_embedded_values
+from .filename_parser import choose_parse_target, parse_embedded_values
 
 class StatsDialog(QDialog):
     """Qt table dialog with copy and plotting features."""
@@ -356,10 +356,11 @@ class StatsDialog(QDialog):
             self.ts_dict[sid] = (t, y)
 
             if parse_enabled:
-                target_name = info.get("uniq_file") or info.get("file", "")
-
+                target_name = choose_parse_target(
+                    info.get("file"),
+                    info.get("uniq_file"),
+                )
                 parsed = parse_embedded_values(target_name)
-
             else:
                 parsed = {}
             parse_data_list.append(parsed)
