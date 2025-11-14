@@ -78,6 +78,8 @@ class StatsDialog(QDialog):
         self.filter_bandpass_rb = QRadioButton("Band-pass")
         self.filter_bandblock_rb = QRadioButton("Band-block")
         self.filter_none_rb.setChecked(True)
+        self.fatigue_filter_cb = QCheckBox("Fatigue basis filtering")
+        self.fatigue_filter_cb.setChecked(False)
         self.lowpass_cutoff = QLineEdit("0.01")
         self.highpass_cutoff = QLineEdit("0.1")
         self.bandpass_low = QLineEdit("0.0")
@@ -110,6 +112,8 @@ class StatsDialog(QDialog):
         freq_layout.addWidget(QLabel("Hz and"), row, 3)
         freq_layout.addWidget(self.bandblock_high, row, 4)
         freq_layout.addWidget(QLabel("Hz"), row, 5)
+        row += 1
+        freq_layout.addWidget(self.fatigue_filter_cb, row, 0, 1, 3)
         main_layout.addWidget(freq_group)
 
         hline_layout = QHBoxLayout()
@@ -202,6 +206,7 @@ class StatsDialog(QDialog):
         self.hist_lines_edit.editingFinished.connect(self.update_plots)
         self.hist_show_text_cb.toggled.connect(self.update_plots)
         self.parse_filename_cb.toggled.connect(self.update_data)
+        self.fatigue_filter_cb.toggled.connect(self.update_data)
         self.order_combo.currentIndexChanged.connect(self.update_data)
         self.table.selectionModel().selectionChanged.connect(self.update_plots)
 
@@ -236,16 +241,21 @@ class StatsDialog(QDialog):
                 continue
         return parsed
 
-    def _apply_filter(self, t: np.ndarray, x: np.ndarray) -> np.ndarray:
-        mode = "none"
-        if self.filter_lowpass_rb.isChecked():
-            mode = "lowpass"
-        elif self.filter_highpass_rb.isChecked():
-            mode = "highpass"
-        elif self.filter_bandpass_rb.isChecked():
-            mode = "bandpass"
-        elif self.filter_bandblock_rb.isChecked():
-            mode = "bandblock"
+    def _parse_positive_float(self, text: str) -> float | None:
+        try:
+            value = float(text)
+        except (TypeError, ValueError):
+            return None
+        return value if value > 0 else None
+
+    def _filter_signal(
+        self,
+        t: np.ndarray,
+        x: np.ndarray,
+        mode: str,
+        cutoff_low: float | None = None,
+        cutoff_high: float | None = None,
+    ) -> np.ndarray:
         nanmask = ~np.isnan(x)
         if not np.any(nanmask):
             return x
@@ -256,28 +266,64 @@ class StatsDialog(QDialog):
         try:
             dt = np.median(np.diff(t_valid))
             if mode == "lowpass":
-                fc = float(self.lowpass_cutoff.text() or 0)
-                if fc > 0 and len(x_valid) > 1:
-                    x_filt = qats.signal.lowpass(x_valid, dt, fc)
+                if cutoff_high and len(x_valid) > 1:
+                    x_filt = qats.signal.lowpass(x_valid, dt, cutoff_high)
             elif mode == "highpass":
-                fc = float(self.highpass_cutoff.text() or 0)
-                if fc > 0 and len(x_valid) > 1:
-                    x_filt = qats.signal.highpass(x_valid, dt, fc)
+                if cutoff_low and len(x_valid) > 1:
+                    x_filt = qats.signal.highpass(x_valid, dt, cutoff_low)
             elif mode == "bandpass":
-                flow = float(self.bandpass_low.text() or 0)
-                fupp = float(self.bandpass_high.text() or 0)
-                if flow > 0 and fupp > flow and len(x_valid) > 1:
-                    x_filt = qats.signal.bandpass(x_valid, dt, flow, fupp)
+                if cutoff_low and cutoff_high and cutoff_high > cutoff_low and len(x_valid) > 1:
+                    x_filt = qats.signal.bandpass(x_valid, dt, cutoff_low, cutoff_high)
             elif mode == "bandblock":
-                flow = float(self.bandblock_low.text() or 0)
-                fupp = float(self.bandblock_high.text() or 0)
-                if flow > 0 and fupp > flow and len(x_valid) > 1:
-                    x_filt = qats.signal.bandblock(x_valid, dt, flow, fupp)
+                if cutoff_low and cutoff_high and cutoff_high > cutoff_low and len(x_valid) > 1:
+                    x_filt = qats.signal.bandblock(x_valid, dt, cutoff_low, cutoff_high)
         except Exception:
             pass
         x_out = np.full_like(x, np.nan)
         x_out[valid_idx] = x_filt
         return x_out
+
+    def _apply_filter(self, t: np.ndarray, x: np.ndarray) -> np.ndarray:
+        mode = "none"
+        cutoff_low = cutoff_high = None
+        if self.filter_lowpass_rb.isChecked():
+            mode = "lowpass"
+            cutoff_high = self._parse_positive_float(self.lowpass_cutoff.text())
+        elif self.filter_highpass_rb.isChecked():
+            mode = "highpass"
+            cutoff_low = self._parse_positive_float(self.highpass_cutoff.text())
+        elif self.filter_bandpass_rb.isChecked():
+            mode = "bandpass"
+            cutoff_low = self._parse_positive_float(self.bandpass_low.text())
+            cutoff_high = self._parse_positive_float(self.bandpass_high.text())
+        elif self.filter_bandblock_rb.isChecked():
+            mode = "bandblock"
+            cutoff_low = self._parse_positive_float(self.bandblock_low.text())
+            cutoff_high = self._parse_positive_float(self.bandblock_high.text())
+        return self._filter_signal(t, x, mode, cutoff_low=cutoff_low, cutoff_high=cutoff_high)
+
+    def _fatigue_filter_stats(self, t: np.ndarray, x: np.ndarray, mode: str, cutoff: float | None) -> tuple[float, float]:
+        if cutoff is None:
+            return np.nan, np.nan
+        if mode == "highpass":
+            y = self._filter_signal(t, x, mode, cutoff_low=cutoff)
+        else:
+            y = self._filter_signal(t, x, mode, cutoff_high=cutoff)
+        if not np.any(np.isfinite(y)):
+            return np.nan, np.nan
+        ts_tmp = TimeSeries("tmp", t, y)
+        stats = ts_tmp.stats()
+        return stats.get("tz", np.nan), stats.get("std", np.nan)
+
+    @staticmethod
+    def _format_stat_value(value):
+        if isinstance(value, float):
+            if np.isnan(value) or np.isinf(value):
+                return value
+            return float(
+                np.format_float_positional(value, precision=4, unique=False, trim="k")
+            )
+        return value
 
     @staticmethod
     def _tight_draw(fig, canvas) -> None:
@@ -333,6 +379,20 @@ class StatsDialog(QDialog):
             series_info = sorted(series_info, key=lambda i: (i["file_idx"], i["var"]))
 
 
+        fatigue_enabled = self.fatigue_filter_cb.isChecked()
+        fatigue_headers: list[str] = []
+        if fatigue_enabled:
+            fatigue_headers = [
+                "tz_high_pass",
+                "tz_low_pass",
+                "std_high_pass",
+                "std_low_pass",
+            ]
+            hp_cutoff = self._parse_positive_float(self.highpass_cutoff.text())
+            lp_cutoff = self._parse_positive_float(self.lowpass_cutoff.text())
+        else:
+            hp_cutoff = lp_cutoff = None
+
         for info in series_info:
             t = info["t"]
             x = info["x"]
@@ -348,9 +408,13 @@ class StatsDialog(QDialog):
                     v = t[0]
                 elif c.lower() == "end" and len(t):
                     v = t[-1]
-                if isinstance(v, float):
-                    v = float(np.format_float_positional(v, precision=4, unique=False, trim="k"))
+                v = self._format_stat_value(v)
                 row.append(v)
+            if fatigue_enabled:
+                tz_hp, std_hp = self._fatigue_filter_stats(t, x, "highpass", hp_cutoff)
+                tz_lp, std_lp = self._fatigue_filter_stats(t, x, "lowpass", lp_cutoff)
+                for val in (tz_hp, tz_lp, std_hp, std_lp):
+                    row.append(self._format_stat_value(val))
             stats_rows.append(row)
             sid = f"{info['file']}::{info['var']}"
             self.ts_dict[sid] = (t, y)
@@ -380,7 +444,7 @@ class StatsDialog(QDialog):
         headers = ["File", "Uniqueness", "Variable", "VarUniqueness", "Filter"]
         if parse_headers:
             headers.extend(parse_headers)
-        headers += stat_cols
+        headers += stat_cols + fatigue_headers
         self.table.setRowCount(len(stats_rows))
         self.table.setColumnCount(len(headers))
         self.table.setHorizontalHeaderLabels(headers)
