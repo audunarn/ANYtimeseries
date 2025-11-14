@@ -217,6 +217,24 @@ class StatsDialog(QDialog):
             out.append(u or "(all)")
         return out
 
+    @staticmethod
+    def _parse_from_filename(name: str) -> dict[str, float]:
+        """Extract key-value pairs embedded in a filename."""
+
+        if not name:
+            return {}
+        base = os.path.splitext(name)[0]
+        pattern = re.compile(r"([A-Za-z]+)([-+]?(?:\d+(?:[._]\d+)*))")
+        parsed: dict[str, float] = {}
+        for key, val in pattern.findall(base):
+            if not val:
+                continue
+            try:
+                parsed[key] = float(val.replace("_", "."))
+            except ValueError:
+                continue
+        return parsed
+
     def _apply_filter(self, t: np.ndarray, x: np.ndarray) -> np.ndarray:
         mode = "none"
         if self.filter_lowpass_rb.isChecked():
@@ -338,7 +356,9 @@ class StatsDialog(QDialog):
 
             if parse_enabled:
                 target_name = info.get("uniq_file") or info.get("file", "")
+
                 parsed = parse_embedded_values(target_name)
+
             else:
                 parsed = {}
             parse_data_list.append(parsed)
