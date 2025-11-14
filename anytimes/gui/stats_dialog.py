@@ -163,9 +163,13 @@ class StatsDialog(QDialog):
 
         btn_row = QHBoxLayout()
         btn_row.addStretch()
-        self.copy_btn = QPushButton("Copy as TSV")
-        self.copy_btn.clicked.connect(self.copy_as_tsv)
-        btn_row.addWidget(self.copy_btn)
+        self.copy_selected_btn = QPushButton("Copy selected as TSV")
+        self.copy_selected_btn.clicked.connect(self.copy_selected_as_tsv)
+        btn_row.addWidget(self.copy_selected_btn)
+
+        self.copy_all_btn = QPushButton("Copy all as TSV")
+        self.copy_all_btn.clicked.connect(self.copy_all_as_tsv)
+        btn_row.addWidget(self.copy_all_btn)
         main_layout.addLayout(btn_row)
 
 
@@ -375,17 +379,23 @@ class StatsDialog(QDialog):
 
     def keyPressEvent(self, event):
         if event.matches(QKeySequence.Copy):
-            self.copy_as_tsv()
+            self.copy_selected_as_tsv()
             event.accept()
         else:
             super().keyPressEvent(event)
 
-    def copy_as_tsv(self):
-        selected = sorted({idx.row() for idx in self.table.selectionModel().selectedRows()})
-        if selected:
-            rows = selected
-        else:
-            rows = range(self.table.rowCount())
+    def copy_selected_as_tsv(self):
+        rows = sorted({idx.row() for idx in self.table.selectionModel().selectedRows()})
+        if not rows:
+            return
+        self._copy_rows_as_tsv(rows)
+
+    def copy_all_as_tsv(self):
+        if not self.table.rowCount():
+            return
+        self._copy_rows_as_tsv(range(self.table.rowCount()))
+
+    def _copy_rows_as_tsv(self, rows):
         lines = ["\t".join([self.table.horizontalHeaderItem(c).text() for c in range(self.table.columnCount())])]
         for r in rows:
             vals = [self.table.item(r, c).text() for c in range(self.table.columnCount())]
