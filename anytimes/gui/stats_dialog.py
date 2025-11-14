@@ -78,7 +78,9 @@ class StatsDialog(QDialog):
         self.filter_bandpass_rb = QRadioButton("Band-pass")
         self.filter_bandblock_rb = QRadioButton("Band-block")
         self.filter_none_rb.setChecked(True)
-        self.fatigue_filter_cb = QCheckBox("Fatigue basis filtering")
+        self.fatigue_filter_cb = QCheckBox(
+            "Add std and tz high pass and low pass filtered values in new columns"
+        )
         self.fatigue_filter_cb.setChecked(False)
         self.lowpass_cutoff = QLineEdit("0.01")
         self.highpass_cutoff = QLineEdit("0.1")
@@ -87,7 +89,8 @@ class StatsDialog(QDialog):
         self.bandblock_low = QLineEdit("0.0")
         self.bandblock_high = QLineEdit("0.0")
         row = 0
-        freq_layout.addWidget(self.filter_none_rb, row, 0, 1, 2)
+        freq_layout.addWidget(self.filter_none_rb, row, 0)
+        freq_layout.addWidget(self.fatigue_filter_cb, row, 1, 1, 5)
         row += 1
         freq_layout.addWidget(self.filter_lowpass_rb, row, 0)
         freq_layout.addWidget(QLabel("below"), row, 1)
@@ -113,7 +116,6 @@ class StatsDialog(QDialog):
         freq_layout.addWidget(self.bandblock_high, row, 4)
         freq_layout.addWidget(QLabel("Hz"), row, 5)
         row += 1
-        freq_layout.addWidget(self.fatigue_filter_cb, row, 0, 1, 3)
         main_layout.addWidget(freq_group)
 
         hline_layout = QHBoxLayout()
