@@ -118,6 +118,9 @@ class StatsDialog(QDialog):
         self.hist_show_text_cb = QCheckBox("Show bar text")
         self.hist_show_text_cb.setChecked(True)
         hline_layout.addWidget(self.hist_show_text_cb)
+        self.parse_filename_cb = QCheckBox("Parse file name")
+        self.parse_filename_cb.setChecked(False)
+        hline_layout.addWidget(self.parse_filename_cb)
         hline_layout.addStretch()
         main_layout.addLayout(hline_layout)
 
@@ -196,6 +199,7 @@ class StatsDialog(QDialog):
             e.editingFinished.connect(self.update_data)
         self.hist_lines_edit.editingFinished.connect(self.update_plots)
         self.hist_show_text_cb.toggled.connect(self.update_plots)
+        self.parse_filename_cb.toggled.connect(self.update_data)
         self.order_combo.currentIndexChanged.connect(self.update_data)
         self.table.selectionModel().selectionChanged.connect(self.update_plots)
 
@@ -211,6 +215,24 @@ class StatsDialog(QDialog):
             u = u[:-len(suf)] if suf and u.endswith(suf) else u
             out.append(u or "(all)")
         return out
+
+    @staticmethod
+    def _parse_from_filename(name: str) -> dict[str, float]:
+        """Extract key-value pairs embedded in a filename."""
+
+        if not name:
+            return {}
+        base = os.path.splitext(name)[0]
+        pattern = re.compile(r"([A-Za-z]+)([-+]?(?:\d+(?:[._]\d+)*))")
+        parsed: dict[str, float] = {}
+        for key, val in pattern.findall(base):
+            if not val:
+                continue
+            try:
+                parsed[key] = float(val.replace("_", "."))
+            except ValueError:
+                continue
+        return parsed
 
     def _apply_filter(self, t: np.ndarray, x: np.ndarray) -> np.ndarray:
         mode = "none"
@@ -277,6 +299,9 @@ class StatsDialog(QDialog):
         stats_rows = []
         stat_cols = []
         self.ts_dict = {}
+        parse_enabled = self.parse_filename_cb.isChecked()
+        parse_data_list: list[dict[str, float]] = []
+        parse_headers: list[str] = []
 
         # Temporarily disable sorting while populating the table to avoid
         # rows being rearranged mid-update. Sorting will be re-enabled at
@@ -328,11 +353,27 @@ class StatsDialog(QDialog):
             sid = f"{info['file']}::{info['var']}"
             self.ts_dict[sid] = (t, y)
 
-        var_uniq = self._uniq([info["var"] for info in series_info])
-        for row, vu in zip(stats_rows, var_uniq):
-            row[3] = vu
+            if parse_enabled:
+                target_name = info.get("uniq_file") or info.get("file", "")
+                parsed = self._parse_from_filename(target_name)
+            else:
+                parsed = {}
+            parse_data_list.append(parsed)
+            for key in parsed:
+                if key not in parse_headers:
+                    parse_headers.append(key)
 
-        headers = ["File", "Uniqueness", "Variable", "VarUniqueness", "Filter"] + stat_cols
+        var_uniq = self._uniq([info["var"] for info in series_info])
+        for row, vu, pdata in zip(stats_rows, var_uniq, parse_data_list):
+            row[3] = vu
+            if parse_headers:
+                for key in parse_headers:
+                    row.append(pdata.get(key, ""))
+
+        headers = ["File", "Uniqueness", "Variable", "VarUniqueness", "Filter"]
+        if parse_headers:
+            headers.extend(parse_headers)
+        headers += stat_cols
         self.table.setRowCount(len(stats_rows))
         self.table.setColumnCount(len(headers))
         self.table.setHorizontalHeaderLabels(headers)
