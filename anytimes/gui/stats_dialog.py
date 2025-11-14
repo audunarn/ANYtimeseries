@@ -370,8 +370,10 @@ class StatsDialog(QDialog):
         for row, vu, pdata in zip(stats_rows, var_uniq, parse_data_list):
             row[3] = vu
             if parse_headers:
+                insert_at = 5  # after the Filter column
                 for key in parse_headers:
-                    row.append(pdata.get(key, ""))
+                    row.insert(insert_at, pdata.get(key, ""))
+                    insert_at += 1
 
         headers = ["File", "Uniqueness", "Variable", "VarUniqueness", "Filter"]
         if parse_headers:
