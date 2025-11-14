@@ -1,7 +1,7 @@
 """Dialog for displaying statistics with filtering and plotting."""
 from __future__ import annotations
 
-import os, re
+import os
 import warnings
 
 import anyqats as qats
@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
 
 from .sortable_table_widget_item import SortableTableWidgetItem
 from .layout_utils import apply_initial_size
+from .filename_parser import parse_embedded_values
 
 class StatsDialog(QDialog):
     """Qt table dialog with copy and plotting features."""
@@ -355,7 +356,9 @@ class StatsDialog(QDialog):
 
             if parse_enabled:
                 target_name = info.get("uniq_file") or info.get("file", "")
-                parsed = self._parse_from_filename(target_name)
+
+                parsed = parse_embedded_values(target_name)
+
             else:
                 parsed = {}
             parse_data_list.append(parsed)
