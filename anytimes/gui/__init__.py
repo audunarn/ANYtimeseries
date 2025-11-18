@@ -13,6 +13,7 @@ from .sortable_table_widget_item import SortableTableWidgetItem
 from .variable_tab import VariableRowWidget, VariableTab
 from .stats_dialog import StatsDialog
 from .evm_window import EVMWindow
+from .fatigue_dialog import FatigueDialog
 from .orcaflex_selector import OrcaflexVariableSelector
 from .file_loader import FileLoader
 from .editor import TimeSeriesEditorQt
@@ -31,6 +32,7 @@ __all__ = [
     'VariableTab',
     'StatsDialog',
     'EVMWindow',
+    'FatigueDialog',
     'OrcaflexVariableSelector',
     'FileLoader',
     'TimeSeriesEditorQt',
