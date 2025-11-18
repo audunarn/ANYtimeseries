@@ -82,8 +82,8 @@ class StatsDialog(QDialog):
             "Add std and tz high pass and low pass filtered values in new columns"
         )
         self.fatigue_filter_cb.setChecked(False)
-        self.lowpass_cutoff = QLineEdit("0.01")
-        self.highpass_cutoff = QLineEdit("0.1")
+        self.lowpass_cutoff = QLineEdit("0.04")
+        self.highpass_cutoff = QLineEdit("0.04")
         self.bandpass_low = QLineEdit("0.0")
         self.bandpass_high = QLineEdit("0.0")
         self.bandblock_low = QLineEdit("0.0")
