@@ -68,6 +68,7 @@ from .file_loader import FileLoader
 from .layout_utils import apply_initial_size
 from .stats_dialog import StatsDialog
 from .evm_window import EVMWindow
+from .fatigue_dialog import FatigueDialog, FatigueSeries
 from .sortable_table_widget_item import SortableTableWidgetItem
 from .variable_tab import VariableRowWidget, VariableTab
 from .utils import (
@@ -412,8 +413,10 @@ class TimeSeriesEditorQt(QMainWindow):
         tools_layout = QHBoxLayout(self.tools_group)
         self.launch_qats_btn = QPushButton("Open in AnyQATS")
         self.evm_tool_btn = QPushButton("Open Extreme Value Statistics Tool")
+        self.fatigue_tool_btn = QPushButton("Open Fatigue Tool")
         tools_layout.addWidget(self.launch_qats_btn)
         tools_layout.addWidget(self.evm_tool_btn)
+        tools_layout.addWidget(self.fatigue_tool_btn)
         self.controls_layout.addWidget(self.tools_group)
 
 
@@ -635,6 +638,7 @@ class TimeSeriesEditorQt(QMainWindow):
         self.shift_common_max_btn.clicked.connect(self.shift_common_max)
         self.launch_qats_btn.clicked.connect(self.launch_qats)
         self.evm_tool_btn.clicked.connect(self.open_evm_tool)
+        self.fatigue_tool_btn.clicked.connect(self.open_fatigue_tool)
         self.reselect_orcaflex_btn.clicked.connect(self.reselect_orcaflex_variables)
         self.psd_btn.clicked.connect(lambda: self.plot_selected(mode="psd"))
         self.cycle_range_btn.clicked.connect(lambda: self.plot_selected(mode="cycle"))
@@ -4116,6 +4120,73 @@ class TimeSeriesEditorQt(QMainWindow):
         else:
             local_db = tsdb
         dlg = EVMWindow(local_db, ts.name, self)
+        dlg.exec()
+
+    def open_fatigue_tool(self) -> None:
+        """Launch the fatigue dialog using all checked variables."""
+
+        from collections import Counter
+
+        self.rebuild_var_lookup()
+        selected_keys = [k for k, cb in self.var_checkboxes.items() if cb.isChecked()]
+        if not selected_keys:
+            QMessageBox.warning(self, "No Variables", "Please select at least one variable.")
+            return
+
+        series_entries: list[FatigueSeries] = []
+        fname_counts = Counter(os.path.basename(p) for p in self.file_paths)
+
+        for file_idx, (tsdb, fp) in enumerate(zip(self.tsdbs, self.file_paths), start=1):
+            fname = os.path.basename(fp)
+            fname_disp = fname if fname_counts[fname] == 1 else f"{fname} ({file_idx})"
+
+            for key in selected_keys:
+                if key.startswith(f"{fname}::"):
+                    var_name = key.split("::", 1)[1]
+                elif key.startswith(f"{fname}:"):
+                    var_name = key.split(":", 1)[1]
+                elif key in tsdb.getm():
+                    var_name = key
+                else:
+                    continue
+
+                ts = tsdb.getm().get(var_name)
+                if ts is None:
+                    continue
+
+                filtered = self.apply_filters(ts)
+                mask = self.get_time_window(ts)
+                if isinstance(mask, slice):
+                    t_window = ts.t[mask]
+                    x_window = filtered[mask]
+                else:
+                    if mask is None or not np.any(mask):
+                        continue
+                    t_window = ts.t[mask]
+                    x_window = filtered[mask]
+
+                if t_window.size == 0:
+                    continue
+
+                valid = np.isfinite(x_window)
+                if not np.any(valid):
+                    continue
+
+                t_valid = t_window[valid]
+                x_valid = x_window[valid]
+                duration = float(t_valid[-1] - t_valid[0]) if t_valid.size > 1 else 0.0
+                label = f"{fname_disp}: {var_name}"
+                series_entries.append(FatigueSeries(label, x_valid, duration))
+
+        if not series_entries:
+            QMessageBox.warning(
+                self,
+                "No valid data",
+                "Could not find any valid samples for the selected variables.",
+            )
+            return
+
+        dlg = FatigueDialog(series_entries, self)
         dlg.exec()
 
     def apply_dark_palette(self):
