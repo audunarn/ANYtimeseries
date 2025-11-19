@@ -3,12 +3,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Sequence
 
-import numpy as np
-from anyqats.fatigue.rainflow import count_cycles
-from anyqats.fatigue.sn import SNCurve, minersum
+from anyqats.fatigue.sn import SNCurve
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -31,19 +28,9 @@ from PySide6.QtWidgets import (
     QHeaderView,
 )
 
+from ..fatigue import FatigueComputationError, FatigueSeries, compute_fatigue_damage
 from .fatigue_curves import FatigueCurveTemplate, curve_templates, find_template
 from .filename_parser import exposure_hours_from_name
-
-
-@dataclass
-class FatigueSeries:
-    """Container for prepared series data used in the fatigue dialog."""
-
-    label: str
-    values: np.ndarray
-    duration: float
-    source_file: str = ""
-    variable_name: str = ""
 
 
 class FatigueDialog(QDialog):
@@ -178,6 +165,11 @@ class FatigueDialog(QDialog):
         self.load_basis_combo.addItem("Tension-based (T-N)", "tension")
         self.load_unit_combo = QComboBox()
         self._populate_load_units("stress")
+        self.reference_strength_label = QLabel("Reference breaking strength [unit]:")
+        self.reference_strength_edit = QLineEdit()
+        self.reference_strength_edit.setPlaceholderText("Optional for T-N curves")
+        self.reference_strength_label.setVisible(False)
+        self.reference_strength_edit.setVisible(False)
 
         opts_layout.addWidget(QLabel("Duration:"), 0, 0)
         opts_layout.addWidget(self.duration_value, 0, 1)
@@ -189,6 +181,8 @@ class FatigueDialog(QDialog):
         opts_layout.addWidget(QLabel("Load interpretation:"), 3, 0)
         opts_layout.addWidget(self.load_basis_combo, 3, 1)
         opts_layout.addWidget(self.load_unit_combo, 3, 2)
+        opts_layout.addWidget(self.reference_strength_label, 4, 0)
+        opts_layout.addWidget(self.reference_strength_edit, 4, 1)
 
         main_layout.addWidget(opts_box)
 
@@ -268,6 +262,7 @@ class FatigueDialog(QDialog):
         self.auto_exposure_cb.toggled.connect(self._on_auto_exposure_toggled)
         self.design_life_spin.valueChanged.connect(self._on_design_life_changed)
         self.load_basis_combo.currentIndexChanged.connect(self._on_load_basis_changed)
+        self.load_unit_combo.currentIndexChanged.connect(self._on_load_unit_changed)
 
         self._populate_template_combo()
         self._update_curve_type_state()
@@ -418,6 +413,7 @@ class FatigueDialog(QDialog):
         for label, factor in options:
             self.load_unit_combo.addItem(label, factor)
         self.load_unit_combo.blockSignals(False)
+        self._update_reference_strength_state()
 
     def _set_load_basis(self, basis: str) -> None:
         index = self.load_basis_combo.findData(basis)
@@ -431,11 +427,28 @@ class FatigueDialog(QDialog):
     def _on_load_basis_changed(self, _index: int) -> None:
         self._populate_load_units(self._current_load_basis())
 
+    def _on_load_unit_changed(self, _index: int) -> None:
+        self._update_reference_strength_state()
+
     def _load_unit_factor(self) -> float:
         data = self.load_unit_combo.currentData(Qt.UserRole)
         if data is None:
             return 1.0
         return float(data)
+
+    def _current_load_unit_label(self) -> str:
+        text = self.load_unit_combo.currentText()
+        if not text:
+            return "unit"
+        return text
+
+    def _update_reference_strength_state(self) -> None:
+        is_tension = self._current_load_basis() == "tension"
+        self.reference_strength_label.setVisible(is_tension)
+        self.reference_strength_edit.setVisible(is_tension)
+        if is_tension:
+            unit = self._current_load_unit_label()
+            self.reference_strength_label.setText(f"Reference breaking strength [{unit}]:")
 
     def _build_curve(self) -> SNCurve:
         m1 = self._parse_float(self.m1_edit)
@@ -484,6 +497,20 @@ class FatigueDialog(QDialog):
         if not self.include_thickness_cb.isChecked():
             return None
         return float(self.thickness_spin.value())
+
+    def _reference_strength_value(self) -> float | None:
+        if self._current_load_basis() != "tension":
+            return None
+        text = self.reference_strength_edit.text().strip()
+        if not text:
+            return None
+        try:
+            value = float(text)
+        except ValueError as exc:
+            raise ValueError(f"Invalid reference breaking strength: '{text}'") from exc
+        if value <= 0:
+            raise ValueError("Reference breaking strength must be positive.")
+        return value * self._load_unit_factor()
 
     def _log(self, message: str) -> None:
         self.log_output.append(message)
@@ -607,52 +634,39 @@ class FatigueDialog(QDialog):
             return
 
         unit_factor = self._load_unit_factor()
+        try:
+            reference_strength = self._reference_strength_value()
+        except ValueError as exc:
+            QMessageBox.critical(self, "Reference strength error", str(exc))
+            return
 
         self.results_table.setRowCount(0)
         self.log_output.clear()
 
-        for series, exposure_hours in zip(self.series, exposures):
-            valid = np.isfinite(series.values)
-            values = series.values[valid]
-            if values.size < 2:
-                self._log(f"{series.label}: skipped (not enough valid samples)")
-                continue
+        try:
+            results, logs = compute_fatigue_damage(
+                self.series,
+                exposures,
+                curve,
+                scf=scf,
+                thickness=thickness,
+                load_basis=load_basis,
+                curve_type=curve_type,
+                unit_factor=unit_factor,
+                reference_strength=reference_strength,
+            )
+        except (FatigueComputationError, ValueError) as exc:
+            QMessageBox.critical(self, "Fatigue calculation error", str(exc))
+            return
 
-            converted_values = values * unit_factor
-            cycles = count_cycles(converted_values)
-            if cycles.size == 0:
-                self._log(f"{series.label}: skipped (no cycles detected)")
-                continue
+        for entry in logs:
+            self._log(entry)
 
-            duration = exposure_hours * 3600.0
-            if duration <= 0:
-                self._log(f"{series.label}: skipped (non-positive exposure time)")
-                continue
-
-            signal_duration = float(series.duration)
-            if signal_duration <= 0:
-                self._log(f"{series.label}: skipped (invalid series duration)")
-                continue
-
-            try:
-                cycle_rate = cycles[:, 2] / signal_duration
-                damage = minersum(cycles[:, 0], cycle_rate, curve, td=duration, scf=scf, th=thickness)
-            except ValueError as exc:
-                QMessageBox.critical(self, "Fatigue calculation error", str(exc))
-                return
-
-            total_cycles = float(np.sum(cycles[:, 2]))
-            max_range = float(np.max(cycles[:, 0]))
-
+        for result in results:
             row = self.results_table.rowCount()
             self.results_table.insertRow(row)
-            self.results_table.setItem(row, 0, QTableWidgetItem(series.label))
-            self.results_table.setItem(row, 1, QTableWidgetItem(f"{total_cycles:.3f}"))
-            self.results_table.setItem(row, 2, QTableWidgetItem(f"{damage:.6g}"))
-            self.results_table.setItem(row, 3, QTableWidgetItem(f"{max_range:.3f}"))
-
-            self._log(
-                f"{series.label}: damage={damage:.6g} for {exposure_hours:.3f} h exposure over "
-                f"{total_cycles:.2f} rainflow cycles (max range {max_range:.3f})."
-            )
+            self.results_table.setItem(row, 0, QTableWidgetItem(result.label))
+            self.results_table.setItem(row, 1, QTableWidgetItem(f"{result.total_cycles:.3f}"))
+            self.results_table.setItem(row, 2, QTableWidgetItem(f"{result.damage:.6g}"))
+            self.results_table.setItem(row, 3, QTableWidgetItem(f"{result.max_range:.3f}"))
 
