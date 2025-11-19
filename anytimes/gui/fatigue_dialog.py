@@ -164,12 +164,12 @@ class FatigueDialog(QDialog):
         self.load_basis_combo.addItem("Stress-based (S-N)", "stress")
         self.load_basis_combo.addItem("Tension-based (T-N)", "tension")
         self.load_unit_combo = QComboBox()
-        self._populate_load_units("stress")
         self.reference_strength_label = QLabel("Reference breaking strength [unit]:")
         self.reference_strength_edit = QLineEdit()
         self.reference_strength_edit.setPlaceholderText("Optional for T-N curves")
         self.reference_strength_label.setVisible(False)
         self.reference_strength_edit.setVisible(False)
+        self._populate_load_units("stress")
 
         opts_layout.addWidget(QLabel("Duration:"), 0, 0)
         opts_layout.addWidget(self.duration_value, 0, 1)
