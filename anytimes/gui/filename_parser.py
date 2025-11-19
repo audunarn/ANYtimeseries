@@ -6,6 +6,15 @@ import os
 import re
 from typing import Dict, Optional
 
+_PROBABILITY_KEYS = {"probability", "prob", "probaility", "p"}
+_EXPOSURE_KEYS = {"exposure", "exposure_time", "ex_t", "ex_time"}
+_EXPOSURE_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9])"
+    r"(?P<key>probability|prob|probaility|p|exposure|exposure_time|ex_t|ex_time)"
+    r"(?P<value>-?[0-9]+(?:_[0-9]+)*)",
+    re.IGNORECASE,
+)
+
 
 def parse_general_filename(filename: str) -> dict:
     """Parse key/value pairs embedded in ``filename``.
@@ -77,8 +86,69 @@ def parse_embedded_values(name: str) -> Dict[str, float]:
     return parse_general_filename(name)
 
 
+def exposure_hours_from_name(name: str, design_life_years: float) -> Optional[float]:
+    """Return exposure hours encoded in ``name`` if possible.
+
+    The parser looks for tokens that match one of the supported probability or
+    exposure keys (e.g. ``prob``, ``probability``, ``exposure``).  If a
+    probability is found the result is calculated as ``design_life_years * 365 *
+    24 * probability``.  If an exposure token is found the numeric value is
+    interpreted directly as hours.
+    """
+
+    if not name:
+        return None
+
+    design_life_years = max(float(design_life_years), 0.0)
+
+    def _normalized_value(token: str) -> Optional[float]:
+        token = token.strip()
+        if not token:
+            return None
+        if "_" in token:
+            integer, _, fractional = token.partition("_")
+            fractional = fractional.replace("_", "")
+            if fractional:
+                token = f"{integer}.{fractional}"
+            else:
+                token = integer
+        token = token.replace(",", "")
+        try:
+            return float(token)
+        except ValueError:
+            return None
+
+    for match in _EXPOSURE_PATTERN.finditer(name):
+        key = match.group("key").lower()
+        value = _normalized_value(match.group("value"))
+        if value is None:
+            continue
+        if key in _PROBABILITY_KEYS:
+            return design_life_years * 365.0 * 24.0 * value
+        if key in _EXPOSURE_KEYS:
+            return value
+
+    try:
+        values = parse_general_filename(name)
+    except Exception:  # pragma: no cover - defensive
+        return None
+
+    if not values:
+        return None
+
+    for key, value in values.items():
+        lowered = key.lower()
+        if lowered in _PROBABILITY_KEYS:
+            return design_life_years * 365.0 * 24.0 * float(value)
+        if lowered in _EXPOSURE_KEYS:
+            return float(value)
+
+    return None
+
+
 __all__ = [
     "choose_parse_target",
+    "exposure_hours_from_name",
     "parse_embedded_values",
     "parse_general_filename",
 ]

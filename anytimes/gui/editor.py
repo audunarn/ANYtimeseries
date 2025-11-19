@@ -4176,7 +4176,7 @@ class TimeSeriesEditorQt(QMainWindow):
                 x_valid = x_window[valid]
                 duration = float(t_valid[-1] - t_valid[0]) if t_valid.size > 1 else 0.0
                 label = f"{fname_disp}: {var_name}"
-                series_entries.append(FatigueSeries(label, x_valid, duration))
+                series_entries.append(FatigueSeries(label, x_valid, duration, fname, var_name))
 
         if not series_entries:
             QMessageBox.warning(

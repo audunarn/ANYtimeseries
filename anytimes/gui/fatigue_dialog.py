@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
 )
 
 from .fatigue_curves import FatigueCurveTemplate, curve_templates, find_template
+from .filename_parser import exposure_hours_from_name
 
 
 @dataclass
@@ -41,6 +42,8 @@ class FatigueSeries:
     label: str
     values: np.ndarray
     duration: float
+    source_file: str = ""
+    variable_name: str = ""
 
 
 class FatigueDialog(QDialog):
@@ -167,17 +170,42 @@ class FatigueDialog(QDialog):
 
         main_layout.addWidget(opts_box)
 
+        exposure_box = QGroupBox("Exposure Time")
+        exposure_layout = QGridLayout(exposure_box)
+
+        self.design_life_spin = QDoubleSpinBox()
+        self.design_life_spin.setDecimals(2)
+        self.design_life_spin.setRange(0.0, 1e4)
+        self.design_life_spin.setValue(20.0)
+
+        self.auto_exposure_cb = QCheckBox("Auto-calculate exposure times from filenames")
+        self.auto_exposure_cb.setChecked(False)
+
+        exposure_layout.addWidget(QLabel("Design life [years]:"), 0, 0)
+        exposure_layout.addWidget(self.design_life_spin, 0, 1)
+        exposure_layout.addWidget(self.auto_exposure_cb, 1, 0, 1, 2)
+        exposure_layout.addWidget(
+            QLabel("Provide the exposure time (hours over lifetime) for each series below."),
+            2,
+            0,
+            1,
+            2,
+        )
+        main_layout.addWidget(exposure_box)
+
         # Table with prepared series metadata
-        self.series_table = QTableWidget(0, 3)
+        self.series_table = QTableWidget(0, 4)
         self.series_table.setHorizontalHeaderLabels([
             "Series",
             "Signal length [s]",
             "Valid samples",
+            "Exposure time [h]",
         ])
         header = self.series_table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.Stretch)
         header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
         self._populate_series_table()
         main_layout.addWidget(self.series_table)
 
@@ -215,6 +243,8 @@ class FatigueDialog(QDialog):
         self.curve_type_combo.currentIndexChanged.connect(self._on_curve_type_changed)
         self.template_combo.currentIndexChanged.connect(self._on_template_selected)
         self.mean_tension_ratio_spin.valueChanged.connect(self._on_mean_tension_ratio_changed)
+        self.auto_exposure_cb.toggled.connect(self._on_auto_exposure_toggled)
+        self.design_life_spin.valueChanged.connect(self._on_design_life_changed)
 
         self._populate_template_combo()
         self._update_curve_type_state()
@@ -229,10 +259,14 @@ class FatigueDialog(QDialog):
 
     def _populate_series_table(self) -> None:
         self.series_table.setRowCount(len(self.series))
+        default_hours = max(self._duration_seconds() / 3600.0, 0.0)
         for row, series in enumerate(self.series):
             self.series_table.setItem(row, 0, QTableWidgetItem(series.label))
             self.series_table.setItem(row, 1, QTableWidgetItem(f"{series.duration:.3f}"))
             self.series_table.setItem(row, 2, QTableWidgetItem(str(series.values.size)))
+            spin = self._create_exposure_spinbox()
+            spin.setValue(default_hours)
+            self.series_table.setCellWidget(row, 3, spin)
 
     def _current_curve_type(self) -> str:
         data = self.curve_type_combo.currentData(Qt.UserRole)
@@ -396,6 +430,88 @@ class FatigueDialog(QDialog):
     def _log(self, message: str) -> None:
         self.log_output.append(message)
 
+    def _create_exposure_spinbox(self) -> QDoubleSpinBox:
+        spin = QDoubleSpinBox()
+        spin.setDecimals(3)
+        spin.setRange(0.0, 1e12)
+        spin.setValue(0.0)
+        spin.setSuffix(" h")
+        spin.setKeyboardTracking(False)
+        return spin
+
+    def _exposure_widget(self, row: int) -> QDoubleSpinBox | None:
+        widget = self.series_table.cellWidget(row, 3)
+        if isinstance(widget, QDoubleSpinBox):
+            return widget
+        return None
+
+    def _set_exposure_value(self, row: int, hours: float) -> None:
+        widget = self._exposure_widget(row)
+        if widget is None:
+            return
+        widget.setValue(max(float(hours), 0.0))
+
+    def _collect_exposure_hours(self) -> list[float] | None:
+        missing: list[str] = []
+        exposures: list[float] = []
+        for row, series in enumerate(self.series):
+            widget = self._exposure_widget(row)
+            if widget is None:
+                missing.append(series.label)
+                continue
+            value = float(widget.value())
+            if value <= 0.0:
+                missing.append(series.label)
+                continue
+            exposures.append(value)
+        if missing:
+            message = "\n".join(missing)
+            QMessageBox.critical(
+                self,
+                "Missing exposure time",
+                "Provide an exposure time (hours) for the following series before running the calculation:\n"
+                f"{message}",
+            )
+            return None
+        return exposures
+
+    def _on_auto_exposure_toggled(self, checked: bool) -> None:
+        if checked:
+            self._auto_fill_exposure_times()
+
+    def _on_design_life_changed(self, _value: float) -> None:
+        if self.auto_exposure_cb.isChecked():
+            self._auto_fill_exposure_times()
+
+    def _auto_fill_exposure_times(self) -> None:
+        if not self.series:
+            return
+        design_life = float(self.design_life_spin.value())
+        unresolved: list[str] = []
+        filled = 0
+        for row, series in enumerate(self.series):
+            hours = exposure_hours_from_name(series.source_file, design_life)
+            if hours is None:
+                unresolved.append(series.label)
+                continue
+            self._set_exposure_value(row, hours)
+            filled += 1
+        if unresolved:
+            names = "\n".join(unresolved)
+            QMessageBox.warning(
+                self,
+                "Exposure parsing failed",
+                "Could not determine exposure time for the following series. "
+                "Please enter the values manually:\n"
+                f"{names}",
+            )
+        elif filled == 0:
+            QMessageBox.warning(
+                self,
+                "Exposure parsing failed",
+                "Could not determine exposure times from the filenames.",
+            )
+
     # ------------------------------------------------------------------
     # Computation
     def _compute_damage(self) -> None:
@@ -409,9 +525,8 @@ class FatigueDialog(QDialog):
             QMessageBox.critical(self, "Curve definition error", str(exc))
             return
 
-        duration = self._duration_seconds()
-        if duration <= 0:
-            QMessageBox.critical(self, "Invalid duration", "Duration must be positive.")
+        exposures = self._collect_exposure_hours()
+        if exposures is None:
             return
 
         scf = float(self.scf_spin.value())
@@ -420,7 +535,7 @@ class FatigueDialog(QDialog):
         self.results_table.setRowCount(0)
         self.log_output.clear()
 
-        for series in self.series:
+        for series, exposure_hours in zip(self.series, exposures):
             valid = np.isfinite(series.values)
             values = series.values[valid]
             if values.size < 2:
@@ -430,6 +545,11 @@ class FatigueDialog(QDialog):
             cycles = count_cycles(values)
             if cycles.size == 0:
                 self._log(f"{series.label}: skipped (no cycles detected)")
+                continue
+
+            duration = exposure_hours * 3600.0
+            if duration <= 0:
+                self._log(f"{series.label}: skipped (non-positive exposure time)")
                 continue
 
             try:
@@ -449,6 +569,7 @@ class FatigueDialog(QDialog):
             self.results_table.setItem(row, 3, QTableWidgetItem(f"{max_range:.3f}"))
 
             self._log(
-                f"{series.label}: damage={damage:.6g} over {total_cycles:.2f} rainflow cycles (max range {max_range:.3f})."
+                f"{series.label}: damage={damage:.6g} for {exposure_hours:.3f} h exposure over "
+                f"{total_cycles:.2f} rainflow cycles (max range {max_range:.3f})."
             )
 
