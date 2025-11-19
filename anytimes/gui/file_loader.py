@@ -1792,11 +1792,24 @@ class FileLoader:
         try:
             results = OrcFxAPI.GetMultipleTimeHistories(resolved_specs, time_spec)
             for i, name in enumerate(names):
-                tsdb.add(TimeSeries(name, time, results[:, i]))
+                self._add_unique_timeseries(tsdb, name, time, results[:, i])
             return tsdb
         except Exception as e:
             QMessageBox.critical(self.parent_gui, "OrcaFlex Read Error", f"Could not read variables:\n{e}")
             return None
+
+    def _add_unique_timeseries(self, tsdb, base_label, time, data):
+        """Add ``TimeSeries`` to *tsdb* ensuring its name is unique."""
+
+        label = base_label
+        suffix = 1
+        while True:
+            try:
+                tsdb.add(TimeSeries(label, time, data))
+                return label
+            except KeyError:
+                suffix += 1
+                label = f"{base_label} ({suffix})"
 
     def _load_generic_file(self, filepath):
         ext = os.path.splitext(filepath)[-1].lower().lstrip(".")
