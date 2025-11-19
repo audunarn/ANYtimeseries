@@ -37,7 +37,10 @@ class OrcaflexVariableSelector(QDialog):
             height_ratio=0.92,
         )
         self.model = model
-        self.orcaflex_varmap = ORCAFLEX_VARIABLE_MAP or {}
+        if orcaflex_varmap is not None:
+            self.orcaflex_varmap = orcaflex_varmap
+        else:
+            self.orcaflex_varmap = ORCAFLEX_VARIABLE_MAP or {}
         self.selected = []
         self.reuse_all = False
 
@@ -68,7 +71,7 @@ class OrcaflexVariableSelector(QDialog):
 
         # Only objects for which we have variable types in the varmap
         self.object_map = {
-            obj.Name: obj
+            obj.Name: obj.typeName
             for obj in self.model.objects
             if obj.typeName in self.orcaflex_varmap
         }
@@ -122,8 +125,8 @@ class OrcaflexVariableSelector(QDialog):
         selected_objs = self.obj_list.selectedItems()
         if not selected_objs:
             return
-        last_obj = self.object_map[selected_objs[-1].text()]
-        variables = get_object_available_vars(last_obj, self.orcaflex_varmap)
+        obj_type = self.object_map[selected_objs[-1].text()]
+        variables = get_object_available_vars(obj_type, self.orcaflex_varmap)
         terms = _parse_search_terms(self.var_filter.text())
         for var in variables:
 
