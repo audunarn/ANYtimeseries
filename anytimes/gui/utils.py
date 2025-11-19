@@ -179,8 +179,25 @@ def _matches_terms(name: str, terms: list[list[str]]) -> bool:
     return all(any(t in name_l for t in group) for group in terms)
 
 def get_object_available_vars(obj, orcaflex_varmap=None):
+    """Return the variables available for an OrcaFlex object or type.
+
+    ``obj`` may be either an OrcaFlex object instance or a ``typeName`` string.
+    The helper keeps working with bare type names so callers don't have to keep
+    references to OrcaFlex COM objects alive longer than necessary.
+    """
+
+    type_name = getattr(obj, "typeName", None)
+    if type_name is None and isinstance(obj, str):
+        type_name = obj
+
     if orcaflex_varmap is not None:
-        return orcaflex_varmap.get(obj.typeName, [])
+        if type_name is None:
+            return []
+        return orcaflex_varmap.get(type_name, [])
+
+    if type_name is None:
+        return []
+
     for attr in ["AvailableTimeHistories", "AvailableDerivedVariables"]:
         if hasattr(obj, attr):
             try:
