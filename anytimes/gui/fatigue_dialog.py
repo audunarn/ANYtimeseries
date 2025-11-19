@@ -57,6 +57,19 @@ class FatigueDialog(QDialog):
         ("Years", 365.2425 * 86400.0),
     ]
 
+    _LOAD_UNIT_OPTIONS: dict[str, list[tuple[str, float]]] = {
+        "stress": [
+            ("MPa", 1.0),
+            ("kPa", 1e-3),
+            ("Pa", 1e-6),
+        ],
+        "tension": [
+            ("MN", 1.0),
+            ("kN", 1e-3),
+            ("N", 1e-6),
+        ],
+    }
+
     def __init__(self, series: Sequence[FatigueSeries], parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Fatigue Calculation Tool")
@@ -160,6 +173,12 @@ class FatigueDialog(QDialog):
         self.thickness_spin.setEnabled(False)
         self.include_thickness_cb.toggled.connect(self.thickness_spin.setEnabled)
 
+        self.load_basis_combo = QComboBox()
+        self.load_basis_combo.addItem("Stress-based (S-N)", "stress")
+        self.load_basis_combo.addItem("Tension-based (T-N)", "tension")
+        self.load_unit_combo = QComboBox()
+        self._populate_load_units("stress")
+
         opts_layout.addWidget(QLabel("Duration:"), 0, 0)
         opts_layout.addWidget(self.duration_value, 0, 1)
         opts_layout.addWidget(self.duration_unit, 0, 2)
@@ -167,6 +186,9 @@ class FatigueDialog(QDialog):
         opts_layout.addWidget(self.scf_spin, 1, 1)
         opts_layout.addWidget(QLabel("Thickness [mm]:"), 2, 0)
         opts_layout.addWidget(self.thickness_spin, 2, 1)
+        opts_layout.addWidget(QLabel("Load interpretation:"), 3, 0)
+        opts_layout.addWidget(self.load_basis_combo, 3, 1)
+        opts_layout.addWidget(self.load_unit_combo, 3, 2)
 
         main_layout.addWidget(opts_box)
 
@@ -245,6 +267,7 @@ class FatigueDialog(QDialog):
         self.mean_tension_ratio_spin.valueChanged.connect(self._on_mean_tension_ratio_changed)
         self.auto_exposure_cb.toggled.connect(self._on_auto_exposure_toggled)
         self.design_life_spin.valueChanged.connect(self._on_design_life_changed)
+        self.load_basis_combo.currentIndexChanged.connect(self._on_load_basis_changed)
 
         self._populate_template_combo()
         self._update_curve_type_state()
@@ -347,6 +370,9 @@ class FatigueDialog(QDialog):
         self.tn_info_label.setVisible(is_tn)
         self.mean_tension_ratio_label.setVisible(is_tn)
         self.mean_tension_ratio_spin.setVisible(is_tn)
+        recommended_basis = "tension" if is_tn else "stress"
+        if self._current_load_basis() != recommended_basis:
+            self._set_load_basis(recommended_basis)
 
     def _loga1_from_lm(self, template: FatigueCurveTemplate) -> float | None:
         if template.lm_formula is None:
@@ -378,6 +404,38 @@ class FatigueDialog(QDialog):
             return float(text)
         except ValueError as exc:
             raise ValueError(f"Invalid number: '{text}'") from exc
+
+    def _current_load_basis(self) -> str:
+        data = self.load_basis_combo.currentData(Qt.UserRole)
+        if not data:
+            return "stress"
+        return str(data)
+
+    def _populate_load_units(self, basis: str) -> None:
+        options = self._LOAD_UNIT_OPTIONS.get(basis, [])
+        self.load_unit_combo.blockSignals(True)
+        self.load_unit_combo.clear()
+        for label, factor in options:
+            self.load_unit_combo.addItem(label, factor)
+        self.load_unit_combo.blockSignals(False)
+
+    def _set_load_basis(self, basis: str) -> None:
+        index = self.load_basis_combo.findData(basis)
+        if index == -1:
+            return
+        self.load_basis_combo.blockSignals(True)
+        self.load_basis_combo.setCurrentIndex(index)
+        self.load_basis_combo.blockSignals(False)
+        self._populate_load_units(basis)
+
+    def _on_load_basis_changed(self, _index: int) -> None:
+        self._populate_load_units(self._current_load_basis())
+
+    def _load_unit_factor(self) -> float:
+        data = self.load_unit_combo.currentData(Qt.UserRole)
+        if data is None:
+            return 1.0
+        return float(data)
 
     def _build_curve(self) -> SNCurve:
         m1 = self._parse_float(self.m1_edit)
@@ -531,6 +589,24 @@ class FatigueDialog(QDialog):
 
         scf = float(self.scf_spin.value())
         thickness = self._thickness_value()
+        load_basis = self._current_load_basis()
+        curve_type = self._current_curve_type()
+        if curve_type == "sn" and load_basis != "stress":
+            QMessageBox.critical(
+                self,
+                "Load interpretation error",
+                "S-N curves require stress-based input. Please select the stress interpretation.",
+            )
+            return
+        if curve_type == "tn" and load_basis != "tension":
+            QMessageBox.critical(
+                self,
+                "Load interpretation error",
+                "T-N curves require tension-based input. Please select the tension interpretation.",
+            )
+            return
+
+        unit_factor = self._load_unit_factor()
 
         self.results_table.setRowCount(0)
         self.log_output.clear()
@@ -542,7 +618,8 @@ class FatigueDialog(QDialog):
                 self._log(f"{series.label}: skipped (not enough valid samples)")
                 continue
 
-            cycles = count_cycles(values)
+            converted_values = values * unit_factor
+            cycles = count_cycles(converted_values)
             if cycles.size == 0:
                 self._log(f"{series.label}: skipped (no cycles detected)")
                 continue
@@ -552,8 +629,14 @@ class FatigueDialog(QDialog):
                 self._log(f"{series.label}: skipped (non-positive exposure time)")
                 continue
 
+            signal_duration = float(series.duration)
+            if signal_duration <= 0:
+                self._log(f"{series.label}: skipped (invalid series duration)")
+                continue
+
             try:
-                damage = minersum(cycles[:, 0], cycles[:, 2], curve, td=duration, scf=scf, th=thickness)
+                cycle_rate = cycles[:, 2] / signal_duration
+                damage = minersum(cycles[:, 0], cycle_rate, curve, td=duration, scf=scf, th=thickness)
             except ValueError as exc:
                 QMessageBox.critical(self, "Fatigue calculation error", str(exc))
                 return
