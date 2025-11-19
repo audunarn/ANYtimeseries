@@ -32,6 +32,15 @@ class FatigueResult:
     exposure_hours: float
 
 
+@dataclass(slots=True)
+class FatigueSummary:
+    """Aggregated fatigue metrics across multiple series."""
+
+    total_damage: float
+    total_exposure_hours: float | None
+    estimated_life_years: float | None
+
+
 class FatigueComputationError(ValueError):
     """Raised when the fatigue calculator cannot process the input data."""
 
@@ -155,9 +164,44 @@ def compute_fatigue_damage(
     return results, logs
 
 
+def summarize_damage(
+    results: Sequence[FatigueResult], exposure_hours: Sequence[float] | None = None
+) -> FatigueSummary:
+    """Summarize fatigue results over all series.
+
+    Parameters
+    ----------
+    results:
+        Collection of :class:`FatigueResult` entries to aggregate.
+    exposure_hours:
+        Optional exposure hours used in the calculation. When provided, the
+        total exposure and an estimated fatigue life (based on Miner’s rule)
+        are returned.
+    """
+
+    total_damage = float(np.sum([res.damage for res in results])) if results else 0.0
+
+    total_exposure_hours: float | None = None
+    estimated_life_years: float | None = None
+
+    if exposure_hours is not None:
+        total_exposure_hours = float(np.sum(exposure_hours))
+        if total_damage > 0 and total_exposure_hours > 0:
+            total_exposure_years = total_exposure_hours / 8760.0
+            estimated_life_years = total_exposure_years / total_damage
+
+    return FatigueSummary(
+        total_damage=total_damage,
+        total_exposure_hours=total_exposure_hours,
+        estimated_life_years=estimated_life_years,
+    )
+
+
 __all__ = [
     "FatigueSeries",
     "FatigueResult",
+    "FatigueSummary",
     "FatigueComputationError",
     "compute_fatigue_damage",
+    "summarize_damage",
 ]
