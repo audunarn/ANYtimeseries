@@ -146,7 +146,12 @@ class FileLoader:
         for obj_name, var, extra_str in selected:
             obj = model[obj_name]
             for extra, label in self._parse_extras(obj, extra_str or ""):
-                specs.append((obj, obj_name, var, extra, label))
+                # Store only serializable pieces of the selection so it can be
+                # safely reused for other models. Holding on to the OrcaFlex
+                # object instances can lead to access violations once those
+                # models are released (e.g., when loading multiple .sim files
+                # in succession).
+                specs.append((obj_name, var, extra, label))
 
         self.orcaflex_redundant_subs = redundant or []
         if reuse_all:
