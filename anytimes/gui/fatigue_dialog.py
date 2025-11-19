@@ -31,6 +31,8 @@ from PySide6.QtWidgets import (
     QHeaderView,
 )
 
+from .fatigue_curves import FatigueCurveTemplate, curve_templates, find_template
+
 
 @dataclass
 class FatigueSeries:
@@ -77,6 +79,10 @@ class FatigueDialog(QDialog):
         self.curve_name = QLineEdit()
         self.curve_name.setPlaceholderText("Optional name")
 
+        self.template_combo = QComboBox()
+        self.template_combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        self.template_combo.addItem("Custom parameters", None)
+
         self.m1_edit = QLineEdit()
         self.m1_edit.setPlaceholderText("e.g. 3.0")
         self.a1_edit = QLineEdit()
@@ -92,6 +98,8 @@ class FatigueDialog(QDialog):
         curve_layout.addWidget(self.curve_type_combo, 0, 1)
         curve_layout.addWidget(QLabel("Name:"), 0, 2)
         curve_layout.addWidget(self.curve_name, 0, 3)
+        curve_layout.addWidget(QLabel("Preset:"), 1, 0)
+        curve_layout.addWidget(self.template_combo, 1, 1, 1, 3)
 
         form = QFormLayout()
         form.addRow("m1 (slope)*", self.m1_edit)
@@ -101,10 +109,10 @@ class FatigueDialog(QDialog):
         form.addRow("nswitch (if m2)", self.nswitch_edit)
         form.addRow("thickness exponent", self.t_exp_edit)
         form.addRow("reference thickness [mm]", self.t_ref_edit)
-        curve_layout.addLayout(form, 1, 0, 1, 4)
+        curve_layout.addLayout(form, 2, 0, 1, 4)
 
         self.include_thickness_cb = QCheckBox("Apply thickness correction during damage calculation")
-        curve_layout.addWidget(self.include_thickness_cb, 2, 0, 1, 4)
+        curve_layout.addWidget(self.include_thickness_cb, 3, 0, 1, 4)
 
         main_layout.addWidget(curve_box)
 
@@ -190,6 +198,10 @@ class FatigueDialog(QDialog):
 
         self.compute_btn.clicked.connect(self._compute_damage)
         self.close_btn.clicked.connect(self.accept)
+        self.curve_type_combo.currentIndexChanged.connect(self._on_curve_type_changed)
+        self.template_combo.currentIndexChanged.connect(self._on_template_selected)
+
+        self._populate_template_combo()
 
     # ------------------------------------------------------------------
     # Helpers
@@ -205,6 +217,74 @@ class FatigueDialog(QDialog):
             self.series_table.setItem(row, 0, QTableWidgetItem(series.label))
             self.series_table.setItem(row, 1, QTableWidgetItem(f"{series.duration:.3f}"))
             self.series_table.setItem(row, 2, QTableWidgetItem(str(series.values.size)))
+
+    def _current_curve_type(self) -> str:
+        data = self.curve_type_combo.currentData(Qt.UserRole)
+        if data is None:
+            return "sn"
+        return str(data)
+
+    def _populate_template_combo(self, *, selected_key: str | None = None) -> None:
+        curve_type = self._current_curve_type()
+        self.template_combo.blockSignals(True)
+        self.template_combo.clear()
+        self.template_combo.addItem("Custom parameters", None)
+        index_to_select = 0
+        for template in curve_templates(curve_type):
+            label = f"{template.label} ({template.source})"
+            self.template_combo.addItem(label, template.key)
+            if template.key == selected_key:
+                index_to_select = self.template_combo.count() - 1
+        self.template_combo.setCurrentIndex(index_to_select)
+        self.template_combo.blockSignals(False)
+
+    def _on_curve_type_changed(self, _index: int) -> None:
+        self._populate_template_combo()
+
+    def _on_template_selected(self, _index: int) -> None:
+        key = self.template_combo.currentData(Qt.UserRole)
+        if not key:
+            return
+        template = find_template(str(key))
+        if template is None:
+            return
+        self._apply_template(template)
+
+    def _set_line_value(self, widget: QLineEdit, value: float | None) -> None:
+        if value is None:
+            widget.clear()
+        else:
+            widget.setText(f"{value}")
+
+    def _apply_template(self, template: FatigueCurveTemplate) -> None:
+        desired_type = template.curve_type
+        current_index = self.curve_type_combo.findData(desired_type)
+        if current_index != -1 and self.curve_type_combo.currentIndex() != current_index:
+            self.curve_type_combo.blockSignals(True)
+            self.curve_type_combo.setCurrentIndex(current_index)
+            self.curve_type_combo.blockSignals(False)
+            self._populate_template_combo(selected_key=template.key)
+
+        self.curve_name.setText(template.label)
+        params = template.parameters
+        self._set_line_value(self.m1_edit, params.get("m1"))
+        self._set_line_value(self.a1_edit, params.get("a1"))
+        self._set_line_value(self.loga1_edit, params.get("loga1"))
+        self._set_line_value(self.m2_edit, params.get("m2"))
+        self._set_line_value(self.nswitch_edit, params.get("nswitch"))
+        self._set_line_value(self.t_exp_edit, params.get("t_exp"))
+        self._set_line_value(self.t_ref_edit, params.get("t_ref"))
+
+        include_thickness = params.get("t_exp") is not None and params.get("t_ref") is not None
+        self.include_thickness_cb.setChecked(include_thickness)
+
+        current_key = self.template_combo.currentData(Qt.UserRole)
+        if current_key != template.key:
+            index = self.template_combo.findData(template.key)
+            if index != -1:
+                self.template_combo.blockSignals(True)
+                self.template_combo.setCurrentIndex(index)
+                self.template_combo.blockSignals(False)
 
     def _parse_float(self, widget: QLineEdit, *, optional: bool = False) -> float | None:
         text = widget.text().strip()
