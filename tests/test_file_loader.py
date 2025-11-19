@@ -133,3 +133,29 @@ def test_reuseable_selection_only_keeps_names(monkeypatch):
     assert result is loaded_tsdb
     assert loader._last_orcaflex_selection == [("LineA", "Axial", None, None)]
     assert isinstance(loader._last_orcaflex_selection[0][0], str)
+
+
+def test_add_unique_timeseries_suffixes_duplicates(monkeypatch):
+    file_loader = _load_file_loader(monkeypatch)
+    loader = file_loader.FileLoader()
+    
+    class _StubTsDB:
+        def __init__(self):
+            self.names = []
+
+        def add(self, ts):
+            if ts.name in self.names:
+                raise KeyError(ts.name)
+            self.names.append(ts.name)
+
+    tsdb = _StubTsDB()
+
+    time = [0.0, 1.0]
+    data = [1.0, 2.0]
+
+    first_name = loader._add_unique_timeseries(tsdb, "LineA:Axial", time, data)
+    second_name = loader._add_unique_timeseries(tsdb, "LineA:Axial", time, data)
+
+    assert first_name == "LineA:Axial"
+    assert second_name == "LineA:Axial (2)"
+    assert tsdb.names == ["LineA:Axial", "LineA:Axial (2)"]
