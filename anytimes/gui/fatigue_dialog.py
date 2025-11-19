@@ -28,7 +28,12 @@ from PySide6.QtWidgets import (
     QHeaderView,
 )
 
-from ..fatigue import FatigueComputationError, FatigueSeries, compute_fatigue_damage
+from ..fatigue import (
+    FatigueComputationError,
+    FatigueSeries,
+    compute_fatigue_damage,
+    summarize_damage,
+)
 from .fatigue_curves import FatigueCurveTemplate, curve_templates, find_template
 from .filename_parser import exposure_hours_from_name
 
@@ -240,6 +245,19 @@ class FatigueDialog(QDialog):
         res_header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
         main_layout.addWidget(self.results_table)
 
+        summary_box = QGroupBox("Summary over all time series")
+        summary_layout = QGridLayout(summary_box)
+        self.summary_damage_value = QLabel("—")
+        self.summary_exposure_value = QLabel("—")
+        self.summary_life_value = QLabel("—")
+        summary_layout.addWidget(QLabel("Total exposure [h]:"), 0, 0)
+        summary_layout.addWidget(self.summary_exposure_value, 0, 1)
+        summary_layout.addWidget(QLabel("Overall damage:"), 1, 0)
+        summary_layout.addWidget(self.summary_damage_value, 1, 1)
+        summary_layout.addWidget(QLabel("Estimated life [years]:"), 2, 0)
+        summary_layout.addWidget(self.summary_life_value, 2, 1)
+        main_layout.addWidget(summary_box)
+
         self.log_output = QTextEdit()
         self.log_output.setReadOnly(True)
         self.log_output.setPlaceholderText("Results and warnings will appear here.")
@@ -266,6 +284,7 @@ class FatigueDialog(QDialog):
 
         self._populate_template_combo()
         self._update_curve_type_state()
+        self._reset_summary()
 
     # ------------------------------------------------------------------
     # Helpers
@@ -524,6 +543,23 @@ class FatigueDialog(QDialog):
         spin.setKeyboardTracking(False)
         return spin
 
+    def _reset_summary(self) -> None:
+        self.summary_damage_value.setText("—")
+        self.summary_exposure_value.setText("—")
+        self.summary_life_value.setText("—")
+
+    def _update_summary(self, results, exposures) -> None:
+        summary = summarize_damage(results, exposures)
+        self.summary_damage_value.setText(f"{summary.total_damage:.6g}")
+        if summary.total_exposure_hours is None:
+            self.summary_exposure_value.setText("—")
+        else:
+            self.summary_exposure_value.setText(f"{summary.total_exposure_hours:.3f}")
+        if summary.estimated_life_years is None:
+            self.summary_life_value.setText("—")
+        else:
+            self.summary_life_value.setText(f"{summary.estimated_life_years:.3f}")
+
     def _exposure_widget(self, row: int) -> QDoubleSpinBox | None:
         widget = self.series_table.cellWidget(row, 3)
         if isinstance(widget, QDoubleSpinBox):
@@ -642,6 +678,7 @@ class FatigueDialog(QDialog):
 
         self.results_table.setRowCount(0)
         self.log_output.clear()
+        self._reset_summary()
 
         try:
             results, logs = compute_fatigue_damage(
@@ -669,4 +706,6 @@ class FatigueDialog(QDialog):
             self.results_table.setItem(row, 1, QTableWidgetItem(f"{result.total_cycles:.3f}"))
             self.results_table.setItem(row, 2, QTableWidgetItem(f"{result.damage:.6g}"))
             self.results_table.setItem(row, 3, QTableWidgetItem(f"{result.max_range:.3f}"))
+
+        self._update_summary(results, exposures)
 
