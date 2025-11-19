@@ -18,6 +18,7 @@ class FatigueCurveTemplate:
     source: str
     parameters: dict[str, float]
     notes: str = ""
+    lm_formula: tuple[float, float] | None = None
 
 
 CURVE_LIBRARY: tuple[FatigueCurveTemplate, ...] = (
@@ -111,35 +112,45 @@ CURVE_LIBRARY: tuple[FatigueCurveTemplate, ...] = (
     ),
     FatigueCurveTemplate(
         key="abs_chain_r3",
-        label="ABS chain studless Grade R3",
+        label="ABS common stud-link chain",
         curve_type="tn",
         source="ABS Position Mooring Systems",
-        parameters={"m1": 3.0, "loga1": 9.5},
-        notes="Tension range in fraction of MBL.",
+        parameters={"m1": 3.0, "a1": 1000.0},
+        notes="Table 2 tension-tension parameters (tension range as fraction of MBS).",
     ),
     FatigueCurveTemplate(
         key="abs_chain_r4",
-        label="ABS chain studless Grade R4",
+        label="ABS common studless link chain",
         curve_type="tn",
         source="ABS Position Mooring Systems",
-        parameters={"m1": 3.0, "loga1": 9.65},
-        notes="Tension range in fraction of MBL.",
+        parameters={"m1": 3.0, "a1": 316.0},
+        notes="Table 2 tension-tension parameters (tension range as fraction of MBS).",
     ),
     FatigueCurveTemplate(
         key="abs_wire_spiral",
-        label="ABS spiral strand wire",
+        label="ABS six/multi-strand wire rope (corrosion protected)",
         curve_type="tn",
         source="ABS Position Mooring Systems",
-        parameters={"m1": 4.0, "loga1": 10.2},
-        notes="Wire rope T-N curve.",
+        parameters={"m1": 4.09},
+        notes="loga1 = 3.20 - 2.79 · Lm (Lm: mean tension to MBS ratio).",
+        lm_formula=(3.20, -2.79),
     ),
     FatigueCurveTemplate(
         key="abs_polyester",
         label="ABS polyester rope",
         curve_type="tn",
         source="ABS Position Mooring Systems",
-        parameters={"m1": 5.0, "loga1": 11.0},
-        notes="Synthetic fibre mooring leg.",
+        parameters={"m1": 5.2, "a1": 25000.0},
+        notes="Synthetic fibre mooring leg (tension-tension).",
+    ),
+    FatigueCurveTemplate(
+        key="abs_spiral_wire",
+        label="ABS spiral strand wire rope (corrosion protected)",
+        curve_type="tn",
+        source="ABS Position Mooring Systems",
+        parameters={"m1": 5.05},
+        notes="loga1 = 3.23 - 3.43 · Lm (Lm: mean tension to MBS ratio).",
+        lm_formula=(3.23, -3.43),
     ),
     FatigueCurveTemplate(
         key="dnv_chain_r4",
