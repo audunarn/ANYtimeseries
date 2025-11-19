@@ -45,3 +45,18 @@ def test_choose_parse_target_prefers_file_name(filename_parser):
 
     pick = filename_parser.choose_parse_target(None, "", None)
     assert pick == ""
+
+
+def test_exposure_hours_from_probability(filename_parser):
+    hours = filename_parser.exposure_hours_from_name(
+        "FSRU_Dir0_Hs1_8_Tp8_Uw10_5_Uc0_15_prob0_0006_QTF_loaded_fatigue",
+        design_life_years=25,
+    )
+    assert pytest.approx(hours) == 25 * 365 * 24 * 0.0006
+
+
+def test_exposure_hours_from_direct_identifier(filename_parser):
+    hours = filename_parser.exposure_hours_from_name(
+        "case_exposure_time12_5_channel", design_life_years=1
+    )
+    assert pytest.approx(hours) == 12.5
