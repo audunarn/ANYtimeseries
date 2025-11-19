@@ -93,6 +93,15 @@ class FatigueDialog(QDialog):
         self.nswitch_edit = QLineEdit()
         self.t_exp_edit = QLineEdit()
         self.t_ref_edit = QLineEdit()
+        self.mean_tension_ratio_label = QLabel("Mean tension ratio Lm")
+        self.mean_tension_ratio_spin = QDoubleSpinBox()
+        self.mean_tension_ratio_spin.setDecimals(3)
+        self.mean_tension_ratio_spin.setRange(0.0, 2.0)
+        self.mean_tension_ratio_spin.setSingleStep(0.01)
+        self.mean_tension_ratio_spin.setValue(0.1)
+        self.mean_tension_ratio_spin.setToolTip(
+            "Ratio of mean tension to minimum breaking strength (Lm) used for ABS T-N curves."
+        )
 
         curve_layout.addWidget(QLabel("Curve type:"), 0, 0)
         curve_layout.addWidget(self.curve_type_combo, 0, 1)
@@ -109,10 +118,15 @@ class FatigueDialog(QDialog):
         form.addRow("nswitch (if m2)", self.nswitch_edit)
         form.addRow("thickness exponent", self.t_exp_edit)
         form.addRow("reference thickness [mm]", self.t_ref_edit)
+        form.addRow(self.mean_tension_ratio_label, self.mean_tension_ratio_spin)
         curve_layout.addLayout(form, 2, 0, 1, 4)
 
         self.include_thickness_cb = QCheckBox("Apply thickness correction during damage calculation")
         curve_layout.addWidget(self.include_thickness_cb, 3, 0, 1, 4)
+
+        self.tn_info_label = QLabel("The T-N curves are applicable for tension-tension fatigue assessment.")
+        self.tn_info_label.setWordWrap(True)
+        curve_layout.addWidget(self.tn_info_label, 4, 0, 1, 4)
 
         main_layout.addWidget(curve_box)
 
@@ -200,8 +214,10 @@ class FatigueDialog(QDialog):
         self.close_btn.clicked.connect(self.accept)
         self.curve_type_combo.currentIndexChanged.connect(self._on_curve_type_changed)
         self.template_combo.currentIndexChanged.connect(self._on_template_selected)
+        self.mean_tension_ratio_spin.valueChanged.connect(self._on_mean_tension_ratio_changed)
 
         self._populate_template_combo()
+        self._update_curve_type_state()
 
     # ------------------------------------------------------------------
     # Helpers
@@ -239,6 +255,7 @@ class FatigueDialog(QDialog):
         self.template_combo.blockSignals(False)
 
     def _on_curve_type_changed(self, _index: int) -> None:
+        self._update_curve_type_state()
         self._populate_template_combo()
 
     def _on_template_selected(self, _index: int) -> None:
@@ -250,12 +267,6 @@ class FatigueDialog(QDialog):
             return
         self._apply_template(template)
 
-    def _set_line_value(self, widget: QLineEdit, value: float | None) -> None:
-        if value is None:
-            widget.clear()
-        else:
-            widget.setText(f"{value}")
-
     def _apply_template(self, template: FatigueCurveTemplate) -> None:
         desired_type = template.curve_type
         current_index = self.curve_type_combo.findData(desired_type)
@@ -264,9 +275,14 @@ class FatigueDialog(QDialog):
             self.curve_type_combo.setCurrentIndex(current_index)
             self.curve_type_combo.blockSignals(False)
             self._populate_template_combo(selected_key=template.key)
+        self._update_curve_type_state()
 
         self.curve_name.setText(template.label)
-        params = template.parameters
+        params = dict(template.parameters)
+        loga1 = self._loga1_from_lm(template)
+        if loga1 is not None:
+            params.pop("a1", None)
+            params["loga1"] = loga1
         self._set_line_value(self.m1_edit, params.get("m1"))
         self._set_line_value(self.a1_edit, params.get("a1"))
         self._set_line_value(self.loga1_edit, params.get("loga1"))
@@ -285,6 +301,38 @@ class FatigueDialog(QDialog):
                 self.template_combo.blockSignals(True)
                 self.template_combo.setCurrentIndex(index)
                 self.template_combo.blockSignals(False)
+
+    def _set_line_value(self, widget: QLineEdit, value: float | None) -> None:
+        if value is None:
+            widget.clear()
+        else:
+            widget.setText(f"{value}")
+
+    def _update_curve_type_state(self) -> None:
+        is_tn = self._current_curve_type() == "tn"
+        self.tn_info_label.setVisible(is_tn)
+        self.mean_tension_ratio_label.setVisible(is_tn)
+        self.mean_tension_ratio_spin.setVisible(is_tn)
+
+    def _loga1_from_lm(self, template: FatigueCurveTemplate) -> float | None:
+        if template.lm_formula is None:
+            return None
+        intercept, slope = template.lm_formula
+        lm_value = float(self.mean_tension_ratio_spin.value())
+        return intercept + slope * lm_value
+
+    def _on_mean_tension_ratio_changed(self, _value: float) -> None:
+        key = self.template_combo.currentData(Qt.UserRole)
+        if not key:
+            return
+        template = find_template(str(key))
+        if template is None or template.lm_formula is None:
+            return
+        loga1 = self._loga1_from_lm(template)
+        if loga1 is None:
+            return
+        self._set_line_value(self.a1_edit, None)
+        self._set_line_value(self.loga1_edit, loga1)
 
     def _parse_float(self, widget: QLineEdit, *, optional: bool = False) -> float | None:
         text = widget.text().strip()
