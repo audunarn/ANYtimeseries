@@ -414,10 +414,8 @@ class TimeSeriesEditorQt(QMainWindow):
         tools_layout = QHBoxLayout(self.tools_group)
         self.launch_qats_btn = QPushButton("Open in AnyQATS")
         self.evm_tool_btn = QPushButton("Open Extreme Value Statistics Tool")
-        self.fatigue_tool_btn = QPushButton("Open Fatigue Tool")
         tools_layout.addWidget(self.launch_qats_btn)
         tools_layout.addWidget(self.evm_tool_btn)
-        tools_layout.addWidget(self.fatigue_tool_btn)
         self.controls_layout.addWidget(self.tools_group)
 
 
@@ -639,7 +637,6 @@ class TimeSeriesEditorQt(QMainWindow):
         self.shift_common_max_btn.clicked.connect(self.shift_common_max)
         self.launch_qats_btn.clicked.connect(self.launch_qats)
         self.evm_tool_btn.clicked.connect(self.open_evm_tool)
-        self.fatigue_tool_btn.clicked.connect(self.open_fatigue_tool)
         self.reselect_orcaflex_btn.clicked.connect(self.reselect_orcaflex_variables)
         self.psd_btn.clicked.connect(lambda: self.plot_selected(mode="psd"))
         self.cycle_range_btn.clicked.connect(lambda: self.plot_selected(mode="cycle"))
