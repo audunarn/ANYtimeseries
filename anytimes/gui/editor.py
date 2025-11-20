@@ -378,6 +378,20 @@ class TimeSeriesEditorQt(QMainWindow):
         time_layout.addWidget(self.reset_time_window_btn)
         self.controls_layout.addWidget(time_group)
 
+    def _refresh_file_list_display(self, selected_row: int | None = None) -> None:
+        """Render the loaded files list with numbered entries."""
+
+        if selected_row is None:
+            selected_row = self.file_list.currentRow()
+
+        self.file_list.clear()
+        for idx, path in enumerate(self.file_paths, start=1):
+            self.file_list.addItem(f"{idx}. {os.path.basename(path)}")
+
+        if self.file_paths:
+            selected_row = min(max(selected_row, 0), len(self.file_paths) - 1)
+            self.file_list.setCurrentRow(selected_row)
+
         # ---- Frequency filtering controls ----
         self.freq_group = QGroupBox("Apply frequency filter to transformations and calculations")
         self.freq_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
@@ -2279,8 +2293,8 @@ class TimeSeriesEditorQt(QMainWindow):
 
             self.tsdbs.append(tsdb)
             self.file_paths.append(path)
-            self.file_list.addItem(os.path.basename(path))
             #print(f"Loaded {path}: variables = {list(tsdb.getm().keys())}")
+        self._refresh_file_list_display(len(self.file_paths) - 1)
         if errors:
             QMessageBox.warning(self, "Errors occurred", "\n".join([f"{f}: {e}" for f, e in errors]))
         self.refresh_variable_tabs()
@@ -2318,7 +2332,7 @@ class TimeSeriesEditorQt(QMainWindow):
             return
         del self.tsdbs[idx]
         del self.file_paths[idx]
-        self.file_list.takeItem(idx)
+        self._refresh_file_list_display(idx)
         self.refresh_variable_tabs()
 
     def clear_all_files(self):
@@ -2326,7 +2340,7 @@ class TimeSeriesEditorQt(QMainWindow):
         self.file_paths.clear()
         self.user_variables.clear()
         self.work_dir = None
-        self.file_list.clear()
+        self._refresh_file_list_display(0)
         self.refresh_variable_tabs()
 
     def reselect_orcaflex_variables(self):
