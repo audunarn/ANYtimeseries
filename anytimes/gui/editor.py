@@ -871,9 +871,8 @@ class TimeSeriesEditorQt(QMainWindow):
 
         common_tokens = {m.group(1) for m in re.finditer(r"\bc_([\w\- ]+)\b", expr)}
         user_tokens = {m.group(1) for m in re.finditer(r"\bu_([\w\- ]+)", expr)}
-        file_tags_used = {int(m.group(1)) for m in re.finditer(r"\bf(\d+)_", expr)}
-        if not file_tags_used:
-            file_tags_used = set(range(1, len(self.tsdbs) + 1))
+        explicit_file_tags = {int(m.group(1)) for m in re.finditer(r"\bf(\d+)_", expr)}
+        file_tags_used = explicit_file_tags or set(range(1, len(self.tsdbs) + 1))
 
         u_global = {u for u in user_tokens if not re.search(r"_f\d+$", u)}
         u_perfile = {u for u in user_tokens if re.search(r"_f\d+$", u)}
@@ -945,6 +944,8 @@ class TimeSeriesEditorQt(QMainWindow):
                 vec = full
             aligned_u_perfile[tok] = vec.astype(float)
 
+        create_common_output = len(explicit_file_tags) >= 2
+
         results = []
         for file_idx, tsdb in enumerate(self.tsdbs):
             f_no = file_idx + 1
@@ -997,7 +998,6 @@ class TimeSeriesEditorQt(QMainWindow):
                 if len(y) != len(t_window):
                     raise ValueError("Result length mismatch with time vector")
 
-                create_common_output = len(file_tags_used) >= 2
                 must_write_here = (create_common_output and f_no == min(file_tags_used)) or (not create_common_output and f_no in file_tags_used)
                 if not must_write_here:
                     continue
@@ -1027,7 +1027,7 @@ class TimeSeriesEditorQt(QMainWindow):
 
         self.refresh_variable_tabs()
 
-        if len(file_tags_used) >= 2:
+        if create_common_output:
             msg = base_output
         else:
             msg = ", ".join(f"{base_output}_f{n}" for n in sorted(file_tags_used))
