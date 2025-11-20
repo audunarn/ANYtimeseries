@@ -118,6 +118,7 @@ class TimeSeriesEditorQt(QMainWindow):
         self.tsdbs = []                # List of anyqats.TsDB instances (one per file)
         self.file_paths = []           # List of file paths (order matches tsdbs)
         self.user_variables = set()    # User-defined/calculated variables
+        self.common_lookup = {}        # Map safe common names -> per-file variable names
 
         self.var_checkboxes = {}       # key: variable key → QCheckBox
         self.var_offsets = {}          # key: variable key → QLineEdit for numeric offset
@@ -816,6 +817,12 @@ class TimeSeriesEditorQt(QMainWindow):
                 safe = f"c_{_safe(key)}"
                 self.calc_variables.append(safe)
                 self.calc_var_filemap[safe] = "common"
+        if self.common_lookup:
+            for key in sorted(self.common_lookup):
+                safe = f"c_{key}"
+                if safe not in self.calc_variables:
+                    self.calc_variables.append(safe)
+                    self.calc_var_filemap[safe] = "common"
         for key in getattr(self, "user_variables", set()):
             safe = f"u_{_safe(key)}"
             if safe not in self.calc_variables:
@@ -887,9 +894,8 @@ class TimeSeriesEditorQt(QMainWindow):
 
         common_tokens = {m.group(1) for m in re.finditer(r"\bc_([\w\- ]+)\b", expr)}
         user_tokens = {m.group(1) for m in re.finditer(r"\bu_([\w\- ]+)", expr)}
-        file_tags_used = {int(m.group(1)) for m in re.finditer(r"\bf(\d+)_", expr)}
-        if not file_tags_used:
-            file_tags_used = set(range(1, len(self.tsdbs) + 1))
+        explicit_file_tags = {int(m.group(1)) for m in re.finditer(r"\bf(\d+)_", expr)}
+        file_tags_used = explicit_file_tags or set(range(1, len(self.tsdbs) + 1))
 
         u_global = {u for u in user_tokens if not re.search(r"_f\d+$", u)}
         u_perfile = {u for u in user_tokens if re.search(r"_f\d+$", u)}
@@ -900,12 +906,24 @@ class TimeSeriesEditorQt(QMainWindow):
             QMessageBox.critical(self, "Unknown user variable", ", ".join(sorted(missing)))
             return
 
-        def align_all_files(name):
+        def align_all_files(name, name_by_file=None):
             vecs = []
             for i, tsdb in enumerate(self.tsdbs):
-                ts = tsdb.getm().get(name)
+                lookup = None
+                if name_by_file and i < len(name_by_file):
+                    lookup = name_by_file[i]
+                ts = tsdb.getm().get(lookup or name)
+                if ts is None and not name_by_file:
+                    alt = next(
+                        (key for key in tsdb.getm() if re.sub(r"^f\d+_", "", key) == name),
+                        None,
+                    )
+                    if alt:
+                        ts = tsdb.getm().get(alt)
+                        lookup = alt
                 if ts is None:
-                    return None, f"'{name}' not in {os.path.basename(self.file_paths[i])}"
+                    missing = lookup or name
+                    return None, f"'{missing}' not in {os.path.basename(self.file_paths[i])}"
                 idx = (ts.t >= t_window[0]) & (ts.t <= t_window[-1])
                 t_part, x_part = ts.t[idx], ts.x[idx]
                 if len(t_part) == 0:
@@ -922,7 +940,12 @@ class TimeSeriesEditorQt(QMainWindow):
 
         aligned_common, aligned_u_global = {}, {}
         for k in common_tokens:
-            v, err = align_all_files(k)
+            names = None
+            if self.common_lookup and k in self.common_lookup:
+                names = self.common_lookup[k]
+                if len(names) != len(self.tsdbs):
+                    names = None
+            v, err = align_all_files(k, name_by_file=names)
             if err:
                 QMessageBox.critical(self, "Common variable error", err)
                 return
@@ -960,6 +983,8 @@ class TimeSeriesEditorQt(QMainWindow):
                 full[np.isin(t_window, t_common)] = vec
                 vec = full
             aligned_u_perfile[tok] = vec.astype(float)
+
+        create_common_output = len(explicit_file_tags) >= 2
 
         results = []
         for file_idx, tsdb in enumerate(self.tsdbs):
@@ -1013,7 +1038,6 @@ class TimeSeriesEditorQt(QMainWindow):
                 if len(y) != len(t_window):
                     raise ValueError("Result length mismatch with time vector")
 
-                create_common_output = len(file_tags_used) >= 2
                 must_write_here = (create_common_output and f_no == min(file_tags_used)) or (not create_common_output and f_no in file_tags_used)
                 if not must_write_here:
                     continue
@@ -1043,7 +1067,7 @@ class TimeSeriesEditorQt(QMainWindow):
 
         self.refresh_variable_tabs()
 
-        if len(file_tags_used) >= 2:
+        if create_common_output:
             msg = base_output
         else:
             msg = ", ".join(f"{base_output}_f{n}" for n in sorted(file_tags_used))
@@ -1982,12 +2006,14 @@ class TimeSeriesEditorQt(QMainWindow):
             )
             return
 
+
         def _apply_trig(y: np.ndarray, offset_deg: float = angle_deg) -> np.ndarray:
             radians = np.deg2rad(np.asarray(y, dtype=float) + offset_deg)
             return trig_func(radians)
 
         suffix = f"{func_name}(deg+{angle_deg:g})"
         self._apply_transformation(_apply_trig, suffix, True)
+
 
     def shift_min_to_zero(self):
         """Shift series so its minimum becomes zero **only** when that minimum is negative."""
@@ -2259,6 +2285,33 @@ class TimeSeriesEditorQt(QMainWindow):
             QMessageBox.warning(self, "Errors occurred", "\n".join([f"{f}: {e}" for f, e in errors]))
         self.refresh_variable_tabs()
 
+    def _build_common_lookup(self):
+        """Map safe common names to the corresponding variable in each file."""
+
+        self.common_lookup = {}
+        if not self.tsdbs:
+            return
+
+        per_file_maps = []
+        for tsdb in self.tsdbs:
+            canonical_map = {}
+            for key in tsdb.getm().keys():
+                canonical = re.sub(r"^f\d+_", "", key)
+                safe_name = _safe(canonical)
+                canonical_map.setdefault(safe_name, set()).add(key)
+            per_file_maps.append(canonical_map)
+
+        shared_keys = set(per_file_maps[0].keys())
+        for mapping in per_file_maps[1:]:
+            shared_keys &= set(mapping.keys())
+
+        for safe_name in shared_keys:
+            resolved = []
+            for mapping in per_file_maps:
+                choices = sorted(mapping[safe_name], key=len)
+                resolved.append(choices[0])
+            self.common_lookup[safe_name] = resolved
+
     def remove_selected_file(self):
         idx = self.file_list.currentRow()
         if idx < 0:
@@ -2330,6 +2383,8 @@ class TimeSeriesEditorQt(QMainWindow):
         # Clear previous lookup tables
         self.var_checkboxes = {}
         self.var_offsets = {}
+
+        self._build_common_lookup()
 
         user_vars = set(self.user_variables) if hasattr(self, "user_variables") else set()
 
