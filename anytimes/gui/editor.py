@@ -2006,12 +2006,12 @@ class TimeSeriesEditorQt(QMainWindow):
             )
             return
 
+        trig_value = trig_func(np.deg2rad(angle_deg))
 
-        def _apply_trig(y: np.ndarray, offset_deg: float = angle_deg) -> np.ndarray:
-            radians = np.deg2rad(np.asarray(y, dtype=float) + offset_deg)
-            return trig_func(radians)
+        def _apply_trig(y: np.ndarray, factor: float = trig_value) -> np.ndarray:
+            return np.asarray(y, dtype=float) * factor
 
-        suffix = f"{func_name}(deg+{angle_deg:g})"
+        suffix = f"*{func_name}({angle_deg:g})"
         self._apply_transformation(_apply_trig, suffix, True)
 
 
