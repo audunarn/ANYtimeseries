@@ -2006,14 +2006,14 @@ class TimeSeriesEditorQt(QMainWindow):
             )
             return
 
-        angle_rad = np.deg2rad(angle_deg)
-        trig_value = float(trig_func(angle_rad))
 
-        def _fill_with_trig(y, value=trig_value):
-            return np.full_like(y, value, dtype=float)
+        def _apply_trig(y: np.ndarray, offset_deg: float = angle_deg) -> np.ndarray:
+            radians = np.deg2rad(np.asarray(y, dtype=float) + offset_deg)
+            return trig_func(radians)
 
-        suffix = f"{func_name}{angle_deg:g}deg"
-        self._apply_transformation(_fill_with_trig, suffix, True)
+        suffix = f"{func_name}(deg+{angle_deg:g})"
+        self._apply_transformation(_apply_trig, suffix, True)
+
 
     def shift_min_to_zero(self):
         """Shift series so its minimum becomes zero **only** when that minimum is negative."""
