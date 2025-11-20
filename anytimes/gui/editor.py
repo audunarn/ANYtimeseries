@@ -273,6 +273,21 @@ class TimeSeriesEditorQt(QMainWindow):
         row2.addWidget(self.degrees_btn)
         transform_layout.addLayout(row2)
 
+        row_trig = QHBoxLayout()
+        row_trig.addWidget(QLabel("Trig:"))
+        self.trig_combo = QComboBox()
+        self.trig_combo.addItems(["sin", "cos", "tan"])
+        row_trig.addWidget(self.trig_combo)
+        row_trig.addWidget(QLabel("Angle [deg]:"))
+        self.trig_angle_entry = QLineEdit()
+        self.trig_angle_entry.setPlaceholderText("0")
+        self.trig_angle_entry.setFixedWidth(80)
+        row_trig.addWidget(self.trig_angle_entry)
+        self.trig_calc_btn = QPushButton("Calculate")
+        row_trig.addWidget(self.trig_calc_btn)
+        row_trig.addStretch(1)
+        transform_layout.addLayout(row_trig)
+
         row3 = QHBoxLayout()
         self.shift_mean0_btn = QPushButton("Shift Mean → 0")
         self.shift_min0_btn = QPushButton("Shift Min to Zero")
@@ -627,6 +642,7 @@ class TimeSeriesEditorQt(QMainWindow):
         self.merge_selected_btn.clicked.connect(self.merge_selected_series)
         self.radians_btn.clicked.connect(self.to_radians)
         self.degrees_btn.clicked.connect(self.to_degrees)
+        self.trig_calc_btn.clicked.connect(self.apply_trig_from_degrees)
         self.shift_min0_btn.clicked.connect(self.shift_min_to_zero)
         self.shift_mean0_btn.clicked.connect(self.shift_mean_to_zero)
         self.save_btn.clicked.connect(self.save_files)
@@ -1949,6 +1965,31 @@ class TimeSeriesEditorQt(QMainWindow):
         import numpy as np
 
         self._apply_transformation(lambda y: np.degrees(y), "deg", True)
+
+    def apply_trig_from_degrees(self):
+        import numpy as np
+        from PySide6.QtWidgets import QMessageBox
+
+        func_name = self.trig_combo.currentText()
+        func_map = {"sin": np.sin, "cos": np.cos, "tan": np.tan}
+        trig_func = func_map.get(func_name)
+
+        try:
+            angle_deg = float(self.trig_angle_entry.text())
+        except ValueError:
+            QMessageBox.critical(
+                self, "Invalid angle", "Enter a numeric angle in degrees."
+            )
+            return
+
+        angle_rad = np.deg2rad(angle_deg)
+        trig_value = float(trig_func(angle_rad))
+
+        def _fill_with_trig(y, value=trig_value):
+            return np.full_like(y, value, dtype=float)
+
+        suffix = f"{func_name}{angle_deg:g}deg"
+        self._apply_transformation(_fill_with_trig, suffix, True)
 
     def shift_min_to_zero(self):
         """Shift series so its minimum becomes zero **only** when that minimum is negative."""
