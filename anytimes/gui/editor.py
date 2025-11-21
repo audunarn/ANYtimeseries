@@ -28,6 +28,7 @@ from PySide6.QtGui import (
     QPalette,
     QTextCursor,
 )
+from PySide6.QtWebEngine import QtWebEngine
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import (
     QApplication,
@@ -101,6 +102,10 @@ class TimeSeriesEditorQt(QMainWindow):
         app = QApplication.instance()
         self.default_palette = app.palette()
         self.default_style = app.style().objectName()
+
+        # Ensure QtWebEngine is initialised after a QApplication exists so
+        # embedded charts render instead of leaving an empty frame.
+        QtWebEngine.initialize()
         # Reuse a single style instance when toggling themes to avoid
         # crashes from Python garbage-collecting temporary QStyle objects
         self._fusion_style = QStyleFactory.create("Fusion")
