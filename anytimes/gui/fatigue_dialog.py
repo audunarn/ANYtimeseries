@@ -1,7 +1,8 @@
+from __future__ import annotations
 """Fatigue calculation dialog for AnytimeSeries."""
 """Qt dialog that performs rainflow-based fatigue calculations."""
 
-from __future__ import annotations
+
 
 from typing import Sequence
 
