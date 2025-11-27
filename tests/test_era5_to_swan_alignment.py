@@ -39,3 +39,50 @@ def test_validate_boundary_alignment_rejects_mismatched_keys():
 
     with pytest.raises(ValueError):
         validate_boundary_alignment(boundary_wind, boundary_wave)
+
+
+
+def test_validate_boundary_alignment_reports_success(tmp_path):
+    boundary_wind = {"west": [270, 275]}
+    boundary_wave = {"west": [268, 280]}
+    report_file = tmp_path / "alignment_report.txt"
+
+    validate_boundary_alignment(
+        boundary_wind, boundary_wave, tolerance=15, report_path=report_file
+    )
+
+    report = report_file.read_text()
+    assert "passed" in report.lower()
+    assert "west" in report
+
+
+def test_validate_boundary_alignment_reports_failure(tmp_path):
+    boundary_wind = {"east": [90]}
+    boundary_wave = {"east": [210]}
+    report_file = tmp_path / "alignment_report.txt"
+
+    with pytest.raises(MisalignedBoundaryError):
+        validate_boundary_alignment(
+            boundary_wind, boundary_wave, tolerance=30, report_path=report_file
+        )
+
+    report = report_file.read_text()
+    assert "failed" in report.lower()
+    assert "east[0]" in report
+
+
+def test_validate_boundary_alignment_creates_report_directory(tmp_path):
+    boundary_wind = {"south": [180, 182]}
+    boundary_wave = {"south": [175, 185]}
+    nested_report = tmp_path / "nested" / "reports" / "alignment.txt"
+
+    validate_boundary_alignment(
+        boundary_wind,
+        boundary_wave,
+        tolerance=10,
+        report_path=nested_report,
+    )
+
+    assert nested_report.exists()
+    assert "passed" in nested_report.read_text().lower()
+

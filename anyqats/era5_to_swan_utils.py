@@ -6,6 +6,9 @@ fields when they reach a SWAN boundary.
 """
 from __future__ import annotations
 
+
+from pathlib import Path
+
 from typing import Mapping, Sequence
 
 import numpy as np
@@ -58,11 +61,22 @@ def calculate_misalignment(wind_dirs: Sequence[float], wave_dirs: Sequence[float
     return np.abs((wind - wave + 180.0) % 360.0 - 180.0)
 
 
+
+def _write_report(report_path: Path, lines: Sequence[str]) -> None:
+    """Persist a human-readable report, creating parent folders if needed."""
+
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text("\n".join(lines))
+
+
 def validate_boundary_alignment(
     boundary_wind_dirs: Mapping[str, Sequence[float]],
     boundary_wave_dirs: Mapping[str, Sequence[float]],
     *,
     tolerance: float = 45.0,
+
+    report_path: str | Path | None = None,
+
 ) -> None:
     """Ensure wind directions applied at each boundary are aligned with wave directions.
 
@@ -81,6 +95,11 @@ def validate_boundary_alignment(
     tolerance : float, optional
         Maximum allowed angular difference in degrees (default 45).
 
+    report_path : str or pathlib.Path, optional
+        File path where a human-readable report is written. Parent directories are
+        created automatically. When provided, a short summary is written for both
+        passing and failing validations. If not provided, no report is saved.
+
     Raises
     ------
     MisalignedBoundaryError
@@ -98,6 +117,9 @@ def validate_boundary_alignment(
         )
 
     offending = []
+
+    boundaries = sorted(boundary_wind_dirs)
+
     for boundary in boundary_wind_dirs:
         misalignment = calculate_misalignment(
             boundary_wind_dirs[boundary], boundary_wave_dirs[boundary]
@@ -119,7 +141,29 @@ def validate_boundary_alignment(
             f"{b}[{i}]: wind={w:.1f}°, wave={v:.1f}° (Δ={d:.1f}°)"
             for b, i, w, v, d in offending
         )
+
+
+        if report_path is not None:
+            lines = [
+                "Boundary alignment check failed.",
+                f"Tolerance: {tolerance:.1f} degrees.",
+                "Offending entries:",
+                *(f"- {entry}" for entry in summary.split("; ")),
+            ]
+            _write_report(Path(report_path), lines)
+
+
         raise MisalignedBoundaryError(
             "Boundary wind/wave directions differ more than allowed tolerance. "
             f"Tolerance={tolerance:.1f}°. Offending entries: {summary}"
         )
+
+
+    if report_path is not None:
+        passed_lines = [
+            "Boundary alignment check passed.",
+            f"Tolerance: {tolerance:.1f} degrees.",
+            f"Checked boundaries: {', '.join(boundaries) if boundaries else 'none'}.",
+        ]
+        _write_report(Path(report_path), passed_lines)
+
