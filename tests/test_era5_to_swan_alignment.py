@@ -41,6 +41,7 @@ def test_validate_boundary_alignment_rejects_mismatched_keys():
         validate_boundary_alignment(boundary_wind, boundary_wave)
 
 
+
 def test_validate_boundary_alignment_reports_success(tmp_path):
     boundary_wind = {"west": [270, 275]}
     boundary_wave = {"west": [268, 280]}
@@ -84,3 +85,4 @@ def test_validate_boundary_alignment_creates_report_directory(tmp_path):
 
     assert nested_report.exists()
     assert "passed" in nested_report.read_text().lower()
+

@@ -17,7 +17,9 @@ def prepare_plot_inputs(
     boundary_wave_dirs: Mapping[str, Sequence[float]],
     boundary_wind_dirs: Mapping[str, Sequence[float]],
     tolerance: float = 45.0,
+
     report_path: str | None = None,
+
 ) -> None:
     """Validate that wind directions align with wave directions before plotting.
 
@@ -29,9 +31,11 @@ def prepare_plot_inputs(
         Wind directions keyed by boundary.
     tolerance : float, optional
         Maximum allowed angular difference between wind and wave directions.
+
     report_path : str, optional
         When provided, a text report is written to this path describing the
         alignment results.
+
 
     Raises
     ------
@@ -47,3 +51,4 @@ def prepare_plot_inputs(
         tolerance=tolerance,
         report_path=report_path,
     )
+

@@ -15,7 +15,9 @@ def prepare_mp_inputs(
     boundary_wave_dirs: Mapping[str, Sequence[float]],
     boundary_wind_dirs: Mapping[str, Sequence[float]],
     tolerance: float = 45.0,
+
     report_path: str | None = None,
+
 ) -> None:
     """Validate boundary wind/wave alignment before parallel processing.
 
@@ -27,9 +29,11 @@ def prepare_mp_inputs(
         Wind directions keyed by boundary.
     tolerance : float, optional
         Maximum allowed angular difference between wind and wave directions.
+
     report_path : str, optional
         When provided, a text report is written to this path describing the
         alignment results.
+
 
     Raises
     ------
@@ -38,10 +42,10 @@ def prepare_mp_inputs(
     ValueError
         If boundary keys differ or direction arrays cannot be compared.
     """
-
     validate_boundary_alignment(
         boundary_wind_dirs,
         boundary_wave_dirs,
         tolerance=tolerance,
         report_path=report_path,
     )
+
