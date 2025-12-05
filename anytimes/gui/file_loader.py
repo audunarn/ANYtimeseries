@@ -1811,10 +1811,79 @@ class FileLoader:
                 suffix += 1
                 label = f"{base_label} ({suffix})"
 
+    def _load_era5_netcdf(self, filepath):
+        """Load ERA5-style NetCDF files into a :class:`TsDB` instance."""
+
+        try:
+            import xarray as xr
+        except ImportError as exc:  # pragma: no cover - optional dependency
+            raise ImportError(
+                "Reading NetCDF files requires the optional dependency 'xarray'."
+            ) from exc
+
+        ds = xr.load_dataset(filepath)
+        time_coord = None
+        for candidate in ("time", "valid_time"):
+            if candidate in ds.coords:
+                time_coord = ds[candidate]
+                break
+        if time_coord is None:
+            raise ValueError("Could not find a time coordinate in the NetCDF file.")
+
+        time_values = pd.to_datetime(time_coord.values)
+        tsdb = TsDB()
+        skipped = set()
+
+        for name, data_array in ds.data_vars.items():
+            if time_coord.name not in data_array.dims:
+                skipped.add(name)
+                continue
+
+            spatial_dims = [dim for dim in data_array.dims if dim != time_coord.name]
+            for dim in spatial_dims:
+                size = data_array.sizes.get(dim, 0)
+                if size == 1:
+                    data_array = data_array.isel({dim: 0})
+                else:
+                    skipped.add(name)
+                    data_array = None
+                    break
+            if data_array is None:
+                continue
+
+            values = np.asarray(data_array.values)
+            if values.ndim != 1 or values.shape[0] != time_values.size:
+                skipped.add(name)
+                continue
+
+            try:
+                tsdb.add(TimeSeries(str(name), time_values, values.astype(float)))
+            except Exception:
+                skipped.add(name)
+
+        if len(tsdb.getm()) == 0:
+            tsdb.add(
+                TimeSeries(
+                    "NO_DATA",
+                    time_values,
+                    np.full(time_values.shape, np.nan, dtype=float),
+                )
+            )
+
+        if skipped:
+            print(
+                f"Skipped non-time variables in {os.path.basename(filepath)}: "
+                f"{', '.join(sorted(skipped))}"
+            )
+
+        return tsdb
+
     def _load_generic_file(self, filepath):
         ext = os.path.splitext(filepath)[-1].lower().lstrip(".")
         if ext in ["csv", 'mat', 'dat', 'ts',  'h5', 'pickle', 'tda', 'asc', 'tdms', 'pkl', 'bin']:
             return TsDB.fromfile(filepath)
+        elif ext in ["nc", "netcdf"]:
+            return self._load_era5_netcdf(filepath)
         elif ext == "xlsx":
             df = pd.read_excel(filepath)
         elif ext == "json":
