@@ -1,9 +1,13 @@
 """Tests for OrcaFlex selection reuse logic in FileLoader."""
 
-from pathlib import Path
 import importlib.util
+from pathlib import Path
 import sys
 import types
+
+import numpy as np
+import pandas as pd
+import xarray as xr
 
 
 def _install_qt_stubs(monkeypatch):
@@ -159,3 +163,30 @@ def test_add_unique_timeseries_suffixes_duplicates(monkeypatch):
     assert first_name == "LineA:Axial"
     assert second_name == "LineA:Axial (2)"
     assert tsdb.names == ["LineA:Axial", "LineA:Axial (2)"]
+
+
+def test_load_era5_netcdf_single_point(monkeypatch, tmp_path):
+    file_loader = _load_file_loader(monkeypatch)
+
+    times = pd.date_range("2020-01-01", periods=4, freq="H")
+    ds = xr.Dataset(
+        {
+            "u10": (
+                ("time", "latitude", "longitude"),
+                np.arange(times.size, dtype=float).reshape((times.size, 1, 1)),
+            ),
+            "mwd": ("time", np.linspace(0.0, 30.0, times.size)),
+        },
+        coords={"time": times, "latitude": [60.0], "longitude": [5.0]},
+    )
+    nc_path = tmp_path / "era5_sample.nc"
+    ds.to_netcdf(nc_path)
+
+    loader = file_loader.FileLoader()
+    tsdb = loader._load_generic_file(str(nc_path))
+
+    data = tsdb.getm()
+    assert set(data) == {"mwd", "u10"}
+    assert data["u10"].t.shape[0] == times.size
+    assert data["u10"].dtg_ref == times[0].to_pydatetime()
+    np.testing.assert_array_equal(data["mwd"].x, np.linspace(0.0, 30.0, times.size))
