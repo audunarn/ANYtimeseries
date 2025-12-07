@@ -52,6 +52,46 @@ class ScatterPoint:
     label: str | None = None
 
 
+@dataclass(frozen=True)
+class ManualWaveConfig:
+    """Configuration for manual SWAN runs.
+
+    The configuration captures manual wave parameters alongside auxiliary
+    switches for wind, physics selection and optionally enforcing a flat
+    bathymetry. Convenience properties expose human-readable summaries for
+    downstream logging or UI display.
+    """
+
+    wave_height: float
+    peak_period: float
+    direction: float
+    wind_speed: float | None
+    physics: str
+    flat_bottom_depth: float | None = None
+
+    @property
+    def wind_label(self) -> str:
+        """Return a descriptive wind label.
+
+        SWAN expects the string ``OFF QUAD`` when no wind forcing is applied.
+        Users can signal this explicitly with a zero or negative wind speed,
+        otherwise we return a formatted magnitude that assumes alignment with
+        the wave direction provided in :pyattr:`direction`.
+        """
+
+        if self.wind_speed is None or self.wind_speed <= 0:
+            return "OFF QUAD"
+        return f"{self.wind_speed:.2f} m/s aligned with waves"
+
+    @property
+    def bottom_label(self) -> str:
+        """Describe the bathymetry setting."""
+
+        if self.flat_bottom_depth is None:
+            return "Variable bathymetry"
+        return f"Flat bottom: {self.flat_bottom_depth:.2f} m"
+
+
 def plot_domain_overview(
     domain: Domain,
     output_file: Path,
@@ -186,6 +226,30 @@ def plot_offshore_nearshore_scatter(df: pd.DataFrame, output_file: Path) -> None
     output_file.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_file, dpi=200)
     plt.close(fig)
+
+
+def write_manual_run_configuration(config: ManualWaveConfig, output_file: Path) -> None:
+    """Persist manual SWAN settings to disk.
+
+    The summary text is intentionally lightweight so it can be used as a
+    placeholder input file or consumed by a downstream templating system.
+    It echoes the requested wave state, aligned wind forcing (or ``OFF QUAD``
+    when no wind is provided), selected physics formulation and optional flat
+    bottom depth.
+    """
+
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        "Manual SWAN configuration",
+        "-------------------------",
+        f"Significant wave height (Hm0): {config.wave_height:.2f} m",
+        f"Peak period (Tp): {config.peak_period:.2f} s",
+        f"Wave direction: {config.direction:.1f} degrees",
+        f"Wind: {config.wind_label}",
+        f"Physics: {config.physics}",
+        config.bottom_label,
+    ]
+    output_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def run_scatter_mode(
