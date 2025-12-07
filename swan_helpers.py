@@ -14,6 +14,16 @@ from typing import Iterable, List, Sequence, Tuple
 import matplotlib.pyplot as plt
 
 
+# Default temporal resolution for non-stationary SWAN simulations.
+#
+# Some callers import this module purely for shared constants used when building
+# SWAN configuration UIs. In those scenarios we want a well-defined fallback
+# instead of triggering a ``NameError`` when the constant is missing from the
+# provided configuration dictionary. A one-hour step aligns with the ERA5
+# forcing files handled by the rest of this repository.
+NONSTAT_DT: int = 3600
+
+
 @dataclass(frozen=True)
 class Domain:
     """Geographic domain bounds.
