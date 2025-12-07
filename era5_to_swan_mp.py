@@ -32,6 +32,15 @@ def parse_args() -> argparse.Namespace:
         default=Path("output"),
         help="Directory for generated outputs",
     )
+    parser.add_argument(
+        "--scatter-data",
+        type=Path,
+        default=None,
+        help=(
+            "Optional CSV file containing offshore/nearshore Hs and Tp columns "
+            "for scatter plotting"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -41,7 +50,12 @@ def main() -> None:
 
     if args.scatter:
         scatter_points = parse_scatter_args(args.scatter)
-        run_scatter_mode(domain, scatter_points, Path(args.out_dir))
+        run_scatter_mode(
+            domain,
+            scatter_points,
+            Path(args.out_dir),
+            scatter_data=args.scatter_data,
+        )
     else:  # pragma: no cover - only executed outside scatter mode
         raise SystemExit("Scatter mode requested but no scatter points provided.")
 

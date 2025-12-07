@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Iterable, List, Sequence, Tuple
 
 import matplotlib.pyplot as plt
+import pandas as pd
 
 
 @dataclass(frozen=True)
@@ -116,7 +117,74 @@ def _parse_scatter_points(values: Iterable[str]) -> List[ScatterPoint]:
     return points
 
 
-def run_scatter_mode(domain: Domain, scatter_points: Sequence[ScatterPoint], out_dir: Path) -> None:
+def _validate_required_columns(df: pd.DataFrame, required: Sequence[str]) -> None:
+    missing = [col for col in required if col not in df.columns]
+    if missing:
+        raise ValueError(
+            "Scatter data is missing required columns: " + ", ".join(missing)
+        )
+
+
+def _aligned_limits(x: pd.Series, y: pd.Series) -> Tuple[float, float]:
+    finite_x = x.dropna()
+    finite_y = y.dropna()
+    if finite_x.empty or finite_y.empty:
+        return 0.0, 1.0
+
+    minimum = float(min(finite_x.min(), finite_y.min()))
+    maximum = float(max(finite_x.max(), finite_y.max()))
+    if minimum == maximum:
+        maximum = minimum + 1.0
+    return minimum, maximum
+
+
+def plot_offshore_nearshore_scatter(df: pd.DataFrame, output_file: Path) -> None:
+    """Create offshore/nearshore Hs and Tp scatter plots with aligned axes."""
+
+    _validate_required_columns(
+        df,
+        ["Hs_offshore", "Hs_nearshore", "Tp_offshore", "Tp_nearshore"],
+    )
+
+    fig, (ax_hs, ax_tp) = plt.subplots(1, 2, figsize=(10, 5))
+
+    # Significant wave height scatter
+    hs_limits = _aligned_limits(df["Hs_offshore"], df["Hs_nearshore"])
+    ax_hs.scatter(df["Hs_offshore"], df["Hs_nearshore"], alpha=0.7)
+    ax_hs.plot(hs_limits, hs_limits, "k--", linewidth=1, label="1:1 line")
+    ax_hs.set_xlim(hs_limits)
+    ax_hs.set_ylim(hs_limits)
+    ax_hs.set_xlabel("Offshore Hs [m]")
+    ax_hs.set_ylabel("Nearshore Hs [m]")
+    ax_hs.set_title("Significant wave height")
+    ax_hs.grid(True, linestyle=":", linewidth=0.6)
+    ax_hs.legend()
+
+    # Peak period scatter
+    tp_limits = _aligned_limits(df["Tp_offshore"], df["Tp_nearshore"])
+    ax_tp.scatter(df["Tp_offshore"], df["Tp_nearshore"], alpha=0.7)
+    ax_tp.plot(tp_limits, tp_limits, "k--", linewidth=1, label="1:1 line")
+    ax_tp.set_xlim(tp_limits)
+    ax_tp.set_ylim(tp_limits)
+    ax_tp.set_xlabel("Offshore Tp [s]")
+    ax_tp.set_ylabel("Nearshore Tp [s]")
+    ax_tp.set_title("Peak period")
+    ax_tp.grid(True, linestyle=":", linewidth=0.6)
+    ax_tp.legend()
+
+    fig.tight_layout()
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_file, dpi=200)
+    plt.close(fig)
+
+
+def run_scatter_mode(
+    domain: Domain,
+    scatter_points: Sequence[ScatterPoint],
+    out_dir: Path,
+    *,
+    scatter_data: Path | None = None,
+) -> None:
     """Execute scatter extraction and export a domain map.
 
     The actual data extraction is left to downstream tooling; this
@@ -129,6 +197,11 @@ def run_scatter_mode(domain: Domain, scatter_points: Sequence[ScatterPoint], out
     # Placeholder for potential scatter data export could go here.
     overview_path = out_dir / "domain_overview.png"
     plot_domain_overview(domain, overview_path, scatter_points)
+
+    if scatter_data:
+        df = pd.read_csv(scatter_data)
+        scatter_plot = out_dir / "scatter_offshore_nearshore.png"
+        plot_offshore_nearshore_scatter(df, scatter_plot)
 
 
 def parse_scatter_args(values: Iterable[str]) -> List[ScatterPoint]:
