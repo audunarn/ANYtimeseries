@@ -1823,10 +1823,29 @@ class FileLoader:
 
         ds = xr.load_dataset(filepath)
         time_coord = None
-        for candidate in ("time", "valid_time"):
+        preferred_names = ("time", "valid_time")
+
+        for candidate in preferred_names:
             if candidate in ds.coords:
                 time_coord = ds[candidate]
                 break
+
+        if time_coord is None:
+            for name, coord in ds.coords.items():
+                if name in preferred_names:
+                    continue
+                if "time" in name.lower() or np.issubdtype(coord.dtype, np.datetime64):
+                    time_coord = coord
+                    break
+
+        if time_coord is None:
+            for name, var in ds.data_vars.items():
+                if var.ndim != 1:
+                    continue
+                if "time" in name.lower() or np.issubdtype(var.dtype, np.datetime64):
+                    time_coord = var
+                    break
+
         if time_coord is None:
             raise ValueError("Could not find a time coordinate in the NetCDF file.")
 
