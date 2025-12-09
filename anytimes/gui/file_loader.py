@@ -1821,16 +1821,82 @@ class FileLoader:
                 "Reading NetCDF files requires the optional dependency 'xarray'."
             ) from exc
 
-        ds = xr.load_dataset(filepath)
+        time_coder = xr.coders.CFDatetimeCoder(use_cftime=True)
+
+        with xr.open_dataset(filepath, decode_times=time_coder) as opened:
+            ds = opened.load()
+
+        def _coord_used_as_dim(name: str) -> bool:
+            return any(name in var.dims for var in ds.data_vars.values())
+
+        def _coord_is_datetime(coord) -> bool:
+            if np.issubdtype(coord.dtype, np.datetime64):
+                return True
+            if pd.api.types.is_object_dtype(coord.dtype):
+                try:  # cftime datetimes present
+                    import cftime  # type: ignore
+
+                    sample = np.asarray(coord.values).ravel()
+                    for val in sample:
+                        if isinstance(val, cftime.datetime):
+                            return True
+                except Exception:
+                    pass
+            return False
+
+        def _to_datetime_index(coord):
+            try:
+                index = coord.to_index()
+            except Exception:
+                index = pd.Index(np.asarray(coord.values))
+
+            try:
+                return pd.DatetimeIndex(index)
+            except Exception:
+                to_dtindex = getattr(index, "to_datetimeindex", None)
+                if callable(to_dtindex):
+                    try:
+                        return pd.DatetimeIndex(to_dtindex())
+                    except Exception:
+                        pass
+
+            converted = pd.to_datetime(np.asarray(coord.values), errors="coerce")
+            if converted.isna().all():
+                raise ValueError("Could not decode time coordinate to datetime values.")
+            return pd.DatetimeIndex(converted)
+
         time_coord = None
-        for candidate in ("time", "valid_time"):
-            if candidate in ds.coords:
+        preferred_names = ("time", "valid_time")
+
+        for candidate in preferred_names:
+            if candidate in ds.coords and _coord_used_as_dim(candidate):
                 time_coord = ds[candidate]
                 break
+
+        if time_coord is None:
+            for name, coord in ds.coords.items():
+                if name in preferred_names:
+                    continue
+                if ("time" in name.lower() or _coord_is_datetime(coord)) and _coord_used_as_dim(name):
+                    time_coord = coord
+                    break
+
+        if time_coord is None:
+            for var in ds.data_vars.values():
+                for dim in var.dims:
+                    coord = ds.coords.get(dim)
+                    if coord is None:
+                        continue
+                    if _coord_is_datetime(coord) or "time" in dim.lower():
+                        time_coord = coord
+                        break
+                if time_coord is not None:
+                    break
+
         if time_coord is None:
             raise ValueError("Could not find a time coordinate in the NetCDF file.")
 
-        time_values = pd.to_datetime(time_coord.values)
+        time_values = _to_datetime_index(time_coord)
         tsdb = TsDB()
         skipped = set()
 
