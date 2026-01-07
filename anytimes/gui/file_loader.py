@@ -54,6 +54,7 @@ class FileLoader:
         self._reuse_orcaflex_selection = False
         self.loaded_sim_models = {}
         self.orcaflex_sim_buffers = {}
+        self.orcaflex_sim_sources = {}
         self.orcaflex_redundant_subs = []
         self.progress_callback = None  # called while pre-loading
         self._last_diffraction_dir = None
@@ -1204,6 +1205,7 @@ class FileLoader:
             model = self.loaded_sim_models.pop(fp, None)
             if model is None:
                 continue
+            self.orcaflex_sim_sources.pop(fp, None)
             self._destroy_sim_model(model)
             released.append(fp)
         if released:
@@ -1855,13 +1857,23 @@ class FileLoader:
         import OrcFxAPI
 
         if filepath in self.loaded_sim_models:
-            return self.loaded_sim_models[filepath]
+            if (
+                self.cache_orcaflex_buffers
+                and self.orcaflex_sim_sources.get(filepath) != "buffer"
+            ):
+                model = self.loaded_sim_models.pop(filepath)
+                self._destroy_sim_model(model)
+                self.orcaflex_sim_sources.pop(filepath, None)
+            else:
+                return self.loaded_sim_models[filepath]
         if self.cache_orcaflex_buffers:
             buffer = self._get_orcaflex_buffer(filepath)
             model = OrcFxAPI.Model()
             model.LoadSimulationMem(buffer)
+            self.orcaflex_sim_sources[filepath] = "buffer"
         else:
             model = OrcFxAPI.Model(filepath)
+            self.orcaflex_sim_sources[filepath] = "file"
         self.loaded_sim_models[filepath] = model
         print(f"✅ Loaded OrcaFlex model: {os.path.basename(filepath)}")
         return model
