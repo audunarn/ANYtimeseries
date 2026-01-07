@@ -53,10 +53,12 @@ class FileLoader:
         self._last_orcaflex_selection = None
         self._reuse_orcaflex_selection = False
         self.loaded_sim_models = {}
+        self.orcaflex_sim_buffers = {}
         self.orcaflex_redundant_subs = []
         self.progress_callback = None  # called while pre-loading
         self._last_diffraction_dir = None
         self._diffraction_cache = {}
+        self.cache_orcaflex_buffers = True
         self.release_orcaflex_models = False
 
     @property
@@ -70,18 +72,14 @@ class FileLoader:
         self._reuse_orcaflex_selection = value
 
     def preload_sim_models(self, filepaths):
-        try:
-            import OrcFxAPI
-        except ImportError:
+        if OrcFxAPI is None:
             print("OrcFxAPI not available. Cannot preload .sim files.")
             return
         total_files = len(filepaths)
         for idx, path in enumerate(filepaths):
             if path not in self.loaded_sim_models:
                 try:
-                    model = OrcFxAPI.Model(path)
-                    self.loaded_sim_models[path] = model
-                    print(f"✅ Loaded OrcaFlex model: {os.path.basename(path)}")
+                    self._load_sim_model(path)
                 except Exception as e:
                     print(f"❌ Failed to load OrcaFlex model {os.path.basename(path)}:\n{e}")
 
@@ -121,10 +119,9 @@ class FileLoader:
         return tsdbs, errors
 
     def _load_orcaflex_file(self, filepath):
-        import OrcFxAPI
         # Preload model on first use
         if filepath not in self.loaded_sim_models:
-            self.loaded_sim_models[filepath] = OrcFxAPI.Model(filepath)
+            self._load_sim_model(filepath)
         model = self.loaded_sim_models[filepath]
 
         # Reuse previous selection?
@@ -170,19 +167,18 @@ class FileLoader:
 
     def open_orcaflex_picker(self, file_paths):
         """Qt version of the OrcaFlex variable picker."""
-        import OrcFxAPI
-
-        missing = [fp for fp in file_paths if fp not in self.loaded_sim_models]
-        if missing:
-
-            # Lazily preload missing models so the picker can proceed
-            self.preload_sim_models(missing)
-            remaining = [fp for fp in missing if fp not in self.loaded_sim_models]
-            if remaining:
-                raise RuntimeError(
-                    "Models not preloaded: "
-                    + ", ".join(os.path.basename(m) for m in remaining)
-                )
+        errors = []
+        for fp in file_paths:
+            if fp not in self.loaded_sim_models:
+                try:
+                    self._load_sim_model(fp)
+                except Exception as exc:
+                    errors.append((fp, exc))
+        if errors:
+            raise RuntimeError(
+                "Models not preloaded: "
+                + ", ".join(os.path.basename(m) for m, _ in errors)
+            )
 
 
         if self._reuse_orcaflex_selection and self._last_orcaflex_selection:
@@ -1072,6 +1068,9 @@ class FileLoader:
 
         reuse_cb = QCheckBox("Use this selection for all future OrcaFlex files")
         right_side.addWidget(reuse_cb)
+        buffer_cb = QCheckBox("Cache .sim files in memory buffers")
+        buffer_cb.setChecked(self.cache_orcaflex_buffers)
+        right_side.addWidget(buffer_cb)
         release_cb = QCheckBox("Release OrcaFlex models after load")
         release_cb.setChecked(self.release_orcaflex_models)
         right_side.addWidget(release_cb)
@@ -1115,7 +1114,7 @@ class FileLoader:
                 sel_objs = [n for n, cb in st["obj_vars"].items() if cb.isChecked()]
                 if not sel_objs:
                     continue
-                sel_types = {st["obj_map"][n][0].typeName for n in sel_objs}
+                sel_types = {st["obj_map"][n] for n in sel_objs}
                 if len(sel_types) != 1:
                     continue
                 sel_vars = [v for v, cb in st["var_vars"].items() if cb.isChecked()]
@@ -1123,12 +1122,13 @@ class FileLoader:
                     continue
                 specs = []
                 for obj_name in sel_objs:
-                    obj = st["obj_map"][obj_name][0]
+                    obj = st["model"][obj_name]
                     for var in sel_vars:
                         for ex, label in self._parse_extras(obj, st["extra_entry"].text()):
                             specs.append((obj_name, var, ex, label))
                 out_specs[fp] = specs
 
+            self.cache_orcaflex_buffers = buffer_cb.isChecked()
             self.release_orcaflex_models = release_cb.isChecked()
             if reuse_cb.isChecked() and file_paths:
                 active_fp = file_paths[tabs.currentIndex()] if tabs.count() else None
@@ -1199,27 +1199,16 @@ class FileLoader:
         return result
 
     def _release_sim_models(self, file_paths):
-        released = False
+        released = []
         for fp in file_paths:
             model = self.loaded_sim_models.pop(fp, None)
             if model is None:
                 continue
-            released = True
-            close = getattr(model, "Close", None)
-            if callable(close):
-                try:
-                    close()
-                except Exception:
-                    pass
-            destroy = getattr(model, "Destroy", None)
-            if callable(destroy):
-                try:
-                    destroy()
-                except Exception:
-                    pass
-            del model
+            self._destroy_sim_model(model)
+            released.append(fp)
         if released:
-            gc.collect()
+            for fp in released:
+                print(f"✅ Released OrcaFlex model: {os.path.basename(fp)}")
 
 
     def _merge_panel_pressures(self, tsdb, pressures_df, panel_info):
@@ -1848,6 +1837,50 @@ class FileLoader:
             except KeyError:
                 suffix += 1
                 label = f"{base_label} ({suffix})"
+
+    def _get_orcaflex_buffer(self, filepath):
+        if filepath in self.orcaflex_sim_buffers:
+            return self.orcaflex_sim_buffers[filepath]
+        if OrcFxAPI is None:
+            raise RuntimeError("OrcFxAPI not available. Cannot cache .sim buffers.")
+        model = OrcFxAPI.Model(filepath)
+        try:
+            buffer = model.SaveSimulationMem()
+        finally:
+            self._destroy_sim_model(model)
+        self.orcaflex_sim_buffers[filepath] = buffer
+        return buffer
+
+    def _load_sim_model(self, filepath):
+        import OrcFxAPI
+
+        if filepath in self.loaded_sim_models:
+            return self.loaded_sim_models[filepath]
+        if self.cache_orcaflex_buffers:
+            buffer = self._get_orcaflex_buffer(filepath)
+            model = OrcFxAPI.Model()
+            model.LoadSimulationMem(buffer)
+        else:
+            model = OrcFxAPI.Model(filepath)
+        self.loaded_sim_models[filepath] = model
+        print(f"✅ Loaded OrcaFlex model: {os.path.basename(filepath)}")
+        return model
+
+    def _destroy_sim_model(self, model):
+        close = getattr(model, "Close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
+        destroy = getattr(model, "Destroy", None)
+        if callable(destroy):
+            try:
+                destroy()
+            except Exception:
+                pass
+        del model
+        gc.collect()
 
     def _load_era5_netcdf(self, filepath):
         """Load ERA5-style NetCDF files into a :class:`TsDB` instance."""
