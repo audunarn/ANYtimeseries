@@ -1843,13 +1843,8 @@ class FileLoader:
     def _get_orcaflex_buffer(self, filepath):
         if filepath in self.orcaflex_sim_buffers:
             return self.orcaflex_sim_buffers[filepath]
-        if OrcFxAPI is None:
-            raise RuntimeError("OrcFxAPI not available. Cannot cache .sim buffers.")
-        model = OrcFxAPI.Model(filepath)
-        try:
-            buffer = model.SaveSimulationMem()
-        finally:
-            self._destroy_sim_model(model)
+        with open(filepath, "rb") as handle:
+            buffer = bytearray(handle.read())
         self.orcaflex_sim_buffers[filepath] = buffer
         return buffer
 
