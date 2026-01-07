@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime
+import gc
 import os, re
 from array import array
 from collections.abc import Sequence
@@ -52,10 +53,14 @@ class FileLoader:
         self._last_orcaflex_selection = None
         self._reuse_orcaflex_selection = False
         self.loaded_sim_models = {}
+        self.orcaflex_sim_buffers = {}
+        self.orcaflex_sim_sources = {}
         self.orcaflex_redundant_subs = []
         self.progress_callback = None  # called while pre-loading
         self._last_diffraction_dir = None
         self._diffraction_cache = {}
+        self.cache_orcaflex_buffers = True
+        self.release_orcaflex_models = False
 
     @property
     def reuse_orcaflex_selection(self):
@@ -68,18 +73,14 @@ class FileLoader:
         self._reuse_orcaflex_selection = value
 
     def preload_sim_models(self, filepaths):
-        try:
-            import OrcFxAPI
-        except ImportError:
+        if OrcFxAPI is None:
             print("OrcFxAPI not available. Cannot preload .sim files.")
             return
         total_files = len(filepaths)
         for idx, path in enumerate(filepaths):
             if path not in self.loaded_sim_models:
                 try:
-                    model = OrcFxAPI.Model(path)
-                    self.loaded_sim_models[path] = model
-                    print(f"✅ Loaded OrcaFlex model: {os.path.basename(path)}")
+                    self._load_sim_model(path)
                 except Exception as e:
                     print(f"❌ Failed to load OrcaFlex model {os.path.basename(path)}:\n{e}")
 
@@ -119,10 +120,9 @@ class FileLoader:
         return tsdbs, errors
 
     def _load_orcaflex_file(self, filepath):
-        import OrcFxAPI
         # Preload model on first use
         if filepath not in self.loaded_sim_models:
-            self.loaded_sim_models[filepath] = OrcFxAPI.Model(filepath)
+            self._load_sim_model(filepath)
         model = self.loaded_sim_models[filepath]
 
         # Reuse previous selection?
@@ -130,9 +130,12 @@ class FileLoader:
             self.orcaflex_redundant_subs = getattr(
                 self, "orcaflex_redundant_subs", []
             )
-            return self._load_orcaflex_data_from_specs(
+            tsdb = self._load_orcaflex_data_from_specs(
                 model, self._last_orcaflex_selection
             )
+            if self.release_orcaflex_models:
+                self._release_sim_models([filepath])
+            return tsdb
 
         # Variable/object selection dialog
         selected, redundant, reuse_all = OrcaflexVariableSelector.get_selection(
@@ -158,23 +161,25 @@ class FileLoader:
             self._last_orcaflex_selection = specs.copy()
             self._reuse_orcaflex_selection = True
 
-        return self._load_orcaflex_data_from_specs(model, specs)
+        tsdb = self._load_orcaflex_data_from_specs(model, specs)
+        if self.release_orcaflex_models:
+            self._release_sim_models([filepath])
+        return tsdb
 
     def open_orcaflex_picker(self, file_paths):
         """Qt version of the OrcaFlex variable picker."""
-        import OrcFxAPI
-
-        missing = [fp for fp in file_paths if fp not in self.loaded_sim_models]
-        if missing:
-
-            # Lazily preload missing models so the picker can proceed
-            self.preload_sim_models(missing)
-            remaining = [fp for fp in missing if fp not in self.loaded_sim_models]
-            if remaining:
-                raise RuntimeError(
-                    "Models not preloaded: "
-                    + ", ".join(os.path.basename(m) for m in remaining)
-                )
+        errors = []
+        for fp in file_paths:
+            if fp not in self.loaded_sim_models:
+                try:
+                    self._load_sim_model(fp)
+                except Exception as exc:
+                    errors.append((fp, exc))
+        if errors:
+            raise RuntimeError(
+                "Models not preloaded: "
+                + ", ".join(os.path.basename(m) for m, _ in errors)
+            )
 
 
         if self._reuse_orcaflex_selection and self._last_orcaflex_selection:
@@ -261,7 +266,7 @@ class FileLoader:
         for fp in file_paths:
             model = self.loaded_sim_models[fp]
             obj_map = {
-                o.Name: (o, self.orcaflex_varmap[o.typeName])
+                o.Name: o.typeName
                 for o in model.objects
                 if o.typeName in self.orcaflex_varmap
             }
@@ -437,9 +442,9 @@ class FileLoader:
                 extra_entry.clear()
 
                 if selected:
-                    first_type = obj_map[selected[0]][0].typeName
+                    first_type = obj_map[selected[0]]
                     same_type = all(
-                        obj_map[n][0].typeName == first_type for n in selected
+                        obj_map[n] == first_type for n in selected
                     )
                 else:
                     same_type = False
@@ -569,6 +574,7 @@ class FileLoader:
                 *_,
                 obj_vars=obj_vars,
                 obj_map=obj_map,
+                model=model,
                 coord_entry=coord_entry,
                 update_table=_update_table,
             ):
@@ -576,7 +582,7 @@ class FileLoader:
                 if not coords:
                     return
                 selected = [
-                    obj_map[n][0] for n, cb in obj_vars.items() if cb.isChecked()
+                    model[n] for n, cb in obj_vars.items() if cb.isChecked()
                 ]
                 if not selected:
                     return
@@ -595,6 +601,7 @@ class FileLoader:
                 *_,
                 obj_vars=obj_vars,
                 obj_map=obj_map,
+                model=model,
                 coord_entry=coord_entry,
                 skip_entry=skip_entry,
                 update_table=_update_table,
@@ -608,8 +615,8 @@ class FileLoader:
                     if s.strip()
                 ]
                 selected = [
-                    pair[0]
-                    for name, pair in obj_map.items()
+                    model[name]
+                    for name in obj_map
                     if not any(term in name.lower() for term in skip_terms)
                 ]
                 closest_info = self._get_closest_objects(coords, selected)
@@ -785,7 +792,7 @@ class FileLoader:
                         selection_changed = False
                         if relevant_names:
                             target_types = {
-                                obj_map_state[name][0].typeName
+                                obj_map_state[name]
                                 for name in relevant_names
                                 if name in obj_map_state
                             }
@@ -801,9 +808,8 @@ class FileLoader:
                                 for name, cb in obj_vars_state.items():
                                     if cb is None or not cb.isChecked() or name in relevant_names:
                                         continue
-                                    obj_type = obj_map_state.get(name, (None,))[0]
-                                    obj_type_name = getattr(obj_type, "typeName", None)
-                                    if obj_type_name not in target_types:
+                                    obj_type = obj_map_state.get(name)
+                                    if obj_type not in target_types:
                                         cb.blockSignals(True)
                                         cb.setChecked(False)
                                         cb.blockSignals(False)
@@ -1025,7 +1031,7 @@ class FileLoader:
             if not sel_objs:
                 QMessageBox.warning(dialog, "No Objects", "Select objects first")
                 return
-            sel_types = {st["obj_map"][n][0].typeName for n in sel_objs}
+            sel_types = {st["obj_map"][n] for n in sel_objs}
             if len(sel_types) != 1:
                 QMessageBox.warning(dialog, "Type mismatch", "Selected objects are not the same type")
                 return
@@ -1035,7 +1041,7 @@ class FileLoader:
                 return
             specs = []
             for obj_name in sel_objs:
-                obj = st["obj_map"][obj_name][0]
+                obj = st["model"][obj_name]
                 for var in sel_vars:
                     for ex, label in self._parse_extras(obj, st["extra_entry"].text()):
                         specs.append((obj_name, var, ex, label))
@@ -1063,6 +1069,12 @@ class FileLoader:
 
         reuse_cb = QCheckBox("Use this selection for all future OrcaFlex files")
         right_side.addWidget(reuse_cb)
+        buffer_cb = QCheckBox("Cache .sim files in memory buffers")
+        buffer_cb.setChecked(self.cache_orcaflex_buffers)
+        right_side.addWidget(buffer_cb)
+        release_cb = QCheckBox("Release OrcaFlex models after load")
+        release_cb.setChecked(self.release_orcaflex_models)
+        right_side.addWidget(release_cb)
         check_files()
 
         btn_layout = QHBoxLayout()
@@ -1103,7 +1115,7 @@ class FileLoader:
                 sel_objs = [n for n, cb in st["obj_vars"].items() if cb.isChecked()]
                 if not sel_objs:
                     continue
-                sel_types = {st["obj_map"][n][0].typeName for n in sel_objs}
+                sel_types = {st["obj_map"][n] for n in sel_objs}
                 if len(sel_types) != 1:
                     continue
                 sel_vars = [v for v, cb in st["var_vars"].items() if cb.isChecked()]
@@ -1111,12 +1123,14 @@ class FileLoader:
                     continue
                 specs = []
                 for obj_name in sel_objs:
-                    obj = st["obj_map"][obj_name][0]
+                    obj = st["model"][obj_name]
                     for var in sel_vars:
                         for ex, label in self._parse_extras(obj, st["extra_entry"].text()):
                             specs.append((obj_name, var, ex, label))
                 out_specs[fp] = specs
 
+            self.cache_orcaflex_buffers = buffer_cb.isChecked()
+            self.release_orcaflex_models = release_cb.isChecked()
             if reuse_cb.isChecked() and file_paths:
                 active_fp = file_paths[tabs.currentIndex()] if tabs.count() else None
                 if active_fp in out_specs:
@@ -1181,7 +1195,22 @@ class FileLoader:
                 )
 
             result[fp] = tsdb
+        if self.release_orcaflex_models:
+            self._release_sim_models(file_paths)
         return result
+
+    def _release_sim_models(self, file_paths):
+        released = []
+        for fp in file_paths:
+            model = self.loaded_sim_models.pop(fp, None)
+            if model is None:
+                continue
+            self.orcaflex_sim_sources.pop(fp, None)
+            self._destroy_sim_model(model)
+            released.append(fp)
+        if released:
+            for fp in released:
+                print(f"✅ Released OrcaFlex model: {os.path.basename(fp)}")
 
 
     def _merge_panel_pressures(self, tsdb, pressures_df, panel_info):
@@ -1811,6 +1840,55 @@ class FileLoader:
                 suffix += 1
                 label = f"{base_label} ({suffix})"
 
+    def _get_orcaflex_buffer(self, filepath):
+        if filepath in self.orcaflex_sim_buffers:
+            return self.orcaflex_sim_buffers[filepath]
+        with open(filepath, "rb") as handle:
+            buffer = bytearray(handle.read())
+        self.orcaflex_sim_buffers[filepath] = buffer
+        return buffer
+
+    def _load_sim_model(self, filepath):
+        import OrcFxAPI
+
+        if filepath in self.loaded_sim_models:
+            if (
+                self.cache_orcaflex_buffers
+                and self.orcaflex_sim_sources.get(filepath) != "buffer"
+            ):
+                model = self.loaded_sim_models.pop(filepath)
+                self._destroy_sim_model(model)
+                self.orcaflex_sim_sources.pop(filepath, None)
+            else:
+                return self.loaded_sim_models[filepath]
+        if self.cache_orcaflex_buffers:
+            buffer = self._get_orcaflex_buffer(filepath)
+            model = OrcFxAPI.Model()
+            model.LoadSimulationMem(buffer)
+            self.orcaflex_sim_sources[filepath] = "buffer"
+        else:
+            model = OrcFxAPI.Model(filepath)
+            self.orcaflex_sim_sources[filepath] = "file"
+        self.loaded_sim_models[filepath] = model
+        print(f"✅ Loaded OrcaFlex model: {os.path.basename(filepath)}")
+        return model
+
+    def _destroy_sim_model(self, model):
+        close = getattr(model, "Close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
+        destroy = getattr(model, "Destroy", None)
+        if callable(destroy):
+            try:
+                destroy()
+            except Exception:
+                pass
+        del model
+        gc.collect()
+
     def _load_era5_netcdf(self, filepath):
         """Load ERA5-style NetCDF files into a :class:`TsDB` instance."""
 
@@ -2168,4 +2246,3 @@ class FileLoader:
         return tsdb
 
 __all__ = ['FileLoader']
-
