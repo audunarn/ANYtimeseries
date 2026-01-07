@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime
+import gc
 import os, re
 from array import array
 from collections.abc import Sequence
@@ -56,6 +57,7 @@ class FileLoader:
         self.progress_callback = None  # called while pre-loading
         self._last_diffraction_dir = None
         self._diffraction_cache = {}
+        self.release_orcaflex_models = False
 
     @property
     def reuse_orcaflex_selection(self):
@@ -130,9 +132,12 @@ class FileLoader:
             self.orcaflex_redundant_subs = getattr(
                 self, "orcaflex_redundant_subs", []
             )
-            return self._load_orcaflex_data_from_specs(
+            tsdb = self._load_orcaflex_data_from_specs(
                 model, self._last_orcaflex_selection
             )
+            if self.release_orcaflex_models:
+                self._release_sim_models([filepath])
+            return tsdb
 
         # Variable/object selection dialog
         selected, redundant, reuse_all = OrcaflexVariableSelector.get_selection(
@@ -158,7 +163,10 @@ class FileLoader:
             self._last_orcaflex_selection = specs.copy()
             self._reuse_orcaflex_selection = True
 
-        return self._load_orcaflex_data_from_specs(model, specs)
+        tsdb = self._load_orcaflex_data_from_specs(model, specs)
+        if self.release_orcaflex_models:
+            self._release_sim_models([filepath])
+        return tsdb
 
     def open_orcaflex_picker(self, file_paths):
         """Qt version of the OrcaFlex variable picker."""
@@ -261,7 +269,7 @@ class FileLoader:
         for fp in file_paths:
             model = self.loaded_sim_models[fp]
             obj_map = {
-                o.Name: (o, self.orcaflex_varmap[o.typeName])
+                o.Name: o.typeName
                 for o in model.objects
                 if o.typeName in self.orcaflex_varmap
             }
@@ -437,9 +445,9 @@ class FileLoader:
                 extra_entry.clear()
 
                 if selected:
-                    first_type = obj_map[selected[0]][0].typeName
+                    first_type = obj_map[selected[0]]
                     same_type = all(
-                        obj_map[n][0].typeName == first_type for n in selected
+                        obj_map[n] == first_type for n in selected
                     )
                 else:
                     same_type = False
@@ -569,6 +577,7 @@ class FileLoader:
                 *_,
                 obj_vars=obj_vars,
                 obj_map=obj_map,
+                model=model,
                 coord_entry=coord_entry,
                 update_table=_update_table,
             ):
@@ -576,7 +585,7 @@ class FileLoader:
                 if not coords:
                     return
                 selected = [
-                    obj_map[n][0] for n, cb in obj_vars.items() if cb.isChecked()
+                    model[n] for n, cb in obj_vars.items() if cb.isChecked()
                 ]
                 if not selected:
                     return
@@ -595,6 +604,7 @@ class FileLoader:
                 *_,
                 obj_vars=obj_vars,
                 obj_map=obj_map,
+                model=model,
                 coord_entry=coord_entry,
                 skip_entry=skip_entry,
                 update_table=_update_table,
@@ -608,8 +618,8 @@ class FileLoader:
                     if s.strip()
                 ]
                 selected = [
-                    pair[0]
-                    for name, pair in obj_map.items()
+                    model[name]
+                    for name in obj_map
                     if not any(term in name.lower() for term in skip_terms)
                 ]
                 closest_info = self._get_closest_objects(coords, selected)
@@ -785,7 +795,7 @@ class FileLoader:
                         selection_changed = False
                         if relevant_names:
                             target_types = {
-                                obj_map_state[name][0].typeName
+                                obj_map_state[name]
                                 for name in relevant_names
                                 if name in obj_map_state
                             }
@@ -801,9 +811,8 @@ class FileLoader:
                                 for name, cb in obj_vars_state.items():
                                     if cb is None or not cb.isChecked() or name in relevant_names:
                                         continue
-                                    obj_type = obj_map_state.get(name, (None,))[0]
-                                    obj_type_name = getattr(obj_type, "typeName", None)
-                                    if obj_type_name not in target_types:
+                                    obj_type = obj_map_state.get(name)
+                                    if obj_type not in target_types:
                                         cb.blockSignals(True)
                                         cb.setChecked(False)
                                         cb.blockSignals(False)
@@ -1025,7 +1034,7 @@ class FileLoader:
             if not sel_objs:
                 QMessageBox.warning(dialog, "No Objects", "Select objects first")
                 return
-            sel_types = {st["obj_map"][n][0].typeName for n in sel_objs}
+            sel_types = {st["obj_map"][n] for n in sel_objs}
             if len(sel_types) != 1:
                 QMessageBox.warning(dialog, "Type mismatch", "Selected objects are not the same type")
                 return
@@ -1035,7 +1044,7 @@ class FileLoader:
                 return
             specs = []
             for obj_name in sel_objs:
-                obj = st["obj_map"][obj_name][0]
+                obj = st["model"][obj_name]
                 for var in sel_vars:
                     for ex, label in self._parse_extras(obj, st["extra_entry"].text()):
                         specs.append((obj_name, var, ex, label))
@@ -1063,6 +1072,9 @@ class FileLoader:
 
         reuse_cb = QCheckBox("Use this selection for all future OrcaFlex files")
         right_side.addWidget(reuse_cb)
+        release_cb = QCheckBox("Release OrcaFlex models after load")
+        release_cb.setChecked(self.release_orcaflex_models)
+        right_side.addWidget(release_cb)
         check_files()
 
         btn_layout = QHBoxLayout()
@@ -1117,6 +1129,7 @@ class FileLoader:
                             specs.append((obj_name, var, ex, label))
                 out_specs[fp] = specs
 
+            self.release_orcaflex_models = release_cb.isChecked()
             if reuse_cb.isChecked() and file_paths:
                 active_fp = file_paths[tabs.currentIndex()] if tabs.count() else None
                 if active_fp in out_specs:
@@ -1181,7 +1194,32 @@ class FileLoader:
                 )
 
             result[fp] = tsdb
+        if self.release_orcaflex_models:
+            self._release_sim_models(file_paths)
         return result
+
+    def _release_sim_models(self, file_paths):
+        released = False
+        for fp in file_paths:
+            model = self.loaded_sim_models.pop(fp, None)
+            if model is None:
+                continue
+            released = True
+            close = getattr(model, "Close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
+            destroy = getattr(model, "Destroy", None)
+            if callable(destroy):
+                try:
+                    destroy()
+                except Exception:
+                    pass
+            del model
+        if released:
+            gc.collect()
 
 
     def _merge_panel_pressures(self, tsdb, pressures_df, panel_info):
@@ -2168,4 +2206,3 @@ class FileLoader:
         return tsdb
 
 __all__ = ['FileLoader']
-
