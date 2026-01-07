@@ -1,9 +1,13 @@
 """Tests for OrcaFlex selection reuse logic in FileLoader."""
 
-from pathlib import Path
 import importlib.util
+from pathlib import Path
 import sys
 import types
+
+import numpy as np
+import pandas as pd
+import xarray as xr
 
 
 def _install_qt_stubs(monkeypatch):
@@ -159,3 +163,97 @@ def test_add_unique_timeseries_suffixes_duplicates(monkeypatch):
     assert first_name == "LineA:Axial"
     assert second_name == "LineA:Axial (2)"
     assert tsdb.names == ["LineA:Axial", "LineA:Axial (2)"]
+
+
+def test_load_era5_netcdf_single_point(monkeypatch, tmp_path):
+    file_loader = _load_file_loader(monkeypatch)
+
+    times = pd.date_range("2020-01-01", periods=4, freq="H")
+    ds = xr.Dataset(
+        {
+            "u10": (
+                ("time", "latitude", "longitude"),
+                np.arange(times.size, dtype=float).reshape((times.size, 1, 1)),
+            ),
+            "mwd": ("time", np.linspace(0.0, 30.0, times.size)),
+        },
+        coords={"time": times, "latitude": [60.0], "longitude": [5.0]},
+    )
+    nc_path = tmp_path / "era5_sample.nc"
+    ds.to_netcdf(nc_path)
+
+    loader = file_loader.FileLoader()
+    tsdb = loader._load_generic_file(str(nc_path))
+
+    data = tsdb.getm()
+    assert set(data) == {"mwd", "u10"}
+    assert data["u10"].t.shape[0] == times.size
+    assert data["u10"].dtg_ref == times[0].to_pydatetime()
+    np.testing.assert_array_equal(data["mwd"].x, np.linspace(0.0, 30.0, times.size))
+
+
+def test_load_netcdf_flexible_time_detection(monkeypatch, tmp_path):
+    file_loader = _load_file_loader(monkeypatch)
+
+    times = pd.date_range("2021-06-01", periods=3, freq="D")
+    ds = xr.Dataset(
+        {"temp": ("forecast_time", np.linspace(5.0, 7.0, times.size))},
+        coords={"forecast_time": times},
+    )
+    nc_path = tmp_path / "forecast_sample.nc"
+    ds.to_netcdf(nc_path)
+
+    loader = file_loader.FileLoader()
+    tsdb = loader._load_generic_file(str(nc_path))
+
+    data = tsdb.getm()
+    assert set(data) == {"temp"}
+    np.testing.assert_array_equal(data["temp"].t, np.array([0.0, 86400.0, 172800.0]))
+    np.testing.assert_array_equal(data["temp"].x, np.linspace(5.0, 7.0, times.size))
+    assert data["temp"].dtg_ref == times[0].to_pydatetime()
+    np.testing.assert_array_equal(data["temp"].dtg_time, times.to_pydatetime())
+
+
+def test_load_netcdf_ignores_unused_time_coord(monkeypatch, tmp_path):
+    file_loader = _load_file_loader(monkeypatch)
+
+    times = pd.date_range("2022-04-01", periods=2, freq="D")
+    ds = xr.Dataset(
+        {"temperature": ("valid_time", [12.3, 12.5])},
+        coords={
+            "valid_time": times,
+            # An unused time-like coordinate that should not be picked as the time axis.
+            "time": pd.date_range("2000-01-01", periods=2, freq="H"),
+        },
+    )
+
+    nc_path = tmp_path / "mixed_time_coords.nc"
+    ds.to_netcdf(nc_path)
+
+    loader = file_loader.FileLoader()
+    tsdb = loader._load_generic_file(str(nc_path))
+
+    data = tsdb.getm()
+    assert set(data) == {"temperature"}
+    np.testing.assert_array_equal(data["temperature"].x, np.array([12.3, 12.5]))
+
+
+def test_load_netcdf_uses_cftime_decoder(monkeypatch, tmp_path):
+    file_loader = _load_file_loader(monkeypatch)
+
+    times = xr.cftime_range("2001-02-27", periods=3, freq="D", calendar="noleap")
+    ds = xr.Dataset({"height": ("time", [1.0, 2.0, 3.0])}, coords={"time": times})
+
+    nc_path = tmp_path / "cftime_calendar.nc"
+    ds.to_netcdf(nc_path)
+
+    loader = file_loader.FileLoader()
+    tsdb = loader._load_generic_file(str(nc_path))
+
+    data = tsdb.getm()["height"]
+    np.testing.assert_array_equal(data.x, np.array([1.0, 2.0, 3.0]))
+    np.testing.assert_array_equal(data.t, np.array([0.0, 86400.0, 172800.0]))
+    np.testing.assert_array_equal(
+        data.dtg_time,
+        pd.to_datetime(times.to_datetimeindex()).to_pydatetime(),
+    )

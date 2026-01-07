@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime
+import gc
 import os, re
 from array import array
 from collections.abc import Sequence
@@ -49,37 +50,24 @@ class FileLoader:
     def __init__(self, orcaflex_varmap=None, parent_gui=None):
         self.orcaflex_varmap = orcaflex_varmap or {}
         self.parent_gui = parent_gui
-        self._last_orcaflex_selection = None
-        self._reuse_orcaflex_selection = False
         self.loaded_sim_models = {}
+        self.orcaflex_sim_buffers = {}
+        self.orcaflex_sim_sources = {}
         self.orcaflex_redundant_subs = []
         self.progress_callback = None  # called while pre-loading
         self._last_diffraction_dir = None
         self._diffraction_cache = {}
-
-    @property
-    def reuse_orcaflex_selection(self):
-        """The radius property."""
-        return self._reuse_orcaflex_selection
-
-    @reuse_orcaflex_selection.setter
-    def reuse_orcaflex_selection(self, value):
-        print("Set radius")
-        self._reuse_orcaflex_selection = value
+        self.cache_orcaflex_buffers = True
 
     def preload_sim_models(self, filepaths):
-        try:
-            import OrcFxAPI
-        except ImportError:
+        if OrcFxAPI is None:
             print("OrcFxAPI not available. Cannot preload .sim files.")
             return
         total_files = len(filepaths)
         for idx, path in enumerate(filepaths):
             if path not in self.loaded_sim_models:
                 try:
-                    model = OrcFxAPI.Model(path)
-                    self.loaded_sim_models[path] = model
-                    print(f"✅ Loaded OrcaFlex model: {os.path.basename(path)}")
+                    self._load_sim_model(path)
                 except Exception as e:
                     print(f"❌ Failed to load OrcaFlex model {os.path.basename(path)}:\n{e}")
 
@@ -119,23 +107,11 @@ class FileLoader:
         return tsdbs, errors
 
     def _load_orcaflex_file(self, filepath):
-        import OrcFxAPI
-        # Preload model on first use
-        if filepath not in self.loaded_sim_models:
-            self.loaded_sim_models[filepath] = OrcFxAPI.Model(filepath)
-        model = self.loaded_sim_models[filepath]
-
-        # Reuse previous selection?
-        if self._reuse_orcaflex_selection and self._last_orcaflex_selection:
-            self.orcaflex_redundant_subs = getattr(
-                self, "orcaflex_redundant_subs", []
-            )
-            return self._load_orcaflex_data_from_specs(
-                model, self._last_orcaflex_selection
-            )
+        # Preload model on first use (refresh from buffer if needed)
+        model = self._load_sim_model(filepath)
 
         # Variable/object selection dialog
-        selected, redundant, reuse_all = OrcaflexVariableSelector.get_selection(
+        selected, redundant, _ = OrcaflexVariableSelector.get_selection(
             model, self.orcaflex_varmap, self.parent_gui
         )
         if not selected:
@@ -154,39 +130,23 @@ class FileLoader:
                 specs.append((obj_name, var, extra, label))
 
         self.orcaflex_redundant_subs = redundant or []
-        if reuse_all:
-            self._last_orcaflex_selection = specs.copy()
-            self._reuse_orcaflex_selection = True
-
-        return self._load_orcaflex_data_from_specs(model, specs)
+        tsdb = self._load_orcaflex_data_from_specs(model, specs)
+        return tsdb
 
     def open_orcaflex_picker(self, file_paths):
         """Qt version of the OrcaFlex variable picker."""
-        import OrcFxAPI
+        errors = []
+        for fp in file_paths:
+            try:
+                self._load_sim_model(fp)
+            except Exception as exc:
+                errors.append((fp, exc))
+        if errors:
+            raise RuntimeError(
+                "Models not preloaded: "
+                + ", ".join(os.path.basename(m) for m, _ in errors)
+            )
 
-        missing = [fp for fp in file_paths if fp not in self.loaded_sim_models]
-        if missing:
-
-            # Lazily preload missing models so the picker can proceed
-            self.preload_sim_models(missing)
-            remaining = [fp for fp in missing if fp not in self.loaded_sim_models]
-            if remaining:
-                raise RuntimeError(
-                    "Models not preloaded: "
-                    + ", ".join(os.path.basename(m) for m in remaining)
-                )
-
-
-        if self._reuse_orcaflex_selection and self._last_orcaflex_selection:
-            result = {}
-            for fp in file_paths:
-                tsdb = self._load_orcaflex_data_from_specs(
-                    self.loaded_sim_models[fp],
-                    self._last_orcaflex_selection,
-                )
-                if tsdb:
-                    result[fp] = tsdb
-            return result
 
         dialog = QDialog(self.parent_gui)
         dialog.setWindowTitle("Pick OrcaFlex Variables")
@@ -261,7 +221,7 @@ class FileLoader:
         for fp in file_paths:
             model = self.loaded_sim_models[fp]
             obj_map = {
-                o.Name: (o, self.orcaflex_varmap[o.typeName])
+                o.Name: o.typeName
                 for o in model.objects
                 if o.typeName in self.orcaflex_varmap
             }
@@ -437,9 +397,9 @@ class FileLoader:
                 extra_entry.clear()
 
                 if selected:
-                    first_type = obj_map[selected[0]][0].typeName
+                    first_type = obj_map[selected[0]]
                     same_type = all(
-                        obj_map[n][0].typeName == first_type for n in selected
+                        obj_map[n] == first_type for n in selected
                     )
                 else:
                     same_type = False
@@ -569,6 +529,7 @@ class FileLoader:
                 *_,
                 obj_vars=obj_vars,
                 obj_map=obj_map,
+                model=model,
                 coord_entry=coord_entry,
                 update_table=_update_table,
             ):
@@ -576,7 +537,7 @@ class FileLoader:
                 if not coords:
                     return
                 selected = [
-                    obj_map[n][0] for n, cb in obj_vars.items() if cb.isChecked()
+                    model[n] for n, cb in obj_vars.items() if cb.isChecked()
                 ]
                 if not selected:
                     return
@@ -595,6 +556,7 @@ class FileLoader:
                 *_,
                 obj_vars=obj_vars,
                 obj_map=obj_map,
+                model=model,
                 coord_entry=coord_entry,
                 skip_entry=skip_entry,
                 update_table=_update_table,
@@ -608,8 +570,8 @@ class FileLoader:
                     if s.strip()
                 ]
                 selected = [
-                    pair[0]
-                    for name, pair in obj_map.items()
+                    model[name]
+                    for name in obj_map
                     if not any(term in name.lower() for term in skip_terms)
                 ]
                 closest_info = self._get_closest_objects(coords, selected)
@@ -785,7 +747,7 @@ class FileLoader:
                         selection_changed = False
                         if relevant_names:
                             target_types = {
-                                obj_map_state[name][0].typeName
+                                obj_map_state[name]
                                 for name in relevant_names
                                 if name in obj_map_state
                             }
@@ -801,9 +763,8 @@ class FileLoader:
                                 for name, cb in obj_vars_state.items():
                                     if cb is None or not cb.isChecked() or name in relevant_names:
                                         continue
-                                    obj_type = obj_map_state.get(name, (None,))[0]
-                                    obj_type_name = getattr(obj_type, "typeName", None)
-                                    if obj_type_name not in target_types:
+                                    obj_type = obj_map_state.get(name)
+                                    if obj_type not in target_types:
                                         cb.blockSignals(True)
                                         cb.setChecked(False)
                                         cb.blockSignals(False)
@@ -977,11 +938,9 @@ class FileLoader:
             if selected:
                 for idx, fp in enumerate(file_paths):
                     tabs.setTabEnabled(idx, fp in selected)
-                reuse_cb.setEnabled(False)
             else:
                 for idx in range(tabs.count()):
                     tabs.setTabEnabled(idx, True)
-                reuse_cb.setEnabled(True)
 
             if len(selected) < 2:
                 status_label.setText("")
@@ -1025,7 +984,7 @@ class FileLoader:
             if not sel_objs:
                 QMessageBox.warning(dialog, "No Objects", "Select objects first")
                 return
-            sel_types = {st["obj_map"][n][0].typeName for n in sel_objs}
+            sel_types = {st["obj_map"][n] for n in sel_objs}
             if len(sel_types) != 1:
                 QMessageBox.warning(dialog, "Type mismatch", "Selected objects are not the same type")
                 return
@@ -1035,7 +994,7 @@ class FileLoader:
                 return
             specs = []
             for obj_name in sel_objs:
-                obj = st["obj_map"][obj_name][0]
+                obj = st["model"][obj_name]
                 for var in sel_vars:
                     for ex, label in self._parse_extras(obj, st["extra_entry"].text()):
                         specs.append((obj_name, var, ex, label))
@@ -1061,8 +1020,6 @@ class FileLoader:
 
         apply_btn.clicked.connect(apply_selection)
 
-        reuse_cb = QCheckBox("Use this selection for all future OrcaFlex files")
-        right_side.addWidget(reuse_cb)
         check_files()
 
         btn_layout = QHBoxLayout()
@@ -1103,7 +1060,7 @@ class FileLoader:
                 sel_objs = [n for n, cb in st["obj_vars"].items() if cb.isChecked()]
                 if not sel_objs:
                     continue
-                sel_types = {st["obj_map"][n][0].typeName for n in sel_objs}
+                sel_types = {st["obj_map"][n] for n in sel_objs}
                 if len(sel_types) != 1:
                     continue
                 sel_vars = [v for v, cb in st["var_vars"].items() if cb.isChecked()]
@@ -1111,37 +1068,11 @@ class FileLoader:
                     continue
                 specs = []
                 for obj_name in sel_objs:
-                    obj = st["obj_map"][obj_name][0]
+                    obj = st["model"][obj_name]
                     for var in sel_vars:
                         for ex, label in self._parse_extras(obj, st["extra_entry"].text()):
                             specs.append((obj_name, var, ex, label))
                 out_specs[fp] = specs
-
-            if reuse_cb.isChecked() and file_paths:
-                active_fp = file_paths[tabs.currentIndex()] if tabs.count() else None
-                if active_fp in out_specs:
-                    self._last_orcaflex_selection = out_specs[active_fp].copy()
-                    self._reuse_orcaflex_selection = True
-
-                    base_specs = self._last_orcaflex_selection
-                    for fp in file_paths:
-                        if fp == active_fp or fp in out_specs:
-                            continue
-                        st = per_file_state[fp]
-                        mapped = []
-                        obj_names = st["obj_map"].keys()
-                        for obj_name, var, ex, label in base_specs:
-                            target_name = obj_name
-                            if target_name not in obj_names and getattr(self, "_strip_rule", None):
-                                stripped = self._strip_rule(obj_name)
-                                for cand in obj_names:
-                                    if self._strip_rule(cand) == stripped:
-                                        target_name = cand
-                                        break
-                            if target_name in obj_names:
-                                mapped.append((target_name, var, ex, label))
-                        if mapped:
-                            out_specs[fp] = mapped
 
             missing_files = [fp for fp in file_paths if fp not in out_specs]
             if missing_files:
@@ -1181,8 +1112,9 @@ class FileLoader:
                 )
 
             result[fp] = tsdb
+        if self.release_orcaflex_models:
+            self._release_sim_models(file_paths)
         return result
-
 
     def _merge_panel_pressures(self, tsdb, pressures_df, panel_info):
         if tsdb is None:
@@ -1811,10 +1743,194 @@ class FileLoader:
                 suffix += 1
                 label = f"{base_label} ({suffix})"
 
+    def _get_orcaflex_buffer(self, filepath):
+        if filepath in self.orcaflex_sim_buffers:
+            return self.orcaflex_sim_buffers[filepath]
+        with open(filepath, "rb") as handle:
+            buffer = bytearray(handle.read())
+        self.orcaflex_sim_buffers[filepath] = buffer
+        return buffer
+
+    def _load_sim_model(self, filepath):
+        import OrcFxAPI
+
+        if filepath in self.loaded_sim_models:
+            if (
+                self.cache_orcaflex_buffers
+                and self.orcaflex_sim_sources.get(filepath) != "buffer"
+            ):
+                model = self.loaded_sim_models.pop(filepath)
+                self._destroy_sim_model(model)
+                self.orcaflex_sim_sources.pop(filepath, None)
+            else:
+                return self.loaded_sim_models[filepath]
+        if self.cache_orcaflex_buffers:
+            buffer = self._get_orcaflex_buffer(filepath)
+            model = OrcFxAPI.Model()
+            model.LoadSimulationMem(buffer)
+            self.orcaflex_sim_sources[filepath] = "buffer"
+        else:
+            model = OrcFxAPI.Model(filepath)
+            self.orcaflex_sim_sources[filepath] = "file"
+        self.loaded_sim_models[filepath] = model
+        print(f"✅ Loaded OrcaFlex model: {os.path.basename(filepath)}")
+        return model
+
+    def _destroy_sim_model(self, model):
+        close = getattr(model, "Close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
+        destroy = getattr(model, "Destroy", None)
+        if callable(destroy):
+            try:
+                destroy()
+            except Exception:
+                pass
+        del model
+        gc.collect()
+
+    def _load_era5_netcdf(self, filepath):
+        """Load ERA5-style NetCDF files into a :class:`TsDB` instance."""
+
+        try:
+            import xarray as xr
+        except ImportError as exc:  # pragma: no cover - optional dependency
+            raise ImportError(
+                "Reading NetCDF files requires the optional dependency 'xarray'."
+            ) from exc
+
+        time_coder = xr.coders.CFDatetimeCoder(use_cftime=True)
+
+        with xr.open_dataset(filepath, decode_times=time_coder) as opened:
+            ds = opened.load()
+
+        def _coord_used_as_dim(name: str) -> bool:
+            return any(name in var.dims for var in ds.data_vars.values())
+
+        def _coord_is_datetime(coord) -> bool:
+            if np.issubdtype(coord.dtype, np.datetime64):
+                return True
+            if pd.api.types.is_object_dtype(coord.dtype):
+                try:  # cftime datetimes present
+                    import cftime  # type: ignore
+
+                    sample = np.asarray(coord.values).ravel()
+                    for val in sample:
+                        if isinstance(val, cftime.datetime):
+                            return True
+                except Exception:
+                    pass
+            return False
+
+        def _to_datetime_index(coord):
+            try:
+                index = coord.to_index()
+            except Exception:
+                index = pd.Index(np.asarray(coord.values))
+
+            try:
+                return pd.DatetimeIndex(index)
+            except Exception:
+                to_dtindex = getattr(index, "to_datetimeindex", None)
+                if callable(to_dtindex):
+                    try:
+                        return pd.DatetimeIndex(to_dtindex())
+                    except Exception:
+                        pass
+
+            converted = pd.to_datetime(np.asarray(coord.values), errors="coerce")
+            if converted.isna().all():
+                raise ValueError("Could not decode time coordinate to datetime values.")
+            return pd.DatetimeIndex(converted)
+
+        time_coord = None
+        preferred_names = ("time", "valid_time")
+
+        for candidate in preferred_names:
+            if candidate in ds.coords and _coord_used_as_dim(candidate):
+                time_coord = ds[candidate]
+                break
+
+        if time_coord is None:
+            for name, coord in ds.coords.items():
+                if name in preferred_names:
+                    continue
+                if ("time" in name.lower() or _coord_is_datetime(coord)) and _coord_used_as_dim(name):
+                    time_coord = coord
+                    break
+
+        if time_coord is None:
+            for var in ds.data_vars.values():
+                for dim in var.dims:
+                    coord = ds.coords.get(dim)
+                    if coord is None:
+                        continue
+                    if _coord_is_datetime(coord) or "time" in dim.lower():
+                        time_coord = coord
+                        break
+                if time_coord is not None:
+                    break
+
+        if time_coord is None:
+            raise ValueError("Could not find a time coordinate in the NetCDF file.")
+
+        time_values = _to_datetime_index(time_coord)
+        tsdb = TsDB()
+        skipped = set()
+
+        for name, data_array in ds.data_vars.items():
+            if time_coord.name not in data_array.dims:
+                skipped.add(name)
+                continue
+
+            spatial_dims = [dim for dim in data_array.dims if dim != time_coord.name]
+            for dim in spatial_dims:
+                size = data_array.sizes.get(dim, 0)
+                if size == 1:
+                    data_array = data_array.isel({dim: 0})
+                else:
+                    skipped.add(name)
+                    data_array = None
+                    break
+            if data_array is None:
+                continue
+
+            values = np.asarray(data_array.values)
+            if values.ndim != 1 or values.shape[0] != time_values.size:
+                skipped.add(name)
+                continue
+
+            try:
+                tsdb.add(TimeSeries(str(name), time_values, values.astype(float)))
+            except Exception:
+                skipped.add(name)
+
+        if len(tsdb.getm()) == 0:
+            tsdb.add(
+                TimeSeries(
+                    "NO_DATA",
+                    time_values,
+                    np.full(time_values.shape, np.nan, dtype=float),
+                )
+            )
+
+        if skipped:
+            print(
+                f"Skipped non-time variables in {os.path.basename(filepath)}: "
+                f"{', '.join(sorted(skipped))}"
+            )
+
+        return tsdb
+
     def _load_generic_file(self, filepath):
         ext = os.path.splitext(filepath)[-1].lower().lstrip(".")
         if ext in ["csv", 'mat', 'dat', 'ts',  'h5', 'pickle', 'tda', 'asc', 'tdms', 'pkl', 'bin']:
             return TsDB.fromfile(filepath)
+        elif ext in ["nc", "netcdf"]:
+            return self._load_era5_netcdf(filepath)
         elif ext == "xlsx":
             df = pd.read_excel(filepath)
         elif ext == "json":
@@ -2033,4 +2149,3 @@ class FileLoader:
         return tsdb
 
 __all__ = ['FileLoader']
-

@@ -11,7 +11,7 @@ from anyqats import TimeSeries
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 from PySide6.QtCore import QEvent, Qt, QTimer
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtGui import QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QHeaderView,
     QSizePolicy,
+
 )
 
 from .sortable_table_widget_item import SortableTableWidgetItem
