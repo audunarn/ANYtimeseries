@@ -50,8 +50,6 @@ class FileLoader:
     def __init__(self, orcaflex_varmap=None, parent_gui=None):
         self.orcaflex_varmap = orcaflex_varmap or {}
         self.parent_gui = parent_gui
-        self._last_orcaflex_selection = None
-        self._reuse_orcaflex_selection = False
         self.loaded_sim_models = {}
         self.orcaflex_sim_buffers = {}
         self.orcaflex_sim_sources = {}
@@ -60,17 +58,6 @@ class FileLoader:
         self._last_diffraction_dir = None
         self._diffraction_cache = {}
         self.cache_orcaflex_buffers = True
-        self.release_orcaflex_models = False
-
-    @property
-    def reuse_orcaflex_selection(self):
-        """The radius property."""
-        return self._reuse_orcaflex_selection
-
-    @reuse_orcaflex_selection.setter
-    def reuse_orcaflex_selection(self, value):
-        print("Set radius")
-        self._reuse_orcaflex_selection = value
 
     def preload_sim_models(self, filepaths):
         if OrcFxAPI is None:
@@ -125,20 +112,8 @@ class FileLoader:
             self._load_sim_model(filepath)
         model = self.loaded_sim_models[filepath]
 
-        # Reuse previous selection?
-        if self._reuse_orcaflex_selection and self._last_orcaflex_selection:
-            self.orcaflex_redundant_subs = getattr(
-                self, "orcaflex_redundant_subs", []
-            )
-            tsdb = self._load_orcaflex_data_from_specs(
-                model, self._last_orcaflex_selection
-            )
-            if self.release_orcaflex_models:
-                self._release_sim_models([filepath])
-            return tsdb
-
         # Variable/object selection dialog
-        selected, redundant, reuse_all = OrcaflexVariableSelector.get_selection(
+        selected, redundant, _ = OrcaflexVariableSelector.get_selection(
             model, self.orcaflex_varmap, self.parent_gui
         )
         if not selected:
@@ -157,13 +132,7 @@ class FileLoader:
                 specs.append((obj_name, var, extra, label))
 
         self.orcaflex_redundant_subs = redundant or []
-        if reuse_all:
-            self._last_orcaflex_selection = specs.copy()
-            self._reuse_orcaflex_selection = True
-
         tsdb = self._load_orcaflex_data_from_specs(model, specs)
-        if self.release_orcaflex_models:
-            self._release_sim_models([filepath])
         return tsdb
 
     def open_orcaflex_picker(self, file_paths):
@@ -181,17 +150,6 @@ class FileLoader:
                 + ", ".join(os.path.basename(m) for m, _ in errors)
             )
 
-
-        if self._reuse_orcaflex_selection and self._last_orcaflex_selection:
-            result = {}
-            for fp in file_paths:
-                tsdb = self._load_orcaflex_data_from_specs(
-                    self.loaded_sim_models[fp],
-                    self._last_orcaflex_selection,
-                )
-                if tsdb:
-                    result[fp] = tsdb
-            return result
 
         dialog = QDialog(self.parent_gui)
         dialog.setWindowTitle("Pick OrcaFlex Variables")
@@ -983,11 +941,9 @@ class FileLoader:
             if selected:
                 for idx, fp in enumerate(file_paths):
                     tabs.setTabEnabled(idx, fp in selected)
-                reuse_cb.setEnabled(False)
             else:
                 for idx in range(tabs.count()):
                     tabs.setTabEnabled(idx, True)
-                reuse_cb.setEnabled(True)
 
             if len(selected) < 2:
                 status_label.setText("")
@@ -1067,14 +1023,6 @@ class FileLoader:
 
         apply_btn.clicked.connect(apply_selection)
 
-        reuse_cb = QCheckBox("Use this selection for all future OrcaFlex files")
-        right_side.addWidget(reuse_cb)
-        buffer_cb = QCheckBox("Cache .sim files in memory buffers")
-        buffer_cb.setChecked(self.cache_orcaflex_buffers)
-        right_side.addWidget(buffer_cb)
-        release_cb = QCheckBox("Release OrcaFlex models after load")
-        release_cb.setChecked(self.release_orcaflex_models)
-        right_side.addWidget(release_cb)
         check_files()
 
         btn_layout = QHBoxLayout()
@@ -1129,34 +1077,6 @@ class FileLoader:
                             specs.append((obj_name, var, ex, label))
                 out_specs[fp] = specs
 
-            self.cache_orcaflex_buffers = buffer_cb.isChecked()
-            self.release_orcaflex_models = release_cb.isChecked()
-            if reuse_cb.isChecked() and file_paths:
-                active_fp = file_paths[tabs.currentIndex()] if tabs.count() else None
-                if active_fp in out_specs:
-                    self._last_orcaflex_selection = out_specs[active_fp].copy()
-                    self._reuse_orcaflex_selection = True
-
-                    base_specs = self._last_orcaflex_selection
-                    for fp in file_paths:
-                        if fp == active_fp or fp in out_specs:
-                            continue
-                        st = per_file_state[fp]
-                        mapped = []
-                        obj_names = st["obj_map"].keys()
-                        for obj_name, var, ex, label in base_specs:
-                            target_name = obj_name
-                            if target_name not in obj_names and getattr(self, "_strip_rule", None):
-                                stripped = self._strip_rule(obj_name)
-                                for cand in obj_names:
-                                    if self._strip_rule(cand) == stripped:
-                                        target_name = cand
-                                        break
-                            if target_name in obj_names:
-                                mapped.append((target_name, var, ex, label))
-                        if mapped:
-                            out_specs[fp] = mapped
-
             missing_files = [fp for fp in file_paths if fp not in out_specs]
             if missing_files:
                 resp = QMessageBox.question(
@@ -1198,20 +1118,6 @@ class FileLoader:
         if self.release_orcaflex_models:
             self._release_sim_models(file_paths)
         return result
-
-    def _release_sim_models(self, file_paths):
-        released = []
-        for fp in file_paths:
-            model = self.loaded_sim_models.pop(fp, None)
-            if model is None:
-                continue
-            self.orcaflex_sim_sources.pop(fp, None)
-            self._destroy_sim_model(model)
-            released.append(fp)
-        if released:
-            for fp in released:
-                print(f"✅ Released OrcaFlex model: {os.path.basename(fp)}")
-
 
     def _merge_panel_pressures(self, tsdb, pressures_df, panel_info):
         if tsdb is None:
