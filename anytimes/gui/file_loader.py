@@ -107,10 +107,8 @@ class FileLoader:
         return tsdbs, errors
 
     def _load_orcaflex_file(self, filepath):
-        # Preload model on first use
-        if filepath not in self.loaded_sim_models:
-            self._load_sim_model(filepath)
-        model = self.loaded_sim_models[filepath]
+        # Preload model on first use (refresh from buffer if needed)
+        model = self._load_sim_model(filepath)
 
         # Variable/object selection dialog
         selected, redundant, _ = OrcaflexVariableSelector.get_selection(
@@ -139,11 +137,10 @@ class FileLoader:
         """Qt version of the OrcaFlex variable picker."""
         errors = []
         for fp in file_paths:
-            if fp not in self.loaded_sim_models:
-                try:
-                    self._load_sim_model(fp)
-                except Exception as exc:
-                    errors.append((fp, exc))
+            try:
+                self._load_sim_model(fp)
+            except Exception as exc:
+                errors.append((fp, exc))
         if errors:
             raise RuntimeError(
                 "Models not preloaded: "
