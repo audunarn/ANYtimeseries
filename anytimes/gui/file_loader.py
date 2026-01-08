@@ -1112,8 +1112,6 @@ class FileLoader:
                 )
 
             result[fp] = tsdb
-        if self.release_orcaflex_models:
-            self._release_sim_models(file_paths)
         return result
 
     def _merge_panel_pressures(self, tsdb, pressures_df, panel_info):
