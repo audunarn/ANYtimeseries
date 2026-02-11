@@ -13,18 +13,6 @@ os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu")
 os.environ.setdefault("QT_QUICK_BACKEND", "software")
 
 from PySide6.QtWidgets import QApplication
-from PySide6.QtWebEngine import QtWebEngine
-
-
-def _initialize_webengine() -> None:
-    """Initialize QtWebEngine safely and only once."""
-
-    if getattr(_initialize_webengine, "_initialized", False):
-        return
-
-    QtWebEngine.initialize()
-    _initialize_webengine._initialized = True
-
 
 if __package__ in {None, ""}:
     # Allow running the module as a script (``python anytimes/anytimes_gui.py``)
@@ -98,19 +86,10 @@ __all__ = [
 
 def main() -> None:
     """Launch the AnytimeSeries GUI."""
-
     app = QApplication(sys.argv)
-
-    # Initialise QtWebEngine explicitly so the embedded plots are rendered
-    # correctly on all platforms. Without this call the WebEngine process may
-    # never start, leaving the main window as an empty frame even though no
-    # import errors are raised.
-    _initialize_webengine()
-
     window = TimeSeriesEditorQt()
     window.show()
     sys.exit(app.exec())
-
 
 if __name__ == "__main__":
     main()
