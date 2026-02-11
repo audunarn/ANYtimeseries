@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from ..rao import compute_rao
+from ..rao import compute_rao, compute_rao_from_timeseries
 
 
 class RAODialog(QDialog):
@@ -75,10 +75,6 @@ class RAODialog(QDialog):
         if not response_key or not excitation_key:
             QMessageBox.warning(self, "Missing selection", "Please select both response and excitation series.")
             return
-        if response_key == excitation_key:
-            QMessageBox.warning(self, "Invalid selection", "Response and excitation must be different series.")
-            return
-
         t_resp, y_resp = self._series_data[response_key]
         t_exc, y_exc = self._series_data[excitation_key]
 
@@ -100,13 +96,18 @@ class RAODialog(QDialog):
             QMessageBox.warning(self, "Invalid time base", "Could not infer a positive time step from the data.")
             return
 
+        single_series_mode = response_key == excitation_key
+
         try:
-            freqs, amp, phase_deg, coh = compute_rao(
-                excitation=y_exc,
-                response=y_resp,
-                dt=dt,
-                nperseg=self.nperseg_spin.value(),
-            )
+            if single_series_mode:
+                freqs, amp, phase_deg, coh = compute_rao_from_timeseries(response=y_resp, dt=dt)
+            else:
+                freqs, amp, phase_deg, coh = compute_rao(
+                    excitation=y_exc,
+                    response=y_resp,
+                    dt=dt,
+                    nperseg=self.nperseg_spin.value(),
+                )
         except ValueError as exc:
             QMessageBox.warning(self, "RAO error", str(exc))
             return
@@ -134,17 +135,33 @@ class RAODialog(QDialog):
         ax2.set_ylabel("Phase [deg]")
         ax2.grid(True, alpha=0.3)
 
-        ax3.plot(freqs, coh)
-        ax3.set_ylim(0.0, 1.0)
-        ax3.set_ylabel("Coherence")
+        if np.all(np.isnan(coh)):
+            ax3.text(
+                0.5,
+                0.5,
+                "Coherence available only for paired excitation/response RAO.",
+                transform=ax3.transAxes,
+                ha="center",
+                va="center",
+            )
+            ax3.set_ylabel("Coherence")
+        else:
+            ax3.plot(freqs, coh)
+            ax3.set_ylim(0.0, 1.0)
+            ax3.set_ylabel("Coherence")
         ax3.set_xlabel("Frequency [Hz]")
         ax3.grid(True, alpha=0.3)
 
         self.canvas.draw_idle()
 
         peak_idx = int(np.argmax(amp))
-        self.summary_label.setText(
-            f"Peak RAO amplitude {amp[peak_idx]:.4g} at {freqs[peak_idx]:.4g} Hz "
-            f"(phase {phase_deg[peak_idx]:.2f}°, coherence {coh[peak_idx]:.2f})."
-        )
-
+        if np.all(np.isnan(coh)):
+            self.summary_label.setText(
+                f"Peak RAO amplitude {amp[peak_idx]:.4g} at {freqs[peak_idx]:.4g} Hz "
+                f"(phase {phase_deg[peak_idx]:.2f}°). Single-series mode assumes unit excitation."
+            )
+        else:
+            self.summary_label.setText(
+                f"Peak RAO amplitude {amp[peak_idx]:.4g} at {freqs[peak_idx]:.4g} Hz "
+                f"(phase {phase_deg[peak_idx]:.2f}°, coherence {coh[peak_idx]:.2f})."
+            )

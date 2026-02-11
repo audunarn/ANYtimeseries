@@ -4461,11 +4461,11 @@ class TimeSeriesEditorQt(QMainWindow):
 
         self.rebuild_var_lookup()
         selected_keys = [k for k, cb in self.var_checkboxes.items() if cb.isChecked()]
-        if len(selected_keys) < 2:
+        if len(selected_keys) < 1:
             QMessageBox.warning(
                 self,
-                "Need more variables",
-                "Please check at least two variables (one excitation and one response).",
+                "No variables selected",
+                "Please check at least one variable for RAO generation.",
             )
             return
 
@@ -4506,11 +4506,11 @@ class TimeSeriesEditorQt(QMainWindow):
 
                 series_data[key] = (t, y)
 
-        if len(series_data) < 2:
+        if len(series_data) < 1:
             QMessageBox.warning(
                 self,
                 "No usable data",
-                "Could not build two valid series from the current selection/time window.",
+                "Could not build valid series from the current selection/time window.",
             )
             return
 
