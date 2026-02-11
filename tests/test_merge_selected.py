@@ -52,6 +52,7 @@ for name, module in stub_modules.items():
     sys.modules.setdefault(name, module)
 
 import numpy as np
+import pandas as pd
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from anytimes.gui.editor import TimeSeriesEditorQt
@@ -193,4 +194,64 @@ def test_merge_preserves_irregular_time_steps(qt_app, message_spy, monkeypatch):
     assert np.allclose(second_segment - second_segment[0], t2 - t2[0])
     assert second_segment[0] > t1[-1]
     assert not message_spy["crit"]
+    assert not message_spy["warn"]
+
+
+def test_export_selected_to_csv_uses_shared_time_column(qt_app, message_spy, monkeypatch, tmp_path):
+    t = np.array([0.0, 1.0, 2.0])
+    tsdb = DummyDB(
+        {
+            "VarA": TimeSeries("VarA", t, np.array([10.0, 11.0, 12.0])),
+            "VarB": TimeSeries("VarB", t, np.array([20.0, 21.0, 22.0])),
+        }
+    )
+
+    editor = _build_editor(monkeypatch, [tsdb], ["shared.ts"])
+    editor.var_checkboxes["VarA"].setChecked(True)
+    editor.var_checkboxes["VarB"].setChecked(True)
+
+    export_path = tmp_path / "shared.csv"
+    monkeypatch.setattr(
+        "anytimes.gui.editor.QFileDialog.getSaveFileName",
+        lambda *args, **kwargs: (str(export_path), "CSV files (*.csv)"),
+    )
+
+    editor.export_selected_to_csv()
+    qt_app.processEvents()
+
+    df = pd.read_csv(export_path)
+    assert list(df.columns) == ["time", "VarA", "VarB"]
+    assert np.allclose(df["time"].to_numpy(), t)
+    assert np.allclose(df["VarA"].to_numpy(), np.array([10.0, 11.0, 12.0]))
+    assert np.allclose(df["VarB"].to_numpy(), np.array([20.0, 21.0, 22.0]))
+    assert not message_spy["warn"]
+
+
+def test_export_selected_to_csv_keeps_per_series_time_for_different_timebases(
+    qt_app, message_spy, monkeypatch, tmp_path
+):
+    tsdb = DummyDB(
+        {
+            "VarA": TimeSeries("VarA", np.array([0.0, 1.0, 2.0]), np.array([10.0, 11.0, 12.0])),
+            "VarB": TimeSeries("VarB", np.array([0.0, 1.5, 3.0]), np.array([20.0, 21.0, 22.0])),
+        }
+    )
+
+    editor = _build_editor(monkeypatch, [tsdb], ["mixed.ts"])
+    editor.var_checkboxes["VarA"].setChecked(True)
+    editor.var_checkboxes["VarB"].setChecked(True)
+
+    export_path = tmp_path / "mixed.csv"
+    monkeypatch.setattr(
+        "anytimes.gui.editor.QFileDialog.getSaveFileName",
+        lambda *args, **kwargs: (str(export_path), "CSV files (*.csv)"),
+    )
+
+    editor.export_selected_to_csv()
+    qt_app.processEvents()
+
+    df = pd.read_csv(export_path)
+    assert list(df.columns) == ["VarA_t", "VarA", "VarB_t", "VarB"]
+    assert np.allclose(df["VarA_t"].to_numpy(), np.array([0.0, 1.0, 2.0]))
+    assert np.allclose(df["VarB_t"].to_numpy(), np.array([0.0, 1.5, 3.0]))
     assert not message_spy["warn"]

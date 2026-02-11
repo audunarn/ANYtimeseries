@@ -291,6 +291,21 @@ class TimeSeriesEditorQt(QMainWindow):
         row_trig.addWidget(self.trig_angle_entry)
         self.trig_calc_btn = QPushButton("Calculate")
         row_trig.addWidget(self.trig_calc_btn)
+        self.reduction_pct_entry = QLineEdit("100")
+        self.reduction_pct_entry.setFixedWidth(70)
+        self.reduction_pct_entry.setToolTip(
+            "Percentage of points to keep (0 = no points, 100 = all points)."
+        )
+        row_trig.addWidget(self.reduction_pct_entry)
+        row_trig.addWidget(QLabel("Bias:"))
+        self.reduction_bias_combo = QComboBox()
+        self.reduction_bias_combo.addItems(["Mean", "Upper", "Lower"])
+        self.reduction_bias_combo.setToolTip(
+            "Mean uses local averages, Upper uses local maxima, and Lower uses local minima."
+        )
+        row_trig.addWidget(self.reduction_bias_combo)
+        self.reduce_points_btn = QPushButton("Reduce Points")
+        row_trig.addWidget(self.reduce_points_btn)
         row_trig.addStretch(1)
         transform_layout.addLayout(row_trig)
 
@@ -663,6 +678,7 @@ class TimeSeriesEditorQt(QMainWindow):
         self.radians_btn.clicked.connect(self.to_radians)
         self.degrees_btn.clicked.connect(self.to_degrees)
         self.trig_calc_btn.clicked.connect(self.apply_trig_from_degrees)
+        self.reduce_points_btn.clicked.connect(self.reduce_selected_points)
         self.shift_min0_btn.clicked.connect(self.shift_min_to_zero)
         self.shift_mean0_btn.clicked.connect(self.shift_mean_to_zero)
         self.save_btn.clicked.connect(self.save_files)
@@ -1456,6 +1472,149 @@ class TimeSeriesEditorQt(QMainWindow):
 
         func = lambda y, w=window: pd.Series(y).rolling(window=w, min_periods=1).mean().to_numpy()
         self._apply_transformation(func, "rollMean", True)
+
+    def reduce_selected_points(self):
+        """Create reduced-resolution copies of selected series."""
+        import os
+        from PySide6.QtCore import QTimer
+        from anyqats import TimeSeries
+
+        try:
+            keep_percent = float(self.reduction_pct_entry.text().strip())
+        except ValueError:
+            QMessageBox.warning(
+                self,
+                "Invalid value",
+                "Reduction percentage must be a number between 0 and 100.",
+            )
+            return
+
+        if not 0 <= keep_percent <= 100:
+            QMessageBox.warning(
+                self,
+                "Invalid value",
+                "Reduction percentage must be between 0 and 100.",
+            )
+            return
+
+        bias_mode = self.reduction_bias_combo.currentText().strip().lower()
+        if bias_mode not in {"mean", "upper", "lower"}:
+            bias_mode = "mean"
+
+        self.rebuild_var_lookup()
+        made = []
+        fnames = [os.path.basename(p) for p in self.file_paths]
+
+        def _has_file_prefix(key: str) -> bool:
+            for name in fnames:
+                if key.startswith(f"{name}::") or key.startswith(f"{name}:"):
+                    return True
+            return False
+
+        def _reduce_points(t_values, y_values, percent, mode):
+            t_arr = np.asarray(t_values)
+            y_arr = np.asarray(y_values)
+            n_points = len(y_arr)
+            if n_points == 0:
+                return t_arr, y_arr
+
+            keep_points = int(round(n_points * percent / 100.0))
+            keep_points = max(0, min(n_points, keep_points))
+
+            if keep_points == n_points:
+                return t_arr.copy(), y_arr.copy()
+
+            if keep_points == 0:
+                return t_arr[:0], y_arr[:0]
+
+            idx_bins = np.array_split(np.arange(n_points), keep_points)
+            t_new = np.array([t_arr[idx].mean() for idx in idx_bins])
+
+            if mode == "upper":
+                y_new = np.array([np.max(y_arr[idx]) for idx in idx_bins])
+            elif mode == "lower":
+                y_new = np.array([np.min(y_arr[idx]) for idx in idx_bins])
+            else:
+                y_new = np.array([y_arr[idx].mean() for idx in idx_bins])
+            return t_new, y_new
+
+        for f_idx, (tsdb, path) in enumerate(zip(self.tsdbs, self.file_paths), start=1):
+            fname = os.path.basename(path)
+
+            for u_key, chk in self.var_checkboxes.items():
+                if not chk.isChecked():
+                    continue
+
+                if u_key.startswith(f"{fname}::"):
+                    varname = u_key.split("::", 1)[1]
+                elif u_key.startswith(f"{fname}:"):
+                    varname = u_key.split(":", 1)[1]
+                elif not _has_file_prefix(u_key):
+                    varname = u_key
+                else:
+                    continue
+
+                ts = tsdb.getm().get(varname)
+                if ts is None:
+                    continue
+
+                mask = self.get_time_window(ts)
+                filtered = self.apply_filters(ts)
+                if isinstance(mask, slice):
+                    t_win = ts.t[mask]
+                    y_src = filtered[mask]
+                else:
+                    if not mask.any():
+                        continue
+                    t_win = ts.t[mask]
+                    y_src = filtered[mask]
+
+                t_new, y_new = _reduce_points(t_win, y_src, keep_percent, bias_mode)
+
+                filt_tag = self._filter_tag()
+                pct_tag = (
+                    str(int(keep_percent))
+                    if keep_percent.is_integer()
+                    else f"{keep_percent:g}"
+                )
+                base = f"{ts.name}_red{pct_tag}pct"
+                if bias_mode != "mean":
+                    base += f"_{bias_mode}"
+                if filt_tag:
+                    base += f"_{filt_tag}"
+                base += f"_f{f_idx}"
+                new_name = base
+                k = 1
+                while new_name in tsdb.getm():
+                    new_name = f"{base}_{k}"
+                    k += 1
+
+                tsdb.add(TimeSeries(new_name, t_new, y_new))
+                made.append(new_name)
+                self.user_variables = getattr(self, "user_variables", set())
+                self.user_variables.add(new_name)
+
+        if made:
+            QTimer.singleShot(0, lambda: self._populate_variables(None))
+
+            def _ok():
+                show = 10
+                if len(made) <= show:
+                    msg = "\n".join(sorted(made))
+                else:
+                    msg = "\n".join(sorted(made)[:show]) + f"\n… and {len(made) - show} more"
+                QMessageBox.information(self, "Transformation complete", msg)
+
+            QTimer.singleShot(0, _ok)
+        else:
+            QTimer.singleShot(
+                0,
+                lambda: QMessageBox.warning(
+                    self,
+                    "Nothing new",
+                    "No series were selected or the selected time window was empty.",
+                ),
+            )
 
     def merge_selected_series(self):
         """Merge selected time series end-to-end into a new user variable."""
@@ -4086,7 +4245,7 @@ class TimeSeriesEditorQt(QMainWindow):
         if not path:
             return
 
-        series_list = []
+        series_items = []
         for tsdb, fp in zip(self.tsdbs, self.file_paths):
             fname = os.path.basename(fp)
             tsdb_map = tsdb.getm()
@@ -4119,14 +4278,26 @@ class TimeSeriesEditorQt(QMainWindow):
                     t, y = self._resample(t, y, dt, start=start, stop=stop)
 
 
-                series_list.append(pd.Series(t, name=f"{key}_t"))
-                series_list.append(pd.Series(y, name=key))
+                series_items.append((key, np.asarray(t), np.asarray(y)))
 
-        if not series_list:
+        if not series_items:
             QMessageBox.warning(self, "No data", "No data found for the selected variables.")
             return
 
-        df = pd.concat(series_list, axis=1)
+        shared_time = series_items[0][1]
+        has_common_time = all(self._time_vectors_match(shared_time, t) for _, t, _ in series_items)
+
+        if has_common_time:
+            data = {"time": shared_time}
+            data.update({key: y for key, _, y in series_items})
+            df = pd.DataFrame(data)
+        else:
+            series_list = []
+            for key, t, y in series_items:
+                series_list.append(pd.Series(t, name=f"{key}_t"))
+                series_list.append(pd.Series(y, name=key))
+            df = pd.concat(series_list, axis=1)
+
         df.to_csv(path, index=False)
         QMessageBox.information(self, "Exported", f"Exported {len(sel_keys)} series to\n{os.path.basename(path)}")
 
@@ -4561,4 +4732,3 @@ class TimeSeriesEditorQt(QMainWindow):
             self.extra_layout.addItem(self.extra_stretch)
 
 __all__ = ['TimeSeriesEditorQt']
-
