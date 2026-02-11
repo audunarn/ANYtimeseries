@@ -68,6 +68,7 @@ from .file_loader import FileLoader
 from .layout_utils import apply_initial_size
 from .stats_dialog import StatsDialog
 from .evm_window import EVMWindow
+from .rao_dialog import RAODialog
 from ..fatigue import FatigueSeries
 from .fatigue_dialog import FatigueDialog
 from .sortable_table_widget_item import SortableTableWidgetItem
@@ -445,8 +446,10 @@ class TimeSeriesEditorQt(QMainWindow):
         tools_layout = QHBoxLayout(self.tools_group)
         self.launch_qats_btn = QPushButton("Open in AnyQATS")
         self.evm_tool_btn = QPushButton("Open Extreme Value Statistics Tool")
+        self.rao_tool_btn = QPushButton("Generate RAO from Selected Time Series")
         tools_layout.addWidget(self.launch_qats_btn)
         tools_layout.addWidget(self.evm_tool_btn)
+        tools_layout.addWidget(self.rao_tool_btn)
         self.controls_layout.addWidget(self.tools_group)
 
 
@@ -670,6 +673,7 @@ class TimeSeriesEditorQt(QMainWindow):
         self.shift_common_max_btn.clicked.connect(self.shift_common_max)
         self.launch_qats_btn.clicked.connect(self.launch_qats)
         self.evm_tool_btn.clicked.connect(self.open_evm_tool)
+        self.rao_tool_btn.clicked.connect(self.open_rao_tool)
         self.reselect_orcaflex_btn.clicked.connect(self.reselect_orcaflex_variables)
         self.psd_btn.clicked.connect(lambda: self.plot_selected(mode="psd"))
         self.cycle_range_btn.clicked.connect(lambda: self.plot_selected(mode="cycle"))
@@ -4450,6 +4454,68 @@ class TimeSeriesEditorQt(QMainWindow):
             return
 
         dlg = FatigueDialog(series_entries, self)
+        dlg.exec()
+
+    def open_rao_tool(self) -> None:
+        """Launch the RAO dialog for selected time series."""
+
+        self.rebuild_var_lookup()
+        selected_keys = [k for k, cb in self.var_checkboxes.items() if cb.isChecked()]
+        if len(selected_keys) < 2:
+            QMessageBox.warning(
+                self,
+                "Need more variables",
+                "Please check at least two variables (one excitation and one response).",
+            )
+            return
+
+        series_data: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+        for tsdb, fp in zip(self.tsdbs, self.file_paths):
+            fname = os.path.basename(fp)
+            tsdb_map = tsdb.getm()
+            for key in selected_keys:
+                if key in series_data:
+                    continue
+                if key.startswith(f"{fname}::"):
+                    var_name = key.split("::", 1)[1]
+                elif key.startswith(f"{fname}:"):
+                    var_name = key.split(":", 1)[1]
+                elif key in tsdb_map:
+                    var_name = key
+                else:
+                    continue
+
+                ts = tsdb_map.get(var_name)
+                if ts is None:
+                    continue
+
+                mask = self.get_time_window(ts)
+                if isinstance(mask, slice):
+                    t = np.asarray(ts.t[mask], dtype=float)
+                    y = np.asarray(self.apply_filters(ts)[mask], dtype=float)
+                else:
+                    if not mask.any():
+                        continue
+                    t = np.asarray(ts.t[mask], dtype=float)
+                    y = np.asarray(self.apply_filters(ts)[mask], dtype=float)
+
+                if t.size < 8:
+                    continue
+                if not np.all(np.isfinite(t)) or not np.all(np.isfinite(y)):
+                    continue
+
+                series_data[key] = (t, y)
+
+        if len(series_data) < 2:
+            QMessageBox.warning(
+                self,
+                "No usable data",
+                "Could not build two valid series from the current selection/time window.",
+            )
+            return
+
+        labels = [k for k in selected_keys if k in series_data]
+        dlg = RAODialog(labels=labels, series_data=series_data, parent=self)
         dlg.exec()
 
     def apply_dark_palette(self):
