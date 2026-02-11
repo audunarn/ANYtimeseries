@@ -4226,7 +4226,7 @@ class TimeSeriesEditorQt(QMainWindow):
         if not path:
             return
 
-        series_list = []
+        series_items = []
         for tsdb, fp in zip(self.tsdbs, self.file_paths):
             fname = os.path.basename(fp)
             tsdb_map = tsdb.getm()
@@ -4259,14 +4259,26 @@ class TimeSeriesEditorQt(QMainWindow):
                     t, y = self._resample(t, y, dt, start=start, stop=stop)
 
 
-                series_list.append(pd.Series(t, name=f"{key}_t"))
-                series_list.append(pd.Series(y, name=key))
+                series_items.append((key, np.asarray(t), np.asarray(y)))
 
-        if not series_list:
+        if not series_items:
             QMessageBox.warning(self, "No data", "No data found for the selected variables.")
             return
 
-        df = pd.concat(series_list, axis=1)
+        shared_time = series_items[0][1]
+        has_common_time = all(self._time_vectors_match(shared_time, t) for _, t, _ in series_items)
+
+        if has_common_time:
+            data = {"time": shared_time}
+            data.update({key: y for key, _, y in series_items})
+            df = pd.DataFrame(data)
+        else:
+            series_list = []
+            for key, t, y in series_items:
+                series_list.append(pd.Series(t, name=f"{key}_t"))
+                series_list.append(pd.Series(y, name=key))
+            df = pd.concat(series_list, axis=1)
+
         df.to_csv(path, index=False)
         QMessageBox.information(self, "Exported", f"Exported {len(sel_keys)} series to\n{os.path.basename(path)}")
 
