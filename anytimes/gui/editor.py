@@ -292,6 +292,13 @@ class TimeSeriesEditorQt(QMainWindow):
             "Percentage of points to keep (0 = no points, 100 = all points)."
         )
         row_trig.addWidget(self.reduction_pct_entry)
+        row_trig.addWidget(QLabel("Bias:"))
+        self.reduction_bias_combo = QComboBox()
+        self.reduction_bias_combo.addItems(["Mean", "Upper", "Lower"])
+        self.reduction_bias_combo.setToolTip(
+            "Mean uses local averages, Upper uses local maxima, and Lower uses local minima."
+        )
+        row_trig.addWidget(self.reduction_bias_combo)
         self.reduce_points_btn = QPushButton("Reduce Points")
         row_trig.addWidget(self.reduce_points_btn)
         row_trig.addStretch(1)
@@ -1471,6 +1478,10 @@ class TimeSeriesEditorQt(QMainWindow):
             )
             return
 
+        bias_mode = self.reduction_bias_combo.currentText().strip().lower()
+        if bias_mode not in {"mean", "upper", "lower"}:
+            bias_mode = "mean"
+
         self.rebuild_var_lookup()
         made = []
         fnames = [os.path.basename(p) for p in self.file_paths]
@@ -1481,7 +1492,7 @@ class TimeSeriesEditorQt(QMainWindow):
                     return True
             return False
 
-        def _reduce_points(t_values, y_values, percent):
+        def _reduce_points(t_values, y_values, percent, mode):
             t_arr = np.asarray(t_values)
             y_arr = np.asarray(y_values)
             n_points = len(y_arr)
@@ -1499,7 +1510,13 @@ class TimeSeriesEditorQt(QMainWindow):
 
             idx_bins = np.array_split(np.arange(n_points), keep_points)
             t_new = np.array([t_arr[idx].mean() for idx in idx_bins])
-            y_new = np.array([y_arr[idx].mean() for idx in idx_bins])
+
+            if mode == "upper":
+                y_new = np.array([np.max(y_arr[idx]) for idx in idx_bins])
+            elif mode == "lower":
+                y_new = np.array([np.min(y_arr[idx]) for idx in idx_bins])
+            else:
+                y_new = np.array([y_arr[idx].mean() for idx in idx_bins])
             return t_new, y_new
 
         for f_idx, (tsdb, path) in enumerate(zip(self.tsdbs, self.file_paths), start=1):
@@ -1533,7 +1550,7 @@ class TimeSeriesEditorQt(QMainWindow):
                     t_win = ts.t[mask]
                     y_src = filtered[mask]
 
-                t_new, y_new = _reduce_points(t_win, y_src, keep_percent)
+                t_new, y_new = _reduce_points(t_win, y_src, keep_percent, bias_mode)
 
                 filt_tag = self._filter_tag()
                 pct_tag = (
@@ -1542,6 +1559,8 @@ class TimeSeriesEditorQt(QMainWindow):
                     else f"{keep_percent:g}"
                 )
                 base = f"{ts.name}_red{pct_tag}pct"
+                if bias_mode != "mean":
+                    base += f"_{bias_mode}"
                 if filt_tag:
                     base += f"_{filt_tag}"
                 base += f"_f{f_idx}"
