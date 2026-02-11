@@ -28,7 +28,6 @@ from PySide6.QtGui import (
     QPalette,
     QTextCursor,
 )
-from PySide6.QtWebEngine import QtWebEngine
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import (
     QApplication,
@@ -83,12 +82,11 @@ from .utils import (
     _safe,
 )
 
+
 class TimeSeriesEditorQt(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("AnytimeSeries - time series editor (Qt/PySide6)")
-
-
 
         self._min_left_panel = 320
         self._min_right_panel = 360
@@ -96,16 +94,10 @@ class TimeSeriesEditorQt(QMainWindow):
 
         self._updating_splitter = False
 
-
-
         # Palette and style for theme switching
         app = QApplication.instance()
         self.default_palette = app.palette()
         self.default_style = app.style().objectName()
-
-        # Ensure QtWebEngine is initialised after a QApplication exists so
-        # embedded charts render instead of leaving an empty frame.
-        QtWebEngine.initialize()
         # Reuse a single style instance when toggling themes to avoid
         # crashes from Python garbage-collecting temporary QStyle objects
         self._fusion_style = QStyleFactory.create("Fusion")
@@ -115,24 +107,22 @@ class TimeSeriesEditorQt(QMainWindow):
         self._last_plot_call: tuple[Callable[..., None], tuple, dict] | None = None
         self._refreshing_plot = False
 
-
-
         # =======================
         # DATA STRUCTURES
         # =======================
-        self.tsdbs = []                # List of anyqats.TsDB instances (one per file)
-        self.file_paths = []           # List of file paths (order matches tsdbs)
-        self.user_variables = set()    # User-defined/calculated variables
-        self.common_lookup = {}        # Map safe common names -> per-file variable names
+        self.tsdbs = []  # List of anyqats.TsDB instances (one per file)
+        self.file_paths = []  # List of file paths (order matches tsdbs)
+        self.user_variables = set()  # User-defined/calculated variables
+        self.common_lookup = {}  # Map safe common names -> per-file variable names
 
-        self.var_checkboxes = {}       # key: variable key → QCheckBox
-        self.var_offsets = {}          # key: variable key → QLineEdit for numeric offset
+        self.var_checkboxes = {}  # key: variable key → QCheckBox
+        self.var_offsets = {}  # key: variable key → QLineEdit for numeric offset
 
         # These lists must be filled before refresh_variable_tabs()
-        self.common_var_keys = []      # e.g. ["Heave", "Surge"]
-        self.file_var_keys = {}        # dict: file name → [var1, var2, ...]
-        self.user_var_keys = []        # e.g. ["result_var1", ...]
-        self.var_labels = {}           # Optional: key → display label
+        self.common_var_keys = []  # e.g. ["Heave", "Surge"]
+        self.file_var_keys = {}  # dict: file name → [var1, var2, ...]
+        self.user_var_keys = []  # e.g. ["result_var1", ...]
+        self.var_labels = {}  # Optional: key → display label
 
         self.file_loader = FileLoader(
             orcaflex_varmap=ORCAFLEX_VARIABLE_MAP,
@@ -350,13 +340,11 @@ class TimeSeriesEditorQt(QMainWindow):
         row5.addWidget(self.shift_common_max_btn)
         transform_layout.addLayout(row5)
 
-
         # Progress bar is shown by itself unless the plot is embedded
         self.controls_layout.addWidget(self.progress)
         # Row used when embedding the plot to move transformations next to the
         # progress bar
         self.progress_transform_row = QHBoxLayout()
-
 
         # ---- Offset Group ----
         offset_group = QGroupBox("Apply operation from variable input fields")
@@ -397,20 +385,6 @@ class TimeSeriesEditorQt(QMainWindow):
         self.reset_time_window_btn = QPushButton("Reset")
         time_layout.addWidget(self.reset_time_window_btn)
         self.controls_layout.addWidget(time_group)
-
-    def _refresh_file_list_display(self, selected_row: int | None = None) -> None:
-        """Render the loaded files list with numbered entries."""
-
-        if selected_row is None:
-            selected_row = self.file_list.currentRow()
-
-        self.file_list.clear()
-        for idx, path in enumerate(self.file_paths, start=1):
-            self.file_list.addItem(f"{idx}. {os.path.basename(path)}")
-
-        if self.file_paths:
-            selected_row = min(max(selected_row, 0), len(self.file_paths) - 1)
-            self.file_list.setCurrentRow(selected_row)
 
         # ---- Frequency filtering controls ----
         self.freq_group = QGroupBox("Apply frequency filter to transformations and calculations")
@@ -467,7 +441,6 @@ class TimeSeriesEditorQt(QMainWindow):
         tools_layout.addWidget(self.launch_qats_btn)
         tools_layout.addWidget(self.evm_tool_btn)
         self.controls_layout.addWidget(self.tools_group)
-
 
         # ---- Plot controls ----
         self.plot_group = QGroupBox("Plot Controls")
@@ -554,7 +527,6 @@ class TimeSeriesEditorQt(QMainWindow):
         self.controls_layout.addWidget(self.plot_group)
         self.controls_layout.addWidget(self.transform_group)
 
-
         # ---- Calculator ----
         self.calc_group = QGroupBox("Calculator")
         calc_layout = QVBoxLayout(self.calc_group)
@@ -577,7 +549,6 @@ class TimeSeriesEditorQt(QMainWindow):
 
         self.autocomplete_popup.setFocusPolicy(Qt.NoFocus)
         self.autocomplete_popup.setFocusProxy(self.calc_entry)
-
 
         # Do not steal focus when shown so typing can continue
         self.autocomplete_popup.setAttribute(Qt.WA_ShowWithoutActivating)
@@ -611,8 +582,6 @@ class TimeSeriesEditorQt(QMainWindow):
         self.controls_layout.addWidget(self.analysis_group)
         # Plot controls below analysis
         self.controls_layout.addWidget(plot_group)
-
-
 
         self.plot_view = QWebEngineView()
         self.plot_view.setMinimumHeight(300)
@@ -699,7 +668,6 @@ class TimeSeriesEditorQt(QMainWindow):
         self.theme_switch.stateChanged.connect(self.toggle_dark_theme)
         self.embed_plot_cb.stateChanged.connect(self.toggle_embed_layout)
         self.plot_engine_combo.currentTextChanged.connect(self._on_engine_changed)
-
 
         # ==== Populate variable tabs on startup ====
         self.refresh_variable_tabs()
@@ -861,7 +829,9 @@ class TimeSeriesEditorQt(QMainWindow):
         for key in getattr(self, "user_variables", set()):
             safe = f"u_{_safe(key)}"
             if safe not in self.calc_variables:
-                filename = next((os.path.basename(fp) for tsdb, fp in zip(self.tsdbs, self.file_paths) if key in tsdb.getm()), "user variable")
+                filename = next(
+                    (os.path.basename(fp) for tsdb, fp in zip(self.tsdbs, self.file_paths) if key in tsdb.getm()),
+                    "user variable")
                 self.calc_variables.append(safe)
                 self.calc_var_filemap[safe] = filename
 
@@ -1003,7 +973,8 @@ class TimeSeriesEditorQt(QMainWindow):
                 return
             ts = self.tsdbs[src_idx].getm().get(tok)
             if ts is None:
-                QMessageBox.critical(self, "User variable error", f"Variable '{tok}' not found in {os.path.basename(self.file_paths[src_idx])}")
+                QMessageBox.critical(self, "User variable error",
+                                     f"Variable '{tok}' not found in {os.path.basename(self.file_paths[src_idx])}")
                 return
             idx = (ts.t >= t_window[0]) & (ts.t <= t_window[-1])
             t_part, x_part = ts.t[idx], ts.x[idx]
@@ -1073,7 +1044,8 @@ class TimeSeriesEditorQt(QMainWindow):
                 if len(y) != len(t_window):
                     raise ValueError("Result length mismatch with time vector")
 
-                must_write_here = (create_common_output and f_no == min(file_tags_used)) or (not create_common_output and f_no in file_tags_used)
+                must_write_here = (create_common_output and f_no == min(file_tags_used)) or (
+                            not create_common_output and f_no in file_tags_used)
                 if not must_write_here:
                     continue
 
@@ -1097,7 +1069,8 @@ class TimeSeriesEditorQt(QMainWindow):
                 results.append((tsdb, ts_new))
 
             except Exception as e:
-                QMessageBox.critical(self, "Calculation Error", f"{os.path.basename(self.file_paths[file_idx])}:\n{e}\n\n{traceback.format_exc()}")
+                QMessageBox.critical(self, "Calculation Error",
+                                     f"{os.path.basename(self.file_paths[file_idx])}:\n{e}\n\n{traceback.format_exc()}")
                 return
 
         self.refresh_variable_tabs()
@@ -1437,8 +1410,8 @@ class TimeSeriesEditorQt(QMainWindow):
                         msg = "\n".join(sorted(made))
                     else:
                         msg = (
-                            "\n".join(sorted(made)[:show])
-                            + f"\n… and {len(made) - show} more"
+                                "\n".join(sorted(made)[:show])
+                                + f"\n… and {len(made) - show} more"
                         )
                     QMessageBox.information(self, "Transformation complete", msg)
 
@@ -1879,7 +1852,6 @@ class TimeSeriesEditorQt(QMainWindow):
         from PySide6.QtCore import QTimer
         from PySide6.QtWidgets import QMessageBox
 
-
         self.rebuild_var_lookup()
 
         sel_keys = [k for k, ck in self.var_checkboxes.items() if ck.isChecked()]
@@ -2192,7 +2164,6 @@ class TimeSeriesEditorQt(QMainWindow):
         suffix = f"*{func_name}({angle_deg:g})"
         self._apply_transformation(_apply_trig, suffix, True)
 
-
     def shift_min_to_zero(self):
         """Shift series so its minimum becomes zero **only** when that minimum is negative."""
         import numpy as np
@@ -2457,8 +2428,8 @@ class TimeSeriesEditorQt(QMainWindow):
 
             self.tsdbs.append(tsdb)
             self.file_paths.append(path)
-            #print(f"Loaded {path}: variables = {list(tsdb.getm().keys())}")
-        self._refresh_file_list_display(len(self.file_paths) - 1)
+            self.file_list.addItem(os.path.basename(path))
+            # print(f"Loaded {path}: variables = {list(tsdb.getm().keys())}")
         if errors:
             QMessageBox.warning(self, "Errors occurred", "\n".join([f"{f}: {e}" for f, e in errors]))
         self.refresh_variable_tabs()
@@ -2496,7 +2467,7 @@ class TimeSeriesEditorQt(QMainWindow):
             return
         del self.tsdbs[idx]
         del self.file_paths[idx]
-        self._refresh_file_list_display(idx)
+        self.file_list.takeItem(idx)
         self.refresh_variable_tabs()
 
     def clear_all_files(self):
@@ -2504,7 +2475,7 @@ class TimeSeriesEditorQt(QMainWindow):
         self.file_paths.clear()
         self.user_variables.clear()
         self.work_dir = None
-        self._refresh_file_list_display(0)
+        self.file_list.clear()
         self.refresh_variable_tabs()
 
     def reselect_orcaflex_variables(self):
@@ -2656,7 +2627,6 @@ class TimeSeriesEditorQt(QMainWindow):
                 if hasattr(last, "inputs"):
                     self.var_offsets[k] = last.inputs.get(k)
 
-
     # ------------------------------------------------------------------
     # Compatibility helper -------------------------------------------------
     def _populate_variables(self, *_):
@@ -2664,8 +2634,8 @@ class TimeSeriesEditorQt(QMainWindow):
         self.refresh_variable_tabs()
 
     def highlight_file_tab(self, row):
-        if row >= 0 and row+1 < self.tabs.count():
-            self.tabs.setCurrentIndex(row+1)
+        if row >= 0 and row + 1 < self.tabs.count():
+            self.tabs.setCurrentIndex(row + 1)
 
     def update_progressbar(self, value, maximum=None):
         """Update the progress bar during lengthy operations."""
@@ -2693,7 +2663,6 @@ class TimeSeriesEditorQt(QMainWindow):
         if not hasattr(current_tab, "all_vars"):
             return
 
-
         # Build filtered variable list for the active tab
         terms = _parse_search_terms(current_tab.search_box.text())
         if not terms:
@@ -2707,7 +2676,6 @@ class TimeSeriesEditorQt(QMainWindow):
         if not positions:
             return
 
-
         # Apply the same positions to every other per-file tab assuming the same filter
 
         for j in range(1, self.tabs.count() - 1):
@@ -2716,7 +2684,6 @@ class TimeSeriesEditorQt(QMainWindow):
             tab = self.tabs.widget(j)
             if not hasattr(tab, "all_vars"):
                 continue
-
 
             # Determine which variables would be visible with the same search terms
             if not terms:
@@ -2758,7 +2725,6 @@ class TimeSeriesEditorQt(QMainWindow):
         if old_name in self.var_checkboxes:
             was_checked = self.var_checkboxes[old_name].isChecked()
 
-
         renamed = False
         for tsdb in self.tsdbs:
             if old_name in tsdb.getm():
@@ -2766,7 +2732,6 @@ class TimeSeriesEditorQt(QMainWindow):
                 ts.name = new_name
                 tsdb.getm()[new_name] = ts
                 renamed = True
-
 
         if not renamed:
             return
@@ -2779,7 +2744,6 @@ class TimeSeriesEditorQt(QMainWindow):
 
         if was_checked and new_name in self.var_checkboxes:
             self.var_checkboxes[new_name].setChecked(True)
-
 
     def _trim_label(self, label, left_chars, right_chars):
         try:
@@ -2894,7 +2858,6 @@ class TimeSeriesEditorQt(QMainWindow):
             * rolling    – time plot using rolling mean
         """
 
-
         self.rebuild_var_lookup()
 
         # Clear any cached plot state; a new successful render will store it
@@ -2902,7 +2865,7 @@ class TimeSeriesEditorQt(QMainWindow):
         self._clear_last_plot_call()
 
         mark_extrema = (
-            hasattr(self, "plot_extrema_cb") and self.plot_extrema_cb.isChecked()
+                hasattr(self, "plot_extrema_cb") and self.plot_extrema_cb.isChecked()
         )
 
         import numpy as np, anyqats as qats, os
@@ -2948,7 +2911,7 @@ class TimeSeriesEditorQt(QMainWindow):
         fname_counts = Counter(os.path.basename(p) for p in self.file_paths)
 
         for file_idx, (tsdb, fp) in enumerate(
-            zip(self.tsdbs, self.file_paths), start=1
+                zip(self.tsdbs, self.file_paths), start=1
         ):
             fname = os.path.basename(fp)
             fname_disp = fname if fname_counts[fname] == 1 else f"{fname} ({file_idx})"
@@ -3069,7 +3032,7 @@ class TimeSeriesEditorQt(QMainWindow):
 
                     orig_gca = mpl_fig.Figure.gca
                     needs_patch = (
-                        "projection" not in inspect.signature(orig_gca).parameters
+                            "projection" not in inspect.signature(orig_gca).parameters
                     )
 
                     def _gca_with_projection(self, *args, **kwargs):
@@ -3122,8 +3085,8 @@ class TimeSeriesEditorQt(QMainWindow):
             nrows = int(np.ceil(n / ncols))
 
             same_axes = (
-                hasattr(self, "plot_same_axes_cb")
-                and self.plot_same_axes_cb.isChecked()
+                    hasattr(self, "plot_same_axes_cb")
+                    and self.plot_same_axes_cb.isChecked()
             )
             if same_axes:
                 x_min = min(
@@ -3394,9 +3357,9 @@ class TimeSeriesEditorQt(QMainWindow):
             )
             embed_cb = getattr(self, "embed_plot_cb", None)
             if (
-                embed_cb is not None
-                and embed_cb.isChecked()
-                and engine in {"plotly", "bokeh"}
+                    embed_cb is not None
+                    and embed_cb.isChecked()
+                    and engine in {"plotly", "bokeh"}
             ):
                 self._remember_plot_call(self.plot_selected, mode=mode, grid=grid)
             return
@@ -3468,7 +3431,6 @@ class TimeSeriesEditorQt(QMainWindow):
             t_r = _np.arange(start, stop + 0.5 * dt, dt)
             y_r = _np.interp(t_r, t, y)
             return t_r, y_r
-
 
     def animate_xyz_scatter_many(self, *, dt_resample: float = 0.1):
         """
@@ -3694,7 +3656,6 @@ class TimeSeriesEditorQt(QMainWindow):
                 "dark_minimal" if self.theme_switch.isChecked() else "light_minimal"
             )
 
-
             p = figure(
                 width=900,
                 height=450,
@@ -3845,7 +3806,7 @@ class TimeSeriesEditorQt(QMainWindow):
                 fig.update_layout(
                     paper_bgcolor="#2b2b2b",
                     plot_bgcolor="#2b2b2b",
-                    margin=dict(t=0, b=0, l = 0, r=0)
+                    margin=dict(t=0, b=0, l=0, r=0)
                 )
             if getattr(self, "embed_plot_cb", None) and self.embed_plot_cb.isChecked():
                 from plotly.io import to_html
@@ -3950,7 +3911,7 @@ class TimeSeriesEditorQt(QMainWindow):
             ts, fname, disp = None, None, None
             # resolve exactly as in plot_selected:
             for file_idx, (tsdb, fp) in enumerate(
-                zip(self.tsdbs, self.file_paths), start=1
+                    zip(self.tsdbs, self.file_paths), start=1
             ):
                 fname_ = os.path.basename(fp)
                 if unique_key.startswith(f"{fname_}::"):
@@ -4228,7 +4189,6 @@ class TimeSeriesEditorQt(QMainWindow):
         except ValueError:
             dt = 0.0
 
-
         def _parse_f(txt):
             try:
                 return float(txt.strip()) if txt.strip() else None
@@ -4239,7 +4199,6 @@ class TimeSeriesEditorQt(QMainWindow):
         t_stop = _parse_f(self.time_end.text())
         if t_start is not None and t_stop is not None and t_stop < t_start:
             t_start, t_stop = t_stop, t_start
-
 
         path, _ = QFileDialog.getSaveFileName(self, "Export selected to CSV", "", "CSV files (*.csv)")
         if not path:
@@ -4272,11 +4231,9 @@ class TimeSeriesEditorQt(QMainWindow):
                     y = self.apply_filters(ts)[mask]
 
                 if dt > 0:
-
                     start = t_start if t_start is not None else t[0]
                     stop = t_stop if t_stop is not None else t[-1]
                     t, y = self._resample(t, y, dt, start=start, stop=stop)
-
 
                 series_items.append((key, np.asarray(t), np.asarray(y)))
 
@@ -4359,7 +4316,8 @@ class TimeSeriesEditorQt(QMainWindow):
             return
 
         if len(selected_keys) > 1:
-            QMessageBox.information(self, "Multiple Variables", "Only the first selected variable will be used for EVA.")
+            QMessageBox.information(self, "Multiple Variables",
+                                    "Only the first selected variable will be used for EVA.")
 
         selected = selected_keys[0]
 
@@ -4479,7 +4437,6 @@ class TimeSeriesEditorQt(QMainWindow):
         # Apply to this window as well so existing widgets refresh
         self.setStyle(self._fusion_style)
 
-
         dark_palette = QPalette()
         dark_palette.setColor(QPalette.Window, QColor("#31363b"))
         dark_palette.setColor(QPalette.WindowText, QColor("#eff0f1"))
@@ -4495,14 +4452,12 @@ class TimeSeriesEditorQt(QMainWindow):
         dark_palette.setColor(QPalette.Highlight, QColor("#3daee9"))
         dark_palette.setColor(QPalette.HighlightedText, QColor("#31363b"))
 
-
-
         app.setPalette(dark_palette)
         self.setPalette(dark_palette)
         app.setStyleSheet(
             "QToolTip { color: #31363b; background-color: #3daee9; border: 1px solid #31363b; }"
         )
-        
+
         import matplotlib.pyplot as plt
         plt.style.use("dark_background")
 
@@ -4517,7 +4472,6 @@ class TimeSeriesEditorQt(QMainWindow):
 
         app.setStyle(self._fusion_style)
         self.setStyle(self._fusion_style)
-
 
         light_palette = QPalette()
         light_palette.setColor(QPalette.Window, QColor("#eff0f1"))
@@ -4548,16 +4502,13 @@ class TimeSeriesEditorQt(QMainWindow):
         self.plot_view.page().setBackgroundColor(QColor("#eff0f1"))
         self.plot_view.setStyleSheet("background-color:#eff0f1;border:0px;")
 
-
     def _clear_last_plot_call(self) -> None:
         self._last_plot_call = None
 
-
     def _remember_plot_call(
-        self, callback: Callable[..., None], /, *args, **kwargs
+            self, callback: Callable[..., None], /, *args, **kwargs
     ) -> None:
         self._last_plot_call = (callback, args, kwargs)
-
 
     def _refresh_embedded_plot(self) -> None:
         if self._last_plot_call is None:
@@ -4584,7 +4535,6 @@ class TimeSeriesEditorQt(QMainWindow):
             traceback.print_exc()
         finally:
             self._refreshing_plot = False
-
 
     def toggle_dark_theme(self, state):
 
@@ -4649,7 +4599,6 @@ class TimeSeriesEditorQt(QMainWindow):
                 else:
                     self.file_ctrls_layout.insertWidget(idx, self.progress)
 
-
             if self.transform_group.parent() is self.controls_widget:
                 self.controls_layout.removeWidget(self.transform_group)
             if self.progress_transform_row.indexOf(self.transform_group) == -1:
@@ -4680,9 +4629,6 @@ class TimeSeriesEditorQt(QMainWindow):
                 idx_tools = self.controls_layout.count()
             self.controls_layout.insertWidget(idx_tools, self.plot_group)
 
-
-
-
             self.extra_layout.addItem(self.extra_stretch)
             if self.plot_engine_combo.currentText().lower() == "default" and self._mpl_canvas is not None:
                 self._mpl_canvas.show()
@@ -4701,7 +4647,6 @@ class TimeSeriesEditorQt(QMainWindow):
             if self.extra_widget.parent() is not None:
                 self.top_row_layout.removeWidget(self.extra_widget)
                 self.extra_widget.setParent(None)
-
 
             if self.extra_layout.indexOf(self.progress_transform_row) != -1:
                 self.extra_layout.removeItem(self.progress_transform_row)
@@ -4726,9 +4671,9 @@ class TimeSeriesEditorQt(QMainWindow):
                 self.controls_layout.removeWidget(self.plot_group)
             self.controls_layout.addWidget(self.plot_group)
 
-
             if self.extra_layout.indexOf(self.extra_stretch) != -1:
                 self.extra_layout.removeItem(self.extra_stretch)
             self.extra_layout.addItem(self.extra_stretch)
+
 
 __all__ = ['TimeSeriesEditorQt']
