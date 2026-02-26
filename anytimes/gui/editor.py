@@ -493,9 +493,11 @@ class TimeSeriesEditorQt(QMainWindow):
         self.plot_raw_cb.setChecked(True)
         self.plot_lowpass_cb = QCheckBox("Low-pass")
         self.plot_highpass_cb = QCheckBox("High-pass")
+        self.plot_datetime_x_cb = QCheckBox("Datetime x-axis (if possible)")
         plot_btn_row.addWidget(self.plot_raw_cb)
         plot_btn_row.addWidget(self.plot_lowpass_cb)
         plot_btn_row.addWidget(self.plot_highpass_cb)
+        plot_btn_row.addWidget(self.plot_datetime_x_cb)
         plot_btn_row.addWidget(QLabel("Engine:"))
         self.plot_engine_combo = QComboBox()
         self.plot_engine_combo.addItems(["plotly", "bokeh", "default"])
@@ -3082,6 +3084,11 @@ class TimeSeriesEditorQt(QMainWindow):
 
                 fig_per_file.setdefault(fname_disp, []).append(fig)
 
+        if mode in {"time", "rolling"}:
+            traces = self._apply_datetime_xaxis_to_traces(traces)
+            for entry in grid_traces.values():
+                entry["curves"] = self._apply_datetime_xaxis_to_traces(entry["curves"])
+
         # ======================================================================
         #  DISPLAY
         # ======================================================================
@@ -3151,7 +3158,7 @@ class TimeSeriesEditorQt(QMainWindow):
                         width=450,
                         height=300,
                         title=lbl,
-                        x_axis_label="Time",
+                        x_axis_label=self._x_axis_label(),
                         y_axis_label=self.yaxis_label.text() or "Value",
                         tools="pan,wheel_zoom,box_zoom,reset,save",
                         sizing_mode="stretch_both",
@@ -3684,7 +3691,7 @@ class TimeSeriesEditorQt(QMainWindow):
                 width=900,
                 height=450,
                 title=title,
-                x_axis_label="Time",
+                x_axis_label=self._x_axis_label(),
                 y_axis_label=y_label,
                 tools="pan,wheel_zoom,box_zoom,reset,save",
                 sizing_mode="stretch_both",
@@ -3821,7 +3828,7 @@ class TimeSeriesEditorQt(QMainWindow):
                 )
             fig.update_layout(
                 title=title,
-                xaxis_title="Time",
+                xaxis_title=self._x_axis_label(),
                 yaxis_title=y_label,
                 showlegend=True,
                 template="plotly_dark" if self.theme_switch.isChecked() else "plotly",
@@ -3888,7 +3895,7 @@ class TimeSeriesEditorQt(QMainWindow):
             ax.scatter(all_t[min_idx], all_y[min_idx], color="blue", label="Min")
 
         ax.set_title(title)
-        ax.set_xlabel("Time")
+        ax.set_xlabel(self._x_axis_label())
         ax.set_ylabel(y_label)
         ax.legend(loc="best")
         fig.tight_layout()
@@ -3913,6 +3920,58 @@ class TimeSeriesEditorQt(QMainWindow):
                 self._mpl_canvas = None
             self.plot_view.hide()
             plt.show()
+
+    def _x_axis_label(self) -> str:
+        if getattr(self, "plot_datetime_x_cb", None) and self.plot_datetime_x_cb.isChecked():
+            return "Datetime"
+        return "Time"
+
+    def _apply_datetime_xaxis_to_traces(self, traces):
+        if not (getattr(self, "plot_datetime_x_cb", None) and self.plot_datetime_x_cb.isChecked()):
+            return traces
+
+        converted = []
+        for trace in traces:
+            tr = dict(trace)
+            tr["t"] = self._convert_to_datetime_if_possible(trace.get("t", []))
+            converted.append(tr)
+        return converted
+
+    @staticmethod
+    def _convert_to_datetime_if_possible(time_values):
+        arr = np.asarray(time_values)
+        if arr.size == 0:
+            return time_values
+
+        if np.issubdtype(arr.dtype, np.datetime64):
+            return pd.to_datetime(arr)
+
+        if arr.dtype.kind in {"f", "i", "u"}:
+            finite = arr[np.isfinite(arr)] if arr.dtype.kind == "f" else arr
+            if finite.size == 0:
+                return time_values
+            magnitude = float(np.nanmedian(np.abs(finite.astype(float))))
+            unit = None
+            if 1e8 <= magnitude <= 1e11:
+                unit = "s"
+            elif 1e11 < magnitude <= 1e14:
+                unit = "ms"
+            elif 1e14 < magnitude <= 1e17:
+                unit = "us"
+            elif 1e17 < magnitude <= 1e20:
+                unit = "ns"
+            if unit is None:
+                return time_values
+
+            converted = pd.to_datetime(arr, unit=unit, errors="coerce")
+            if converted.notna().any():
+                return converted
+            return time_values
+
+        converted = pd.to_datetime(arr, errors="coerce")
+        if converted.notna().any():
+            return converted
+        return time_values
 
     def plot_mean(self):
         self.rebuild_var_lookup()
