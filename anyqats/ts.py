@@ -101,16 +101,45 @@ class TimeSeries(object):
                 return datetime(1970, 1, 1) + timedelta(microseconds=micros)
             return value
 
+        def _parse_datetime_string(value):
+            """Try parsing a datetime-like string using supported formats."""
+            if not isinstance(value, (str, np.str_)):
+                return value
+
+            value = value.strip()
+            if not value:
+                raise ValueError("Empty strings are not supported in TimeSeries time arrays.")
+
+            datetime_formats = (
+                "%d/%m/%Y %H:%M:%S",
+                "%d/%m/%Y  %H:%M:%S",
+                "%Y-%m-%d %H:%M:%S",
+                "%Y-%m-%dT%H:%M:%S",
+                "%d.%m.%Y %H:%M:%S",
+            )
+            for fmt in datetime_formats:
+                try:
+                    return datetime.strptime(value, fmt)
+                except ValueError:
+                    continue
+
+            try:
+                return datetime.fromisoformat(value)
+            except ValueError:
+                return value
+
         if isinstance(dtg_ref, np.datetime64):
             dtg_ref = _to_datetime(dtg_ref)
 
         if dtg_ref is not None and not isinstance(dtg_ref, datetime):
             raise TypeError("Expected 'dtg_ref' datetime object or None")
 
-        t0 = _to_datetime(t_flat[0])
+        t0 = _parse_datetime_string(_to_datetime(t_flat[0]))
         if np.issubdtype(t_flat.dtype, np.datetime64):
             t_values = np.array([_to_datetime(val) for val in t_flat], dtype=object)
             t0 = t_values[0]
+        elif isinstance(t0, datetime):
+            t_values = np.array([_parse_datetime_string(_to_datetime(val)) for val in t_flat], dtype=object)
         else:
             t_values = t_flat
 
