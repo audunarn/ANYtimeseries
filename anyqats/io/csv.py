@@ -24,10 +24,17 @@ def read_names(path):
 
     """
     # pandas will infer the format e.g. delimiter.
-    df = pd.read_csv(path, nrows=1, sep=None, engine='python', encoding='utf-8')
+    df = pd.read_csv(path, sep=None, engine='python', encoding='utf-8')
     names = list(df)
     _ = names.pop(0)    # remove time which is assumed to be in the first column
-    return names
+
+    numeric_names = []
+    for name in names:
+        # Skip non-numeric columns (e.g. source file strings).
+        if pd.to_numeric(df[name], errors='coerce').notna().any():
+            numeric_names.append(name)
+
+    return numeric_names
 
 
 def read_data(path, ind=None):
@@ -39,8 +46,8 @@ def read_data(path, ind=None):
     path : str
         CSV file path (relative or absolute)
     ind : list|tuple, optional
-        Read only a subset of the data series specified by index , with 0 being the first. For example,
-        ind = (1,4,5) will extract the 2nd, 5th and 6th columns. The default, None, results in all columns being read.
+        Read only a subset of the data series specified by name. The default, None, results in all data columns
+        being read.
 
     Returns
     -------
@@ -48,5 +55,17 @@ def read_data(path, ind=None):
         Time and data
 
     """
-    df = pd.read_csv(path, usecols=ind, sep=None, engine='python')  # pandas will infer the format e.g. delimiter.
-    return df.T.to_numpy()
+    df = pd.read_csv(path, sep=None, engine='python')  # pandas will infer the format e.g. delimiter.
+
+    if ind is None:
+        cols = list(df.columns[1:])
+    else:
+        cols = list(ind)
+
+    # Keep first column (time) and selected numeric data columns.
+    filtered_cols = [df.columns[0]]
+    for col in cols:
+        if col in df and pd.to_numeric(df[col], errors='coerce').notna().any():
+            filtered_cols.append(col)
+
+    return df[filtered_cols].T.to_numpy()
