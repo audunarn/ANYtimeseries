@@ -58,3 +58,18 @@ def test_timeseries_rejects_empty_datetime_input():
         assert "contain at least one value" in str(err)
     else:  # pragma: no cover - defensive
         raise AssertionError("Expected ValueError for empty time series")
+
+
+def test_timeseries_accepts_common_datetime_string_format():
+    t = np.array([
+        "16/03/2023  18:00:00",
+        "16/03/2023  18:00:01",
+        "16/03/2023  18:00:02",
+    ], dtype=object)
+    x = np.array([10.0, 11.0, 12.0])
+
+    ts = TimeSeries("string_datetime", t, x)
+
+    assert ts.dtg_ref == datetime(2023, 3, 16, 18, 0, 0)
+    np.testing.assert_allclose(ts.t, np.array([0.0, 1.0, 2.0]))
+    assert ts.dtg_time[1] == datetime(2023, 3, 16, 18, 0, 1)
