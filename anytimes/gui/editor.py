@@ -1317,7 +1317,7 @@ class TimeSeriesEditorQt(QMainWindow):
                         data = ts.x * val_use
                     elif op_use == "/":
                         data = ts.x / val_use
-                    new_ts = TimeSeries(name, ts.t.copy(), data)
+                    new_ts = TimeSeries(name, ts.t.copy(), data, dtg_ref=ts.dtg_ref)
                     tsdb.add(new_ts)
                     self.user_variables.add(name)
                 else:
@@ -1421,7 +1421,7 @@ class TimeSeriesEditorQt(QMainWindow):
                     new_name = f"{base}_{k}"
                     k += 1
 
-                tsdb.add(TimeSeries(new_name, t_win, y_new))
+                tsdb.add(TimeSeries(new_name, t_win, y_new, dtg_ref=ts.dtg_ref))
                 made.append(new_name)
 
                 # mark global user-var
@@ -1591,7 +1591,7 @@ class TimeSeriesEditorQt(QMainWindow):
                     new_name = f"{base}_{k}"
                     k += 1
 
-                tsdb.add(TimeSeries(new_name, t_new, y_new))
+                tsdb.add(TimeSeries(new_name, t_new, y_new, dtg_ref=ts.dtg_ref))
                 made.append(new_name)
                 self.user_variables = getattr(self, "user_variables", set())
                 self.user_variables.add(new_name)
@@ -1691,9 +1691,15 @@ class TimeSeriesEditorQt(QMainWindow):
             label = label.split(":", 1)[-1]
             return re_suffix.sub("", label)
 
+        merged_dtg_ref = None
+
         def _append_segment(ts, offset, last_dt, merged_segments, merged_time_parts):
+            nonlocal merged_dtg_ref
             if ts is None:
                 return offset, last_dt
+
+            if merged_dtg_ref is None and getattr(ts, "dtg_ref", None) is not None:
+                merged_dtg_ref = ts.dtg_ref
 
             data = self.apply_filters(ts)
             mask = self.get_time_window(ts)
@@ -1791,7 +1797,7 @@ class TimeSeriesEditorQt(QMainWindow):
                     name = f"{name_base}_{counter}"
                     counter += 1
 
-                merged_ts = TimeSeries(name, merged_t, merged_x)
+                merged_ts = TimeSeries(name, merged_t, merged_x, dtg_ref=merged_dtg_ref)
                 if self.tsdbs:
                     # The merged result should behave like a single user variable.
                     # Adding duplicates to every file leads to repeated plots and
@@ -1840,7 +1846,7 @@ class TimeSeriesEditorQt(QMainWindow):
                     name = f"{name_base}_{counter}"
                     counter += 1
 
-                tsdb.add(TimeSeries(name, merged_t, merged_x))
+                tsdb.add(TimeSeries(name, merged_t, merged_x, dtg_ref=merged_dtg_ref))
                 self.user_variables.add(name)
                 created.append(name)
 
@@ -1906,13 +1912,14 @@ class TimeSeriesEditorQt(QMainWindow):
         # ───────────────────────── COMMON-TAB BRANCH ──────────────────────────
         if common_pick:
             for f_idx, (tsdb, fp) in enumerate(zip(self.tsdbs, self.file_paths), 1):
-                values, t_ref = [], None
+                values, t_ref, t_ref_dtg = [], None, None
                 for k in sel_keys:
                     ts = tsdb.getm().get(k)
                     if ts is None:
                         continue
                     if t_ref is None:
                         t_ref = ts.t
+                        t_ref_dtg = ts.dtg_ref
                     elif not np.allclose(ts.t, t_ref):
                         QMessageBox.critical(
                             self,
@@ -1937,7 +1944,7 @@ class TimeSeriesEditorQt(QMainWindow):
                     name = f"{base}{suffix}_{n}"
                     n += 1
 
-                tsdb.add(TimeSeries(name, t_ref, y))
+                tsdb.add(TimeSeries(name, t_ref, y, dtg_ref=t_ref_dtg))
                 self.user_variables.add(name)
                 created.append(name)
 
@@ -1960,13 +1967,14 @@ class TimeSeriesEditorQt(QMainWindow):
                 if fname not in per_file:
                     continue
 
-                values, t_ref = [], None
+                values, t_ref, t_ref_dtg = [], None, None
                 for v in per_file[fname]:
                     ts = tsdb.getm().get(v)
                     if ts is None:
                         continue
                     if t_ref is None:
                         t_ref = ts.t
+                        t_ref_dtg = ts.dtg_ref
                     elif not np.allclose(ts.t, t_ref):
                         QMessageBox.critical(
                             self,
@@ -1990,7 +1998,7 @@ class TimeSeriesEditorQt(QMainWindow):
                     name = f"{base}{suffix}_{n}"
                     n += 1
 
-                tsdb.add(TimeSeries(name, t_ref, y))
+                tsdb.add(TimeSeries(name, t_ref, y, dtg_ref=t_ref_dtg))
                 self.user_variables.add(name)
                 created.append(name)
 
@@ -2042,7 +2050,7 @@ class TimeSeriesEditorQt(QMainWindow):
         self.user_variables = getattr(self, "user_variables", set())
 
         # ───────────────────────── helper ─────────────────────────────
-        def _store(tsdb, name_base, t_ref, vals):
+        def _store(tsdb, name_base, t_ref, vals, t_ref_dtg):
             """Add a new TimeSeries, ensuring uniqueness inside *tsdb*."""
             y = np.mean(np.vstack(vals), axis=0)
             new = name_base
@@ -2050,7 +2058,7 @@ class TimeSeriesEditorQt(QMainWindow):
             while new in tsdb.getm():
                 new = f"{name_base}_{n}"
                 n += 1
-            tsdb.add(TimeSeries(new, t_ref, y))
+            tsdb.add(TimeSeries(new, t_ref, y, dtg_ref=t_ref_dtg))
             self.user_variables.add(new)
             created.append(new)
 
@@ -2059,13 +2067,14 @@ class TimeSeriesEditorQt(QMainWindow):
             clean_keys = [_clean(k) for k in sel_keys]
 
             for f_idx, (tsdb, fp) in enumerate(zip(self.tsdbs, self.file_paths), 1):
-                vals, t_ref = [], None
+                vals, t_ref, t_ref_dtg = [], None, None
                 for k in sel_keys:
                     ts = tsdb.getm().get(k)
                     if ts is None:
                         continue
                     if t_ref is None:
                         t_ref = ts.t
+                        t_ref_dtg = ts.dtg_ref
                     elif not np.allclose(ts.t, t_ref):
                         QMessageBox.critical(
                             self,
@@ -2080,7 +2089,7 @@ class TimeSeriesEditorQt(QMainWindow):
 
                 suffix = f"_f{f_idx}" if multi_file else ""
                 namebase = f"mean({'+'.join(clean_keys)}){suffix}"
-                _store(tsdb, namebase, t_ref, vals)
+                _store(tsdb, namebase, t_ref, vals, t_ref_dtg)
 
         # ────────────────── PER-FILE-KEY BRANCH ───────────────────────
         else:
@@ -2102,13 +2111,14 @@ class TimeSeriesEditorQt(QMainWindow):
                 if not vars_here:
                     continue
 
-                vals, t_ref = [], None
+                vals, t_ref, t_ref_dtg = [], None, None
                 for v in vars_here:
                     ts = tsdb.getm().get(v)
                     if ts is None:
                         continue
                     if t_ref is None:
                         t_ref = ts.t
+                        t_ref_dtg = ts.dtg_ref
                     elif not np.allclose(ts.t, t_ref):
                         QMessageBox.critical(
                             self,
@@ -2123,7 +2133,7 @@ class TimeSeriesEditorQt(QMainWindow):
 
                 clean = [_clean(v) for v in vars_here]
                 namebase = f"mean({'+'.join(clean)})"  # ← no _fN here
-                _store(tsdb, namebase, t_ref, vals)
+                _store(tsdb, namebase, t_ref, vals, t_ref_dtg)
 
         # ───────────────────── GUI refresh ────────────────────────────
         if created:
