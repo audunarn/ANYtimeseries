@@ -197,6 +197,39 @@ def test_merge_preserves_irregular_time_steps(qt_app, message_spy, monkeypatch):
     assert not message_spy["warn"]
 
 
+
+
+def test_merge_preserves_datetime_reference(qt_app, message_spy, monkeypatch):
+    files = ["file1.ts"]
+    base = np.datetime64("2024-01-01T00:00:00")
+
+    t1 = base + np.arange(3) * np.timedelta64(1, "h")
+    x1 = np.array([1.0, 2.0, 3.0])
+    t2 = base + np.arange(2) * np.timedelta64(30, "m")
+    x2 = np.array([10.0, 11.0])
+
+    tsdb = DummyDB({
+        "VarA": TimeSeries("VarA", t1, x1),
+        "VarB": TimeSeries("VarB", t2, x2),
+    })
+
+    editor = _build_editor(monkeypatch, [tsdb], files)
+    editor.var_checkboxes["VarA"].setChecked(True)
+    editor.var_checkboxes["VarB"].setChecked(True)
+
+    editor.merge_selected_series()
+    qt_app.processEvents()
+
+    created = [name for name in tsdb.getm() if name.startswith("merge(")]
+    assert len(created) == 1
+    merged = tsdb.getm()[created[0]]
+
+    assert merged.dtg_ref == tsdb.getm()["VarA"].dtg_ref
+    assert merged.dtg_time[0] == tsdb.getm()["VarA"].dtg_time[0]
+    assert merged.dtg_time[-1] > tsdb.getm()["VarA"].dtg_time[-1]
+    assert not message_spy["crit"]
+    assert not message_spy["warn"]
+
 def test_export_selected_to_csv_uses_shared_time_column(qt_app, message_spy, monkeypatch, tmp_path):
     t = np.array([0.0, 1.0, 2.0])
     tsdb = DummyDB(
