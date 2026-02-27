@@ -902,11 +902,57 @@ class TimeSeriesEditorQt(QMainWindow):
         base_output = m_out.group(1)
 
         t_window = None
+        t_window_coord = None
+        t_window_dtg_ref = None
+
+        def _time_coordinates(ts):
+            """Return alignment coordinates for a series.
+
+            Uses absolute datetimes when available, otherwise falls back to
+            the native numeric time axis.
+            """
+            if ts.dtg_time is not None:
+                return np.array(ts.dtg_time, dtype="datetime64[us]")
+            return np.asarray(ts.t)
+
+        def _coord_to_numeric(coord):
+            coord = np.asarray(coord)
+            if np.issubdtype(coord.dtype, np.datetime64):
+                return coord.astype("datetime64[us]").astype(np.int64).astype(float)
+            return coord.astype(float)
+
+        def _align_to_window(ts, x_values):
+            coord = _time_coordinates(ts)
+            idx = (coord >= t_window_coord[0]) & (coord <= t_window_coord[-1])
+            if not np.any(idx):
+                return np.full_like(t_window, np.nan, dtype=float)
+
+            coord_part = coord[idx]
+            x_part = np.asarray(x_values[idx], dtype=float)
+            if np.array_equal(coord_part, t_window_coord):
+                return x_part
+
+            overlap = (t_window_coord >= coord_part[0]) & (t_window_coord <= coord_part[-1])
+            if not np.any(overlap):
+                return np.full_like(t_window, np.nan, dtype=float)
+
+            full = np.full_like(t_window, np.nan, dtype=float)
+            target_numeric = _coord_to_numeric(t_window_coord[overlap])
+            source_numeric = _coord_to_numeric(coord_part)
+
+            if source_numeric.size == 1:
+                full[overlap] = x_part[0]
+            else:
+                full[overlap] = np.interp(target_numeric, source_numeric, x_part)
+            return full
+
         for tsdb in self.tsdbs:
             for ts in tsdb.getm().values():
                 mask = self.get_time_window(ts)
                 if mask is not None and np.any(mask):
                     t_window = ts.t[mask]
+                    t_window_coord = _time_coordinates(ts)[mask]
+                    t_window_dtg_ref = ts.dtg_ref
                     break
             if t_window is not None:
                 break
@@ -946,18 +992,7 @@ class TimeSeriesEditorQt(QMainWindow):
                 if ts is None:
                     missing = lookup or name
                     return None, f"'{missing}' not in {os.path.basename(self.file_paths[i])}"
-                idx = (ts.t >= t_window[0]) & (ts.t <= t_window[-1])
-                t_part, x_part = ts.t[idx], ts.x[idx]
-                if len(t_part) == 0:
-                    vecs.append(np.full_like(t_window, np.nan))
-                    continue
-                if not np.array_equal(t_part, t_window):
-                    t_common = t_window[(t_window >= t_part[0]) & (t_window <= t_part[-1])]
-                    x_part = qats.TimeSeries(name, t_part, x_part).resample(t=t_common)
-                    full = np.full_like(t_window, np.nan)
-                    full[np.isin(t_window, t_common)] = x_part
-                    x_part = full
-                vecs.append(x_part.astype(float))
+                vecs.append(_align_to_window(ts, ts.x))
             return vecs, None
 
         aligned_common, aligned_u_global = {}, {}
@@ -992,19 +1027,7 @@ class TimeSeriesEditorQt(QMainWindow):
             if ts is None:
                 QMessageBox.critical(self, "User variable error", f"Variable '{tok}' not found in {os.path.basename(self.file_paths[src_idx])}")
                 return
-            idx = (ts.t >= t_window[0]) & (ts.t <= t_window[-1])
-            t_part, x_part = ts.t[idx], ts.x[idx]
-            if len(t_part) == 0:
-                vec = np.full_like(t_window, np.nan)
-            elif np.array_equal(t_part, t_window):
-                vec = x_part.astype(float)
-            else:
-                t_common = t_window[(t_window >= t_part[0]) & (t_window <= t_part[-1])]
-                vec = qats.TimeSeries(tok, t_part, x_part).resample(t=t_common)
-                full = np.full_like(t_window, np.nan)
-                full[np.isin(t_window, t_common)] = vec
-                vec = full
-            aligned_u_perfile[tok] = vec.astype(float)
+            aligned_u_perfile[tok] = _align_to_window(ts, ts.x)
 
         create_common_output = len(explicit_file_tags) >= 2
 
@@ -1015,17 +1038,9 @@ class TimeSeriesEditorQt(QMainWindow):
             for i, db in enumerate(self.tsdbs):
                 tag = f"f{i + 1}"
                 for key, ts in db.getm().items():
-                    idx = (ts.t >= t_window[0]) & (ts.t <= t_window[-1])
-                    if not np.any(idx):
+                    x_part = _align_to_window(ts, self.apply_filters(ts))
+                    if np.all(np.isnan(x_part)):
                         continue
-                    t_part = ts.t[idx]
-                    x_part = self.apply_filters(ts)[idx]
-                    if not np.array_equal(t_part, t_window):
-                        t_common = t_window[(t_window >= t_part[0]) & (t_window <= t_part[-1])]
-                        x_part = qats.TimeSeries(key, t_part, x_part).resample(t=t_common)
-                        full = np.full_like(t_window, np.nan)
-                        full[np.isin(t_window, t_common)] = x_part
-                        x_part = full
                     ctx[f"{tag}_{_safe(key)}"] = x_part.astype(float)
 
             for k, vecs in aligned_common.items():
@@ -1070,7 +1085,7 @@ class TimeSeriesEditorQt(QMainWindow):
                 if filt_tag:
                     out_name += f"_{filt_tag}"
                 out_name += suffix
-                ts_new = qats.TimeSeries(out_name, t_window, y)
+                ts_new = qats.TimeSeries(out_name, t_window, y, dtg_ref=t_window_dtg_ref)
 
                 tsdb.add(ts_new)
 
