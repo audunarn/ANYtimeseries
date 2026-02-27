@@ -73,3 +73,18 @@ def test_timeseries_accepts_common_datetime_string_format():
     assert ts.dtg_ref == datetime(2023, 3, 16, 18, 0, 0)
     np.testing.assert_allclose(ts.t, np.array([0.0, 1.0, 2.0]))
     assert ts.dtg_time[1] == datetime(2023, 3, 16, 18, 0, 1)
+
+
+def test_timeseries_accepts_dayfirst_datetime_strings_without_seconds():
+    t = np.array([
+        "16/03/2023 18:00",
+        "16/03/2023 19:00",
+        "16/03/2023 20:00",
+    ], dtype=object)
+    x = np.array([1.0, 2.0, 3.0])
+
+    ts = TimeSeries("string_datetime_no_seconds", t, x)
+
+    assert ts.dtg_ref == datetime(2023, 3, 16, 18, 0, 0)
+    np.testing.assert_allclose(ts.t, np.array([0.0, 3600.0, 7200.0]))
+    assert ts.dtg_time[-1] == datetime(2023, 3, 16, 20, 0, 0)
