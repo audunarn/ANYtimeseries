@@ -2961,14 +2961,16 @@ class TimeSeriesEditorQt(QMainWindow):
 
                 # 2) apply current time window
                 mask = self.get_time_window(ts)
+                dtg_ref = getattr(ts, "dtg_ref", None)
                 if isinstance(mask, slice):
-                    ts_win = TimeSeries(ts.name, ts.t[mask], ts.x[mask])
+                    ts_win = TimeSeries(ts.name, ts.t[mask], ts.x[mask], dtg_ref=dtg_ref)
                 else:
                     if not mask.any():
                         continue
-                    ts_win = TimeSeries(ts.name, ts.t[mask], ts.x[mask])
+                    ts_win = TimeSeries(ts.name, ts.t[mask], ts.x[mask], dtg_ref=dtg_ref)
 
                 # 3) optional pre-filtering for time-domain plot
+                t_plot = self._time_values_for_plot(ts_win)
                 if mode == "time":
                     dt = np.median(np.diff(ts.t))
                     raw_label = f"{fname_disp}: {var}"
@@ -2979,47 +2981,47 @@ class TimeSeriesEditorQt(QMainWindow):
                     curves = entry["curves"]
                     if want_raw:
                         tr = dict(
-                            t=ts_win.t,
+                            t=t_plot,
                             y=ts_win.x,
                             label=disp_label + " [raw]",
                             alpha=1.0,
                         )
                         traces.append(tr)
-                        curves.append(dict(t=ts_win.t, y=ts_win.x, label="Raw", alpha=1.0))
+                        curves.append(dict(t=t_plot, y=ts_win.x, label="Raw", alpha=1.0))
                     if want_lp:
                         fc = float(self.lowpass_cutoff.text() or 0)
                         if fc > 0:
                             y_lp = qats.signal.lowpass(ts_win.x, dt, fc)
                             tr = dict(
-                                t=ts_win.t,
+                                t=t_plot,
                                 y=y_lp,
                                 label=disp_label + f" [LP {fc} Hz]",
                                 alpha=1.0,
                             )
                             traces.append(tr)
                             curves.append(
-                                dict(t=ts_win.t, y=y_lp, label=f"LP {fc} Hz", alpha=1.0)
+                                dict(t=t_plot, y=y_lp, label=f"LP {fc} Hz", alpha=1.0)
                             )
                     if want_hp:
                         fc = float(self.highpass_cutoff.text() or 0)
                         if fc > 0:
                             y_hp = qats.signal.highpass(ts_win.x, dt, fc)
                             tr = dict(
-                                t=ts_win.t,
+                                t=t_plot,
                                 y=y_hp,
                                 label=disp_label + f" [HP {fc} Hz]",
                                 alpha=1.0,
                             )
                             traces.append(tr)
                             curves.append(
-                                dict(t=ts_win.t, y=y_hp, label=f"HP {fc} Hz", alpha=1.0)
+                                dict(t=t_plot, y=y_hp, label=f"HP {fc} Hz", alpha=1.0)
                             )
                     continue  # nothing else to do for time-domain loop
                 elif mode == "rolling":
                     y_roll = pd.Series(ts_win.x).rolling(window=roll_window, min_periods=1).mean().to_numpy()
                     traces.append(
                         dict(
-                            t=ts_win.t,
+                            t=t_plot,
                             y=y_roll,
                             label=self._trim_label(f"{fname_disp}: {var}", left, right),
                             alpha=1.0,
@@ -3920,6 +3922,21 @@ class TimeSeriesEditorQt(QMainWindow):
                 self._mpl_canvas = None
             self.plot_view.hide()
             plt.show()
+
+    def _time_values_for_plot(self, ts: TimeSeries):
+        """Return datetime values for plotting when enabled and available."""
+        if not (getattr(self, "plot_datetime_x_cb", None) and self.plot_datetime_x_cb.isChecked()):
+            return ts.t
+
+        dtg_vals = getattr(ts, "dtg_time", None)
+        if dtg_vals is not None:
+            arr = np.asarray(dtg_vals)
+            if arr.size:
+                converted = pd.to_datetime(arr, errors="coerce")
+                if converted.notna().any():
+                    return converted
+
+        return self._convert_to_datetime_if_possible(ts.t)
 
     def _x_axis_label(self) -> str:
         if getattr(self, "plot_datetime_x_cb", None) and self.plot_datetime_x_cb.isChecked():
