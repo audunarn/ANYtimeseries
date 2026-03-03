@@ -284,16 +284,15 @@ def test_load_orcaflex_time_histories_individually_handles_object_extra(monkeypa
                 return [3.0, 4.0]
             return [1.0, 2.0]
 
-    specs = [
-        types.SimpleNamespace(Object=_Obj(), VarName="A", ObjectExtra=None),
-        types.SimpleNamespace(Object=_Obj(), VarName="B", ObjectExtra="extra"),
-    ]
+    model = {"ObjA": _Obj(), "ObjB": _Obj()}
+    fallback_specs = [("ObjA", "A", None), ("ObjB", "B", "extra")]
     names = ["obj:A", "obj:B"]
     spectral_lookup = {"obj:B": {"freq_hz": np.array([0.1]), "rao_amp": np.array([1.1])}}
 
     error = loader._load_orcaflex_time_histories_individually(
+        model=model,
         tsdb=object(),
-        resolved_specs=specs,
+        fallback_specs=fallback_specs,
         names=names,
         time_spec="window",
         time=np.array([0.0, 1.0]),
@@ -318,11 +317,13 @@ def test_load_orcaflex_time_histories_individually_returns_last_error(monkeypatc
         def TimeHistory(self, *_args, **_kwargs):
             raise RuntimeError("not available")
 
-    specs = [types.SimpleNamespace(Object=_Obj(), VarName="A", ObjectExtra=None)]
+    model = {"ObjA": _Obj()}
+    fallback_specs = [("ObjA", "A", None)]
 
     error = loader._load_orcaflex_time_histories_individually(
+        model=model,
         tsdb=object(),
-        resolved_specs=specs,
+        fallback_specs=fallback_specs,
         names=["obj:A"],
         time_spec="window",
         time=np.array([0.0, 1.0]),
