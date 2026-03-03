@@ -266,6 +266,72 @@ def test_extract_model_time_falls_back_to_general_timehistory(monkeypatch):
 
     assert time == [10.0, 20.0]
 
+
+def test_load_orcaflex_time_histories_individually_handles_object_extra(monkeypatch):
+    file_loader = _load_file_loader(monkeypatch)
+    loader = file_loader.FileLoader()
+
+    captured = []
+
+    def _fake_add_unique(tsdb, name, time, data, metadata=None):
+        captured.append((name, np.asarray(time), np.asarray(data), metadata))
+
+    monkeypatch.setattr(loader, "_add_unique_timeseries", _fake_add_unique)
+
+    class _Obj:
+        def TimeHistory(self, var, spec, *args):
+            if args:
+                return [3.0, 4.0]
+            return [1.0, 2.0]
+
+    specs = [
+        types.SimpleNamespace(Object=_Obj(), VarName="A", ObjectExtra=None),
+        types.SimpleNamespace(Object=_Obj(), VarName="B", ObjectExtra="extra"),
+    ]
+    names = ["obj:A", "obj:B"]
+    spectral_lookup = {"obj:B": {"freq_hz": np.array([0.1]), "rao_amp": np.array([1.1])}}
+
+    error = loader._load_orcaflex_time_histories_individually(
+        tsdb=object(),
+        resolved_specs=specs,
+        names=names,
+        time_spec="window",
+        time=np.array([0.0, 1.0]),
+        spectral_lookup=spectral_lookup,
+    )
+
+    assert error is None
+    assert [item[0] for item in captured] == ["obj:A", "obj:B"]
+    np.testing.assert_array_equal(captured[0][2], np.array([1.0, 2.0]))
+    np.testing.assert_array_equal(captured[1][2], np.array([3.0, 4.0]))
+    assert captured[0][3] is None
+    assert captured[1][3] == spectral_lookup["obj:B"]
+
+
+def test_load_orcaflex_time_histories_individually_returns_last_error(monkeypatch):
+    file_loader = _load_file_loader(monkeypatch)
+    loader = file_loader.FileLoader()
+
+    monkeypatch.setattr(loader, "_add_unique_timeseries", lambda *args, **kwargs: None)
+
+    class _Obj:
+        def TimeHistory(self, *_args, **_kwargs):
+            raise RuntimeError("not available")
+
+    specs = [types.SimpleNamespace(Object=_Obj(), VarName="A", ObjectExtra=None)]
+
+    error = loader._load_orcaflex_time_histories_individually(
+        tsdb=object(),
+        resolved_specs=specs,
+        names=["obj:A"],
+        time_spec="window",
+        time=np.array([0.0, 1.0]),
+        spectral_lookup={},
+    )
+
+    assert isinstance(error, RuntimeError)
+    assert str(error) == "not available"
+
 def test_load_era5_netcdf_single_point(monkeypatch, tmp_path):
     file_loader = _load_file_loader(monkeypatch)
 
