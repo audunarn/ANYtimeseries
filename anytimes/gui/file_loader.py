@@ -59,6 +59,7 @@ class FileLoader:
         self._diffraction_cache = {}
         self.cache_orcaflex_buffers = True
         self.orcaflex_time_windows = {}
+        self.orcaflex_global_time_window = None
 
     def preload_sim_models(self, filepaths):
         if OrcFxAPI is None:
@@ -136,6 +137,8 @@ class FileLoader:
 
     def open_orcaflex_picker(self, file_paths):
         """Qt version of the OrcaFlex variable picker."""
+        self.orcaflex_time_windows = {}
+        self.orcaflex_global_time_window = None
         errors = []
         for fp in file_paths:
             try:
@@ -183,6 +186,27 @@ class FileLoader:
         regex_cb = QCheckBox("Use as REGEX")
         wc_layout.addWidget(regex_cb)
         right_side.addLayout(wc_layout)
+
+        batch_has_frequency = any(
+            self._is_frequency_domain_model(self.loaded_sim_models[fp])
+            for fp in file_paths
+        )
+        default_start, default_stop = self._default_orcaflex_time_window(
+            [self.loaded_sim_models[fp] for fp in file_paths],
+            force_frequency_defaults=batch_has_frequency,
+        )
+
+        time_layout = QHBoxLayout()
+        time_layout.addWidget(QLabel("Time from:"))
+        time_from_entry = QLineEdit(f"{default_start:.3f}")
+        time_from_entry.setFixedWidth(100)
+        time_layout.addWidget(time_from_entry)
+        time_layout.addWidget(QLabel("to:"))
+        time_to_entry = QLineEdit(f"{default_stop:.3f}")
+        time_to_entry.setFixedWidth(100)
+        time_layout.addWidget(time_to_entry)
+        time_layout.addStretch()
+        right_side.addLayout(time_layout)
 
         # Default extras for each object type
         default_group = QGroupBox("Default Extra Input")
@@ -1052,6 +1076,27 @@ class FileLoader:
             else:
                 self._strip_rule = None
 
+            try:
+                global_start = float(time_from_entry.text().strip())
+                global_stop = float(time_to_entry.text().strip())
+            except ValueError:
+                QMessageBox.warning(
+                    dialog,
+                    "Invalid Time Range",
+                    "Time from/to must be numeric values.",
+                )
+                return
+
+            if global_stop <= global_start:
+                QMessageBox.warning(
+                    dialog,
+                    "Invalid Time Range",
+                    "Time 'to' must be greater than time 'from'.",
+                )
+                return
+
+            self.orcaflex_global_time_window = (global_start, global_stop)
+
             for fp, specs in apply_specs.items():
                 out_specs[fp] = list(specs)
 
@@ -1851,7 +1896,7 @@ class FileLoader:
         return method.strip().lower() == "frequency domain"
 
     def _resolve_time_spec_for_model(self, model):
-        """Pick time window for OrcaFlex extraction, asking user for frequency-domain models."""
+        """Pick time window for OrcaFlex extraction using a shared batch range."""
 
         import OrcFxAPI
 
@@ -1860,51 +1905,51 @@ class FileLoader:
             start, stop = self.orcaflex_time_windows[model_id]
             return OrcFxAPI.SpecifiedPeriod(start, stop)
 
+        model_start, model_stop = self._get_model_time_bounds(model)
+
+        if self.orcaflex_global_time_window is not None:
+            start, stop = self.orcaflex_global_time_window
+            start = float(start)
+            stop = float(stop)
+            if not self._is_frequency_domain_model(model):
+                start = max(start, model_start)
+                stop = min(stop, model_stop)
+                if stop <= start:
+                    start, stop = model_start, model_stop
+            self.orcaflex_time_windows[model_id] = (start, stop)
+            return OrcFxAPI.SpecifiedPeriod(start, stop)
+
         if not self._is_frequency_domain_model(model):
-            start_default = float(getattr(model, "simulationStartTime", 0.0))
-            stop_default = float(getattr(model, "simulationStopTime", start_default))
-            if stop_default <= start_default:
-                stop_default = float(getattr(model.simulationTimeStatus, "CurrentTime", start_default))
-            if stop_default <= start_default:
-                stop_default = start_default + 1.0
-            spec = OrcFxAPI.SpecifiedPeriod(start_default, stop_default)
-            self.orcaflex_time_windows[model_id] = (start_default, stop_default)
+            spec = OrcFxAPI.SpecifiedPeriod(model_start, model_stop)
+            self.orcaflex_time_windows[model_id] = (model_start, model_stop)
             return spec
 
-        start_default = float(getattr(model, "simulationStartTime", 0.0))
-        stop_default = float(getattr(model, "simulationStopTime", 10800.0))
-        if stop_default <= start_default:
-            stop_default = start_default + 10800.0
+        self.orcaflex_time_windows[model_id] = (0.0, 10800.0)
+        return OrcFxAPI.SpecifiedPeriod(0.0, 10800.0)
 
-        start, ok = QInputDialog.getDouble(
-            self.parent_gui,
-            "Frequency-domain .sim sample time",
-            "Start time [s] for synthesised time history:",
-            value=start_default,
-            minValue=-1.0e12,
-            maxValue=1.0e12,
-            decimals=3,
-        )
-        if not ok:
-            start = start_default
-
-        stop, ok = QInputDialog.getDouble(
-            self.parent_gui,
-            "Frequency-domain .sim sample time",
-            "Stop time [s] for synthesised time history:",
-            value=stop_default,
-            minValue=-1.0e12,
-            maxValue=1.0e12,
-            decimals=3,
-        )
-        if not ok:
-            stop = stop_default
-
+    def _get_model_time_bounds(self, model):
+        start = float(getattr(model, "simulationStartTime", 0.0))
+        stop = float(getattr(model, "simulationStopTime", start))
+        if stop <= start:
+            stop = float(getattr(model.simulationTimeStatus, "CurrentTime", start))
         if stop <= start:
             stop = start + 1.0
+        return start, stop
 
-        self.orcaflex_time_windows[model_id] = (start, stop)
-        return OrcFxAPI.SpecifiedPeriod(start, stop)
+    def _default_orcaflex_time_window(self, models, force_frequency_defaults=False):
+        if force_frequency_defaults:
+            return 0.0, 10800.0
+
+        starts = []
+        stops = []
+        for model in models:
+            start, stop = self._get_model_time_bounds(model)
+            starts.append(start)
+            stops.append(stop)
+
+        if not starts:
+            return 0.0, 1.0
+        return min(starts), max(stops)
 
     def _get_orcaflex_buffer(self, filepath):
         if filepath in self.orcaflex_sim_buffers:
