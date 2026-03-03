@@ -224,6 +224,48 @@ def test_is_frequency_domain_model_rejects_time_domain_method(monkeypatch):
     assert loader._is_frequency_domain_model(_Model()) is False
 
 
+
+
+def test_extract_model_time_uses_sample_times_for_frequency_domain(monkeypatch):
+    file_loader = _load_file_loader(monkeypatch)
+    loader = file_loader.FileLoader()
+
+    called = {}
+
+    class _Model:
+        def SampleTimes(self, spec):
+            called["spec"] = spec
+            return [0.0, 2.0, 4.0]
+
+    monkeypatch.setattr(loader, "_is_frequency_domain_model", lambda _: True)
+
+    time = loader._extract_model_time(_Model(), "spec-token")
+
+    np.testing.assert_array_equal(time, np.array([0.0, 2.0, 4.0]))
+    assert called["spec"] == "spec-token"
+
+
+def test_extract_model_time_falls_back_to_general_timehistory(monkeypatch):
+    file_loader = _load_file_loader(monkeypatch)
+    loader = file_loader.FileLoader()
+
+    class _General:
+        def TimeHistory(self, var, spec):
+            assert var == "Time"
+            assert spec == "time-window"
+            return [10.0, 20.0]
+
+    class _Model:
+        def __getitem__(self, key):
+            assert key == "General"
+            return _General()
+
+    monkeypatch.setattr(loader, "_is_frequency_domain_model", lambda _: False)
+
+    time = loader._extract_model_time(_Model(), "time-window")
+
+    assert time == [10.0, 20.0]
+
 def test_load_era5_netcdf_single_point(monkeypatch, tmp_path):
     file_loader = _load_file_loader(monkeypatch)
 
