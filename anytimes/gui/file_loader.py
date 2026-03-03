@@ -1810,8 +1810,8 @@ class FileLoader:
             "Frequency-domain .sim sample time",
             "Start time [s] for synthesised time history:",
             value=start_default,
-            min=-1.0e12,
-            max=1.0e12,
+            minValue=-1.0e12,
+            maxValue=1.0e12,
             decimals=3,
         )
         if not ok:
@@ -1822,8 +1822,8 @@ class FileLoader:
             "Frequency-domain .sim sample time",
             "Stop time [s] for synthesised time history:",
             value=stop_default,
-            min=-1.0e12,
-            max=1.0e12,
+            minValue=-1.0e12,
+            maxValue=1.0e12,
             decimals=3,
         )
         if not ok:
