@@ -267,6 +267,71 @@ def test_extract_model_time_falls_back_to_general_timehistory(monkeypatch):
     assert time == [10.0, 20.0]
 
 
+def test_extract_model_time_falls_back_when_sample_times_decode_fails(monkeypatch):
+    file_loader = _load_file_loader(monkeypatch)
+    loader = file_loader.FileLoader()
+
+    class _General:
+        def TimeHistory(self, var, spec):
+            assert var == "Time"
+            assert spec == "time-window"
+            return [1.0, 2.0, 3.0]
+
+    class _Model:
+        def SampleTimes(self, _spec):
+            raise UnicodeDecodeError("charmap", b"\x8d", 0, 1, "character maps to <undefined>")
+
+        def __getitem__(self, key):
+            assert key == "General"
+            return _General()
+
+    monkeypatch.setattr(loader, "_is_frequency_domain_model", lambda _: True)
+
+    time = loader._extract_model_time(_Model(), "time-window")
+
+    assert time == [1.0, 2.0, 3.0]
+
+
+def test_resolve_time_array_uses_fallback_index_for_length_mismatch(monkeypatch):
+    file_loader = _load_file_loader(monkeypatch)
+    loader = file_loader.FileLoader()
+
+    out = loader._resolve_time_array(np.array([0.0, 1.0]), np.array([10.0, 20.0, 30.0]))
+
+    np.testing.assert_array_equal(out, np.array([0.0, 1.0, 2.0]))
+
+
+def test_load_orcaflex_time_histories_individually_uses_resolved_time(monkeypatch):
+    file_loader = _load_file_loader(monkeypatch)
+    loader = file_loader.FileLoader()
+
+    captured = []
+
+    def _fake_add_unique(_tsdb, name, time, data, metadata=None):
+        captured.append((name, np.asarray(time), np.asarray(data), metadata))
+
+    monkeypatch.setattr(loader, "_add_unique_timeseries", _fake_add_unique)
+
+    class _Obj:
+        def TimeHistory(self, *_args, **_kwargs):
+            return [5.0, 6.0, 7.0]
+
+    model = {"ObjA": _Obj()}
+
+    error = loader._load_orcaflex_time_histories_individually(
+        model=model,
+        tsdb=object(),
+        fallback_specs=[("ObjA", "A", None)],
+        names=["obj:A"],
+        time_spec="window",
+        time=np.array([0.0, 1.0]),
+        spectral_lookup={},
+    )
+
+    assert error is None
+    np.testing.assert_array_equal(captured[0][1], np.array([0.0, 1.0, 2.0]))
+
+
 def test_load_orcaflex_time_histories_individually_handles_object_extra(monkeypatch):
     file_loader = _load_file_loader(monkeypatch)
     loader = file_loader.FileLoader()

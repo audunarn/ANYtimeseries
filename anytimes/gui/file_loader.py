@@ -1845,7 +1845,8 @@ class FileLoader:
                 else:
                     data = obj.TimeHistory(var_name, time_spec, object_extra)
                 metadata = spectral_lookup.get(name)
-                self._add_unique_timeseries(tsdb, name, time, data, metadata=metadata)
+                resolved_time = self._resolve_time_array(time, data)
+                self._add_unique_timeseries(tsdb, name, resolved_time, data, metadata=metadata)
                 loaded_any = True
             except Exception as ex:
                 last_error = ex
@@ -1860,9 +1861,30 @@ class FileLoader:
         if self._is_frequency_domain_model(model):
             sample_times = getattr(model, "SampleTimes", None)
             if callable(sample_times):
-                return np.asarray(sample_times(time_spec), dtype=float)
+                try:
+                    return np.asarray(sample_times(time_spec), dtype=float)
+                except UnicodeDecodeError:
+                    # Certain frequency-domain .sim files can trigger locale
+                    # decode errors inside OrcFxAPI while retrieving sample
+                    # times. Fallback to General.TimeHistory in that case.
+                    pass
 
         return model["General"].TimeHistory("Time", time_spec)
+
+    def _resolve_time_array(self, time, data):
+        """Return a 1D time array matching the data length."""
+
+        data_arr = np.asarray(data, dtype=float)
+        n_samples = data_arr.shape[0]
+        if n_samples == 0:
+            return np.asarray([], dtype=float)
+
+        if time is not None:
+            time_arr = np.asarray(time, dtype=float)
+            if time_arr.ndim == 1 and time_arr.shape[0] == n_samples:
+                return time_arr
+
+        return np.arange(n_samples, dtype=float)
 
     def _add_unique_timeseries(self, tsdb, base_label, time, data, metadata=None):
         """Add ``TimeSeries`` to *tsdb* ensuring its name is unique."""
