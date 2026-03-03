@@ -1602,6 +1602,7 @@ class FileLoader:
                         break
             return obj
         resolved_specs = []
+        fallback_specs = []
         names = []
         redundant_subs = getattr(self, "orcaflex_redundant_subs", [])
         for spec in selection_specs:
@@ -1637,6 +1638,7 @@ class FileLoader:
                                 else f"{short_obj}:{short_var} (EndA)"
                             )
                             resolved_specs.append(spec_obj)
+                            fallback_specs.append((obj_name, var, end_enum))
                             names.append(label)
                         except Exception:
                             continue
@@ -1650,6 +1652,7 @@ class FileLoader:
                                 else f"{short_obj}:{short_var} (EndB)"
                             )
                             resolved_specs.append(spec_obj)
+                            fallback_specs.append((obj_name, var, end_enum))
                             names.append(label)
                         except Exception:
                             continue
@@ -1664,6 +1667,7 @@ class FileLoader:
                         try:
                             spec_obj = OrcFxAPI.TimeHistorySpecification(model[obj_name], var, end)
                             resolved_specs.append(spec_obj)
+                            fallback_specs.append((obj_name, var, end))
                             names.append(label)
                         except Exception:
                             continue
@@ -1677,6 +1681,7 @@ class FileLoader:
                             )
                             spec_obj = OrcFxAPI.TimeHistorySpecification(model[obj_name], var, extra)
                             resolved_specs.append(spec_obj)
+                            fallback_specs.append((obj_name, var, extra))
                             names.append(label)
                         except Exception:
                             continue
@@ -1691,6 +1696,7 @@ class FileLoader:
                             )
                             spec_obj = OrcFxAPI.TimeHistorySpecification(model[obj_name], var, extra)
                             resolved_specs.append(spec_obj)
+                            fallback_specs.append((obj_name, var, extra))
                             names.append(label)
                         except Exception:
                             continue
@@ -1705,6 +1711,7 @@ class FileLoader:
                             else f"{short_obj}:{short_var} (pos {end})"
                         )
                         resolved_specs.append(spec_obj)
+                        fallback_specs.append((obj_name, var, end))
                         names.append(label)
                     except Exception:
                         continue
@@ -1713,6 +1720,7 @@ class FileLoader:
                         spec_obj = OrcFxAPI.TimeHistorySpecification(model[obj_name], var)
                         label = f"{short_obj}:{short_var}"
                         resolved_specs.append(spec_obj)
+                        fallback_specs.append((obj_name, var, None))
                         names.append(label)
                     except Exception:
                         continue
@@ -1722,12 +1730,14 @@ class FileLoader:
             return tsdb
         spectral_lookup = {}
         if self._is_frequency_domain_model(model):
-            for spec_obj, label in zip(resolved_specs, names):
+            for fallback_spec, label in zip(fallback_specs, names):
                 try:
-                    rao = spec_obj.Object.SpectralResponseRAO(
-                        spec_obj.VarName,
-                        objectExtra=getattr(spec_obj, "ObjectExtra", None),
-                    )
+                    obj_name, var_name, object_extra = fallback_spec
+                    obj_for_rao = model[obj_name]
+                    kwargs = {}
+                    if object_extra is not None:
+                        kwargs["objectExtra"] = object_extra
+                    rao = obj_for_rao.SpectralResponseRAO(var_name, **kwargs)
                     omega = np.asarray(rao.X, dtype=float)
                     rao_mag = np.asarray(rao.Y, dtype=float)
                     if omega.size and omega.size == rao_mag.size:
@@ -1745,8 +1755,59 @@ class FileLoader:
                 self._add_unique_timeseries(tsdb, name, time, results[:, i], metadata=metadata)
             return tsdb
         except Exception as e:
+            if self._is_frequency_domain_model(model):
+                # OrcaFlex can reject bulk extraction for synthesised frequency-domain
+                # histories, while per-variable extraction still works.
+                fallback_error = self._load_orcaflex_time_histories_individually(
+                    model,
+                    tsdb,
+                    fallback_specs,
+                    names,
+                    time_spec,
+                    time,
+                    spectral_lookup,
+                )
+                if fallback_error is None:
+                    return tsdb
+                e = fallback_error
             QMessageBox.critical(self.parent_gui, "OrcaFlex Read Error", f"Could not read variables:\n{e}")
             return None
+
+    def _load_orcaflex_time_histories_individually(
+        self,
+        model,
+        tsdb,
+        fallback_specs,
+        names,
+        time_spec,
+        time,
+        spectral_lookup,
+    ):
+        """Read OrcaFlex time histories one-by-one for frequency-domain fallback.
+
+        Returns ``None`` if at least one variable is read successfully, otherwise
+        returns the latest exception instance.
+        """
+
+        last_error = None
+        loaded_any = False
+        for fallback_spec, name in zip(fallback_specs, names):
+            try:
+                obj_name, var_name, object_extra = fallback_spec
+                obj = model[obj_name]
+                if object_extra is None:
+                    data = obj.TimeHistory(var_name, time_spec)
+                else:
+                    data = obj.TimeHistory(var_name, time_spec, object_extra)
+                metadata = spectral_lookup.get(name)
+                self._add_unique_timeseries(tsdb, name, time, data, metadata=metadata)
+                loaded_any = True
+            except Exception as ex:
+                last_error = ex
+
+        if loaded_any:
+            return None
+        return last_error
 
     def _extract_model_time(self, model, time_spec):
         """Extract time values for OrcaFlex variables with frequency-domain fallback."""
