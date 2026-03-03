@@ -27,12 +27,14 @@ class RAODialog(QDialog):
         self,
         labels: list[str],
         series_data: dict[str, tuple[np.ndarray, np.ndarray]],
+        spectral_data: dict[str, tuple[np.ndarray, np.ndarray]] | None = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("RAO Estimator")
         self.resize(850, 580)
         self._series_data = series_data
+        self._spectral_data = spectral_data or {}
 
         layout = QVBoxLayout(self)
 
@@ -75,6 +77,11 @@ class RAODialog(QDialog):
         if not response_key or not excitation_key:
             QMessageBox.warning(self, "Missing selection", "Please select both response and excitation series.")
             return
+        spectral_resp = self._spectral_data.get(response_key)
+        if spectral_resp is not None:
+            self._plot_spectral_response(response_key, spectral_resp)
+            return
+
         t_resp, y_resp = self._series_data[response_key]
         t_exc, y_exc = self._series_data[excitation_key]
 
@@ -165,3 +172,35 @@ class RAODialog(QDialog):
                 f"Peak RAO amplitude {amp[peak_idx]:.4g} at {freqs[peak_idx]:.4g} Hz "
                 f"(phase {phase_deg[peak_idx]:.2f}°, coherence {coh[peak_idx]:.2f})."
             )
+
+    def _plot_spectral_response(
+        self,
+        response_key: str,
+        spectral_resp: tuple[np.ndarray, np.ndarray],
+    ) -> None:
+        freq_hz, rao_amp = spectral_resp
+
+        valid = np.isfinite(freq_hz) & np.isfinite(rao_amp) & (freq_hz > 0.0)
+        freq_hz = freq_hz[valid]
+        rao_amp = rao_amp[valid]
+        if freq_hz.size == 0:
+            QMessageBox.warning(self, "RAO error", "No positive frequencies available in spectral response.")
+            return
+
+        period = 1.0 / freq_hz
+
+        self.figure.clear()
+        ax = self.figure.add_subplot(111)
+        ax.plot(period, rao_amp)
+        ax.set_xlabel("Period [s]")
+        ax.set_ylabel("|RAO|")
+        ax.set_title(f"Spectral Response RAO: {response_key}")
+        ax.grid(True, alpha=0.3)
+        ax.invert_xaxis()
+        self.canvas.draw_idle()
+
+        peak_idx = int(np.argmax(rao_amp))
+        self.summary_label.setText(
+            f"Spectral RAO peak {rao_amp[peak_idx]:.4g} at {freq_hz[peak_idx]:.4g} Hz "
+            f"(period {period[peak_idx]:.4g} s)."
+        )

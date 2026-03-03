@@ -125,18 +125,25 @@ def test_reuseable_selection_only_keeps_names(monkeypatch):
     )
 
     loaded_tsdb = object()
+    captured = {}
+
+    def _fake_load(self, mdl, specs):
+        captured["specs"] = specs
+        return loaded_tsdb
+
     monkeypatch.setattr(
         file_loader.FileLoader,
         "_load_orcaflex_data_from_specs",
-        lambda self, mdl, specs: loaded_tsdb,
+        _fake_load,
     )
 
     loader = file_loader.FileLoader()
+    loader.cache_orcaflex_buffers = False
     result = loader._load_orcaflex_file("fake.sim")
 
     assert result is loaded_tsdb
-    assert loader._last_orcaflex_selection == [("LineA", "Axial", None, None)]
-    assert isinstance(loader._last_orcaflex_selection[0][0], str)
+    assert captured["specs"] == [("LineA", "Axial", None, None)]
+    assert isinstance(captured["specs"][0][0], str)
 
 
 def test_add_unique_timeseries_suffixes_duplicates(monkeypatch):
@@ -163,6 +170,58 @@ def test_add_unique_timeseries_suffixes_duplicates(monkeypatch):
     assert first_name == "LineA:Axial"
     assert second_name == "LineA:Axial (2)"
     assert tsdb.names == ["LineA:Axial", "LineA:Axial (2)"]
+
+
+def test_add_unique_timeseries_attaches_metadata(monkeypatch):
+    file_loader = _load_file_loader(monkeypatch)
+    loader = file_loader.FileLoader()
+
+    class _StubTsDB:
+        def __init__(self):
+            self.register = {}
+
+        def add(self, ts):
+            if ts.name in self.register:
+                raise KeyError(ts.name)
+            self.register[ts.name] = ts
+
+    tsdb = _StubTsDB()
+    metadata = {"freq_hz": np.array([0.1, 0.2]), "rao_amp": np.array([1.0, 2.0])}
+    loader._add_unique_timeseries(tsdb, "LineA:Axial", [0.0, 1.0], [1.0, 2.0], metadata=metadata)
+
+    ts = tsdb.register["LineA:Axial"]
+    np.testing.assert_array_equal(ts.freq_hz, np.array([0.1, 0.2]))
+    np.testing.assert_array_equal(ts.rao_amp, np.array([1.0, 2.0]))
+
+
+def test_is_frequency_domain_model_detects_general_string(monkeypatch):
+    file_loader = _load_file_loader(monkeypatch)
+    loader = file_loader.FileLoader()
+
+    class _General:
+        DynamicsSolutionMethod = "Frequency domain"
+
+    class _Model:
+        def __getitem__(self, key):
+            assert key == "General"
+            return _General()
+
+    assert loader._is_frequency_domain_model(_Model()) is True
+
+
+def test_is_frequency_domain_model_rejects_time_domain_method(monkeypatch):
+    file_loader = _load_file_loader(monkeypatch)
+    loader = file_loader.FileLoader()
+
+    class _General:
+        DynamicsSolutionMethod = "Implicit time domain"
+
+    class _Model:
+        def __getitem__(self, key):
+            assert key == "General"
+            return _General()
+
+    assert loader._is_frequency_domain_model(_Model()) is False
 
 
 def test_load_era5_netcdf_single_point(monkeypatch, tmp_path):

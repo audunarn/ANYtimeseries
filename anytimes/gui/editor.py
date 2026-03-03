@@ -4571,6 +4571,7 @@ class TimeSeriesEditorQt(QMainWindow):
             return
 
         series_data: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+        spectral_data: dict[str, tuple[np.ndarray, np.ndarray]] = {}
         for tsdb, fp in zip(self.tsdbs, self.file_paths):
             fname = os.path.basename(fp)
             tsdb_map = tsdb.getm()
@@ -4606,6 +4607,13 @@ class TimeSeriesEditorQt(QMainWindow):
                     continue
 
                 series_data[key] = (t, y)
+                freq_hz = getattr(ts, "freq_hz", None)
+                rao_amp = getattr(ts, "rao_amp", None)
+                if freq_hz is not None and rao_amp is not None:
+                    freq_hz_arr = np.asarray(freq_hz, dtype=float)
+                    rao_amp_arr = np.asarray(rao_amp, dtype=float)
+                    if freq_hz_arr.size and freq_hz_arr.size == rao_amp_arr.size:
+                        spectral_data[key] = (freq_hz_arr, rao_amp_arr)
 
         if len(series_data) < 1:
             QMessageBox.warning(
@@ -4616,7 +4624,12 @@ class TimeSeriesEditorQt(QMainWindow):
             return
 
         labels = [k for k in selected_keys if k in series_data]
-        dlg = RAODialog(labels=labels, series_data=series_data, parent=self)
+        dlg = RAODialog(
+            labels=labels,
+            series_data=series_data,
+            spectral_data=spectral_data,
+            parent=self,
+        )
         dlg.exec()
 
     def apply_dark_palette(self):

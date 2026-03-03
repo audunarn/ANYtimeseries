@@ -58,6 +58,7 @@ class FileLoader:
         self._last_diffraction_dir = None
         self._diffraction_cache = {}
         self.cache_orcaflex_buffers = True
+        self.orcaflex_time_windows = {}
 
     def preload_sim_models(self, filepaths):
         if OrcFxAPI is None:
@@ -1588,7 +1589,7 @@ class FileLoader:
             print("OrcFxAPI not available. Cannot preload .sim files.")
             return
         tsdb = TsDB()
-        time_spec = OrcFxAPI.SpecifiedPeriod(0, model.simulationTimeStatus.CurrentTime)
+        time_spec = self._resolve_time_spec_for_model(model)
         time = model["General"].TimeHistory("Time", time_spec)
         object_var_map = {obj.Name: obj for obj in model.objects}
         def _match_obj(name):
@@ -1719,27 +1720,120 @@ class FileLoader:
                 continue
         if not resolved_specs:
             return tsdb
+        spectral_lookup = {}
+        if self._is_frequency_domain_model(model):
+            for spec_obj, label in zip(resolved_specs, names):
+                try:
+                    rao = spec_obj.Object.SpectralResponseRAO(
+                        spec_obj.VarName,
+                        objectExtra=getattr(spec_obj, "ObjectExtra", None),
+                    )
+                    omega = np.asarray(rao.X, dtype=float)
+                    rao_mag = np.asarray(rao.Y, dtype=float)
+                    if omega.size and omega.size == rao_mag.size:
+                        spectral_lookup[label] = {
+                            "freq_hz": omega / (2.0 * np.pi),
+                            "rao_amp": rao_mag,
+                        }
+                except Exception:
+                    continue
+
         try:
             results = OrcFxAPI.GetMultipleTimeHistories(resolved_specs, time_spec)
             for i, name in enumerate(names):
-                self._add_unique_timeseries(tsdb, name, time, results[:, i])
+                metadata = spectral_lookup.get(name)
+                self._add_unique_timeseries(tsdb, name, time, results[:, i], metadata=metadata)
             return tsdb
         except Exception as e:
             QMessageBox.critical(self.parent_gui, "OrcaFlex Read Error", f"Could not read variables:\n{e}")
             return None
 
-    def _add_unique_timeseries(self, tsdb, base_label, time, data):
+    def _add_unique_timeseries(self, tsdb, base_label, time, data, metadata=None):
         """Add ``TimeSeries`` to *tsdb* ensuring its name is unique."""
 
         label = base_label
         suffix = 1
         while True:
             try:
-                tsdb.add(TimeSeries(label, time, data))
+                series = TimeSeries(label, time, data)
+                if metadata:
+                    for key, value in metadata.items():
+                        setattr(series, key, value)
+                tsdb.add(series)
                 return label
             except KeyError:
                 suffix += 1
                 label = f"{base_label} ({suffix})"
+
+    def _is_frequency_domain_model(self, model):
+        """Detect frequency-domain OrcaFlex simulations from General settings."""
+
+        try:
+            general_obj = model["General"]
+        except Exception:
+            return False
+
+        method = getattr(general_obj, "DynamicsSolutionMethod", None)
+        if not isinstance(method, str):
+            return False
+
+        return method.strip().lower() == "frequency domain"
+
+    def _resolve_time_spec_for_model(self, model):
+        """Pick time window for OrcaFlex extraction, asking user for frequency-domain models."""
+
+        import OrcFxAPI
+
+        model_id = id(model)
+        if model_id in self.orcaflex_time_windows:
+            start, stop = self.orcaflex_time_windows[model_id]
+            return OrcFxAPI.SpecifiedPeriod(start, stop)
+
+        if not self._is_frequency_domain_model(model):
+            start_default = float(getattr(model, "simulationStartTime", 0.0))
+            stop_default = float(getattr(model, "simulationStopTime", start_default))
+            if stop_default <= start_default:
+                stop_default = float(getattr(model.simulationTimeStatus, "CurrentTime", start_default))
+            if stop_default <= start_default:
+                stop_default = start_default + 1.0
+            spec = OrcFxAPI.SpecifiedPeriod(start_default, stop_default)
+            self.orcaflex_time_windows[model_id] = (start_default, stop_default)
+            return spec
+
+        start_default = float(getattr(model, "simulationStartTime", 0.0))
+        stop_default = float(getattr(model, "simulationStopTime", 10800.0))
+        if stop_default <= start_default:
+            stop_default = start_default + 10800.0
+
+        start, ok = QInputDialog.getDouble(
+            self.parent_gui,
+            "Frequency-domain .sim sample time",
+            "Start time [s] for synthesised time history:",
+            value=start_default,
+            min=-1.0e12,
+            max=1.0e12,
+            decimals=3,
+        )
+        if not ok:
+            start = start_default
+
+        stop, ok = QInputDialog.getDouble(
+            self.parent_gui,
+            "Frequency-domain .sim sample time",
+            "Stop time [s] for synthesised time history:",
+            value=stop_default,
+            min=-1.0e12,
+            max=1.0e12,
+            decimals=3,
+        )
+        if not ok:
+            stop = stop_default
+
+        if stop <= start:
+            stop = start + 1.0
+
+        self.orcaflex_time_windows[model_id] = (start, stop)
+        return OrcFxAPI.SpecifiedPeriod(start, stop)
 
     def _get_orcaflex_buffer(self, filepath):
         if filepath in self.orcaflex_sim_buffers:
