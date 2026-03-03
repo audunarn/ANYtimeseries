@@ -1745,8 +1745,56 @@ class FileLoader:
                 self._add_unique_timeseries(tsdb, name, time, results[:, i], metadata=metadata)
             return tsdb
         except Exception as e:
+            if self._is_frequency_domain_model(model):
+                # OrcaFlex can reject bulk extraction for synthesised frequency-domain
+                # histories, while per-variable extraction still works.
+                fallback_error = self._load_orcaflex_time_histories_individually(
+                    tsdb,
+                    resolved_specs,
+                    names,
+                    time_spec,
+                    time,
+                    spectral_lookup,
+                )
+                if fallback_error is None:
+                    return tsdb
+                e = fallback_error
             QMessageBox.critical(self.parent_gui, "OrcaFlex Read Error", f"Could not read variables:\n{e}")
             return None
+
+    def _load_orcaflex_time_histories_individually(
+        self,
+        tsdb,
+        resolved_specs,
+        names,
+        time_spec,
+        time,
+        spectral_lookup,
+    ):
+        """Read OrcaFlex time histories one-by-one for frequency-domain fallback.
+
+        Returns ``None`` if at least one variable is read successfully, otherwise
+        returns the latest exception instance.
+        """
+
+        last_error = None
+        loaded_any = False
+        for spec_obj, name in zip(resolved_specs, names):
+            try:
+                object_extra = getattr(spec_obj, "ObjectExtra", None)
+                if object_extra is None:
+                    data = spec_obj.Object.TimeHistory(spec_obj.VarName, time_spec)
+                else:
+                    data = spec_obj.Object.TimeHistory(spec_obj.VarName, time_spec, object_extra)
+                metadata = spectral_lookup.get(name)
+                self._add_unique_timeseries(tsdb, name, time, data, metadata=metadata)
+                loaded_any = True
+            except Exception as ex:
+                last_error = ex
+
+        if loaded_any:
+            return None
+        return last_error
 
     def _extract_model_time(self, model, time_spec):
         """Extract time values for OrcaFlex variables with frequency-domain fallback."""
