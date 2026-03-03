@@ -1590,7 +1590,7 @@ class FileLoader:
             return
         tsdb = TsDB()
         time_spec = self._resolve_time_spec_for_model(model)
-        time = model["General"].TimeHistory("Time", time_spec)
+        time = self._extract_model_time(model, time_spec)
         object_var_map = {obj.Name: obj for obj in model.objects}
         def _match_obj(name):
             obj = object_var_map.get(name)
@@ -1747,6 +1747,16 @@ class FileLoader:
         except Exception as e:
             QMessageBox.critical(self.parent_gui, "OrcaFlex Read Error", f"Could not read variables:\n{e}")
             return None
+
+    def _extract_model_time(self, model, time_spec):
+        """Extract time values for OrcaFlex variables with frequency-domain fallback."""
+
+        if self._is_frequency_domain_model(model):
+            sample_times = getattr(model, "SampleTimes", None)
+            if callable(sample_times):
+                return np.asarray(sample_times(time_spec), dtype=float)
+
+        return model["General"].TimeHistory("Time", time_spec)
 
     def _add_unique_timeseries(self, tsdb, base_label, time, data, metadata=None):
         """Add ``TimeSeries`` to *tsdb* ensuring its name is unique."""
