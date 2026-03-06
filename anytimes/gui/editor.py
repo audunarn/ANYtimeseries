@@ -691,8 +691,9 @@ class TimeSeriesEditorQt(QMainWindow):
         # ==== Populate variable tabs on startup ====
         self.refresh_variable_tabs()
         # Apply the light palette by default
-        self.apply_dark_palette()
-        self.theme_switch.setChecked(True)
+        self.apply_light_palette()
+        #self.apply_dark_palette()
+        #self.theme_switch.setChecked(True)
         self.toggle_embed_layout('')
         self.embed_plot_cb.setChecked(True)
 
