@@ -471,6 +471,33 @@ def test_load_netcdf_ignores_unused_time_coord(monkeypatch, tmp_path):
     np.testing.assert_array_equal(data["temperature"].x, np.array([12.3, 12.5]))
 
 
+
+
+def test_load_netcdf_multidimensional_depth_series(monkeypatch):
+    file_loader = _load_file_loader(monkeypatch)
+
+    loader = file_loader.FileLoader()
+    nc_path = Path(__file__).resolve().parent / "subset.nc"
+    tsdb = loader._load_generic_file(str(nc_path))
+
+    data = tsdb.getm()
+    expected = {
+        "temperature [depth=0.0]",
+        "temperature [depth=300.0]",
+        "salinity [depth=0.0]",
+        "u_eastward [depth=0.0]",
+        "v_northward [depth=0.0]",
+    }
+    assert expected.issubset(set(data.keys()))
+
+    for name in [
+        "temperature [depth=0.0]",
+        "salinity [depth=0.0]",
+        "u_eastward [depth=0.0]",
+        "v_northward [depth=0.0]",
+    ]:
+        assert data[name].t.shape[0] == 39
+
 def test_load_netcdf_uses_cftime_decoder(monkeypatch, tmp_path):
     file_loader = _load_file_loader(monkeypatch)
 

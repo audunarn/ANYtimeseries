@@ -2116,26 +2116,50 @@ class FileLoader:
                 skipped.add(name)
                 continue
 
-            spatial_dims = [dim for dim in data_array.dims if dim != time_coord.name]
-            for dim in spatial_dims:
-                size = data_array.sizes.get(dim, 0)
-                if size == 1:
-                    data_array = data_array.isel({dim: 0})
-                else:
-                    skipped.add(name)
-                    data_array = None
-                    break
-            if data_array is None:
-                continue
+            spatial_dims = [
+                dim
+                for dim in data_array.dims
+                if dim != time_coord.name and data_array.sizes.get(dim, 0) > 1
+            ]
 
-            values = np.asarray(data_array.values)
-            if values.ndim != 1 or values.shape[0] != time_values.size:
-                skipped.add(name)
-                continue
+            singleton_dims = [
+                dim
+                for dim in data_array.dims
+                if dim != time_coord.name and data_array.sizes.get(dim, 0) == 1
+            ]
+            for dim in singleton_dims:
+                data_array = data_array.isel({dim: 0})
 
-            try:
-                tsdb.add(TimeSeries(str(name), time_values, values.astype(float)))
-            except Exception:
+            iter_indices = [()] if not spatial_dims else np.ndindex(*[data_array.sizes[d] for d in spatial_dims])
+
+            added_any = False
+            for idx_tuple in iter_indices:
+                indexed = data_array
+                suffix_parts = []
+                for dim, idx in zip(spatial_dims, idx_tuple):
+                    indexed = indexed.isel({dim: idx})
+                    coord = ds.coords.get(dim)
+                    if coord is not None and coord.ndim == 1 and coord.size > idx:
+                        coord_value = np.asarray(coord.values[idx]).item()
+                    else:
+                        coord_value = idx
+                    suffix_parts.append(f"{dim}={coord_value}")
+
+                values = np.asarray(indexed.values)
+                if values.ndim != 1 or values.shape[0] != time_values.size:
+                    continue
+
+                ts_name = str(name)
+                if suffix_parts:
+                    ts_name = f"{ts_name} [{', '.join(suffix_parts)}]"
+
+                try:
+                    tsdb.add(TimeSeries(ts_name, time_values, values.astype(float)))
+                    added_any = True
+                except Exception:
+                    continue
+
+            if not added_any:
                 skipped.add(name)
 
         if len(tsdb.getm()) == 0:
