@@ -346,6 +346,15 @@ class TimeSeriesEditorQt(QMainWindow):
         row5.addWidget(self.shift_common_max_btn)
         transform_layout.addLayout(row5)
 
+        row6 = QHBoxLayout()
+        self.shift_x_start_zero_btn = QPushButton("Shift X Start → 0")
+        self.shift_x_start_zero_btn.setToolTip(
+            "Create a new series where the x-axis starts at zero by subtracting the initial x value."
+        )
+        row6.addWidget(self.shift_x_start_zero_btn)
+        row6.addStretch(1)
+        transform_layout.addLayout(row6)
+
 
         # Progress bar is shown by itself unless the plot is embedded
         self.controls_layout.addWidget(self.progress)
@@ -673,6 +682,7 @@ class TimeSeriesEditorQt(QMainWindow):
         self.export_csv_btn.clicked.connect(self.export_selected_to_csv)
         self.shift_min_nz_btn.clicked.connect(self.shift_repeated_neg_min)
         self.shift_common_max_btn.clicked.connect(self.shift_common_max)
+        self.shift_x_start_zero_btn.clicked.connect(self.shift_x_start_to_zero)
         self.launch_qats_btn.clicked.connect(self.launch_qats)
         self.evm_tool_btn.clicked.connect(self.open_evm_tool)
         self.rao_tool_btn.clicked.connect(self.open_rao_tool)
@@ -2424,6 +2434,95 @@ class TimeSeriesEditorQt(QMainWindow):
 
         # suffix “shiftMean0” keeps the style of “shift0”, “shiftNZ”, …
         self._apply_transformation(_demean, "shiftMean0", True)
+
+    def shift_x_start_to_zero(self):
+        """Create copies where x starts at zero by subtracting the initial x value."""
+
+        self.rebuild_var_lookup()
+        created = []
+        skipped_datetime = []
+        fnames = [os.path.basename(p) for p in self.file_paths]
+
+        def _has_file_prefix(key: str) -> bool:
+            for name in fnames:
+                if key.startswith(f"{name}::") or key.startswith(f"{name}:"):
+                    return True
+            return False
+
+        for f_idx, (tsdb, path) in enumerate(zip(self.tsdbs, self.file_paths), start=1):
+            fname = os.path.basename(path)
+
+            for u_key, chk in self.var_checkboxes.items():
+                if not chk.isChecked():
+                    continue
+
+                if u_key.startswith(f"{fname}::"):
+                    varname = u_key.split("::", 1)[1]
+                elif u_key.startswith(f"{fname}:"):
+                    varname = u_key.split(":", 1)[1]
+                elif not _has_file_prefix(u_key):
+                    varname = u_key
+                else:
+                    continue
+
+                ts = tsdb.getm().get(varname)
+                if ts is None:
+                    continue
+
+                mask = self.get_time_window(ts)
+                if isinstance(mask, slice):
+                    t_win = np.asarray(ts.t[mask])
+                    y_win = self.apply_filters(ts)[mask]
+                else:
+                    if not mask.any():
+                        continue
+                    t_win = np.asarray(ts.t[mask])
+                    y_win = self.apply_filters(ts)[mask]
+
+                if t_win.size == 0:
+                    continue
+
+                if np.issubdtype(t_win.dtype, np.datetime64) or ts.dtg_ref is not None:
+                    skipped_datetime.append(ts.name)
+                    continue
+
+                t_new = np.asarray(t_win, dtype=float) - float(t_win[0])
+
+                filt_tag = self._filter_tag()
+                base = f"{ts.name}_x0"
+                if filt_tag:
+                    base += f"_{filt_tag}"
+                base += f"_f{f_idx}"
+                new_name = base
+                k = 1
+                while new_name in tsdb.getm():
+                    new_name = f"{base}_{k}"
+                    k += 1
+
+                tsdb.add(TimeSeries(new_name, t_new, y_win, dtg_ref=None))
+                created.append(new_name)
+                self.user_variables = getattr(self, "user_variables", set())
+                self.user_variables.add(new_name)
+
+        self._populate_variables(None)
+
+        if created:
+            msg = [f"Created {len(created)} x-shifted series."]
+            if skipped_datetime:
+                msg.append(f"Skipped {len(skipped_datetime)} datetime series (not applicable).")
+            QMessageBox.information(self, "X-axis shift complete", "\n".join(msg))
+        elif skipped_datetime:
+            QMessageBox.information(
+                self,
+                "No eligible series",
+                "Selected series use datetime x-axis; this operation only applies to numeric x values.",
+            )
+        else:
+            QMessageBox.warning(
+                self,
+                "Nothing new",
+                "No eligible selected series found to shift.",
+            )
 
     @Slot()
     def load_files(self):
