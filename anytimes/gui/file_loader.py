@@ -1889,11 +1889,14 @@ class FileLoader:
         return np.arange(n_samples, dtype=float)
 
     def _crop_orcaflex_series_to_window(self, model, time, data):
-        """Trim OrcaFlex results to the requested extraction window."""
+        """Trim time-domain OrcaFlex results to the requested extraction window."""
 
         time_arr = np.asarray(time, dtype=float)
         data_arr = np.asarray(data)
         if time_arr.ndim != 1 or time_arr.size == 0:
+            return time_arr, data_arr
+
+        if self._is_frequency_domain_model(model):
             return time_arr, data_arr
 
         requested = self.orcaflex_time_windows.get(id(model))

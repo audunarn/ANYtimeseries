@@ -211,6 +211,26 @@ def test_crop_orcaflex_series_to_window_trims_full_results(monkeypatch):
     np.testing.assert_array_equal(cropped_data, np.array([12.0, 13.0, 14.0]))
 
 
+def test_crop_orcaflex_series_to_window_skips_frequency_domain_models(monkeypatch):
+    file_loader = _load_file_loader(monkeypatch)
+    loader = file_loader.FileLoader()
+
+    class _Model:
+        pass
+
+    model = _Model()
+    loader.orcaflex_time_windows[id(model)] = (2.0, 4.0)
+    monkeypatch.setattr(loader, "_is_frequency_domain_model", lambda mdl: mdl is model)
+
+    time = np.array([0.0, 1.0, 2.0, 3.0, 4.0, 5.0])
+    data = np.array([10.0, 11.0, 12.0, 13.0, 14.0, 15.0])
+
+    cropped_time, cropped_data = loader._crop_orcaflex_series_to_window(model, time, data)
+
+    np.testing.assert_array_equal(cropped_time, time)
+    np.testing.assert_array_equal(cropped_data, data)
+
+
 def test_is_frequency_domain_model_detects_general_string(monkeypatch):
     file_loader = _load_file_loader(monkeypatch)
     loader = file_loader.FileLoader()
