@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 import scipy.io
 from anyqats import TimeSeries, TsDB
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
 from matplotlib.figure import Figure
 from PySide6.QtCore import QEvent, QTimer, Qt, QUrl, Signal, Slot
 from PySide6.QtGui import (
@@ -623,6 +623,7 @@ class TimeSeriesEditorQt(QMainWindow):
         self._temp_plot_file = None  # temporary HTML used for embedded plots
         # Placeholder for embedded Matplotlib canvas
         self._mpl_canvas = None
+        self._mpl_toolbar = None
         # plot_view is shown when the "Embed Plot" option is enabled
 
         self.controls_layout.addStretch(1)
@@ -3550,7 +3551,12 @@ class TimeSeriesEditorQt(QMainWindow):
                             os.remove(self._temp_plot_file)
                         except Exception:
                             pass
-                    html = to_html(fig, include_plotlyjs=True, full_html=True)
+                    html = to_html(
+                        fig,
+                        include_plotlyjs=True,
+                        full_html=True,
+                        config={"displayModeBar": True},
+                    )
                     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".html")
                     with open(tmp.name, "w", encoding="utf-8") as fh:
                         fh.write(html)
@@ -3594,21 +3600,9 @@ class TimeSeriesEditorQt(QMainWindow):
             fig.tight_layout()
 
             if getattr(self, "embed_plot_cb", None) and self.embed_plot_cb.isChecked():
-                if self._mpl_canvas is not None:
-                    self.right_outer_layout.removeWidget(self._mpl_canvas)
-                    self._mpl_canvas.setParent(None)
-                from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
-
-                self._mpl_canvas = FigureCanvasQTAgg(fig)
-                self._mpl_canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-                self.right_outer_layout.addWidget(self._mpl_canvas)
-                self._mpl_canvas.show()
-                self.plot_view.hide()
+                self._show_embedded_mpl_figure(fig)
             else:
-                if self._mpl_canvas is not None:
-                    self.right_outer_layout.removeWidget(self._mpl_canvas)
-                    self._mpl_canvas.setParent(None)
-                    self._mpl_canvas = None
+                self._clear_mpl_embed()
                 self.plot_view.hide()
                 fig.show()
             return
@@ -3876,7 +3870,12 @@ class TimeSeriesEditorQt(QMainWindow):
                         os.remove(self._temp_plot_file)
                     except Exception:
                         pass
-                html = to_html(fig, include_plotlyjs=True, full_html=True)
+                html = to_html(
+                    fig,
+                    include_plotlyjs=True,
+                    full_html=True,
+                    config={"displayModeBar": True},
+                )
                 tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".html")
                 with open(tmp.name, "w", encoding="utf-8") as fh:
                     fh.write(html)
@@ -4113,7 +4112,12 @@ class TimeSeriesEditorQt(QMainWindow):
                         os.remove(self._temp_plot_file)
                     except Exception:
                         pass
-                html = to_html(fig, include_plotlyjs=True, full_html=True)
+                html = to_html(
+                    fig,
+                    include_plotlyjs=True,
+                    full_html=True,
+                    config={"displayModeBar": True},
+                )
                 tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".html")
                 with open(tmp.name, "w", encoding="utf-8") as fh:
                     fh.write(html)
@@ -4169,22 +4173,9 @@ class TimeSeriesEditorQt(QMainWindow):
 
         if getattr(self, "embed_plot_cb", None) and self.embed_plot_cb.isChecked():
             # Use a native Matplotlib canvas instead of the HTML viewer
-            if self._mpl_canvas is not None:
-                self.right_outer_layout.removeWidget(self._mpl_canvas)
-                self._mpl_canvas.setParent(None)
-            from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
-
-            self._mpl_canvas = FigureCanvasQTAgg(fig)
-            self._mpl_canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-            self.right_outer_layout.addWidget(self._mpl_canvas)
-
-            self._mpl_canvas.show()
-            self.plot_view.hide()
+            self._show_embedded_mpl_figure(fig)
         else:
-            if self._mpl_canvas is not None:
-                self.right_outer_layout.removeWidget(self._mpl_canvas)
-                self._mpl_canvas.setParent(None)
-                self._mpl_canvas = None
+            self._clear_mpl_embed()
             self.plot_view.hide()
             plt.show()
 
@@ -5043,12 +5034,34 @@ class TimeSeriesEditorQt(QMainWindow):
         """Update layout when the plotting engine selection changes."""
         engine = text.lower()
         if engine != "default" and self._mpl_canvas is not None:
-            self.right_outer_layout.removeWidget(self._mpl_canvas)
-            self._mpl_canvas.setParent(None)
-            self._mpl_canvas = None
+            self._clear_mpl_embed()
         if self.embed_plot_cb.isChecked():
             # Refresh layout so the appropriate widget is shown
             self.toggle_embed_layout(True)
+
+    def _clear_mpl_embed(self):
+        """Remove any embedded Matplotlib canvas and toolbar."""
+        if self._mpl_toolbar is not None:
+            self.right_outer_layout.removeWidget(self._mpl_toolbar)
+            self._mpl_toolbar.setParent(None)
+            self._mpl_toolbar.deleteLater()
+            self._mpl_toolbar = None
+        if self._mpl_canvas is not None:
+            self.right_outer_layout.removeWidget(self._mpl_canvas)
+            self._mpl_canvas.setParent(None)
+            self._mpl_canvas = None
+
+    def _show_embedded_mpl_figure(self, fig):
+        """Render ``fig`` with a Qt Matplotlib toolbar when embedding plots."""
+        self._clear_mpl_embed()
+        self._mpl_canvas = FigureCanvasQTAgg(fig)
+        self._mpl_canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self._mpl_toolbar = NavigationToolbar2QT(self._mpl_canvas, self)
+        self.right_outer_layout.addWidget(self._mpl_toolbar)
+        self.right_outer_layout.addWidget(self._mpl_canvas)
+        self._mpl_toolbar.show()
+        self._mpl_canvas.show()
+        self.plot_view.hide()
 
     def toggle_embed_layout(self, state):
         """Re-arrange layout when the embed checkbox is toggled."""
@@ -5114,14 +5127,20 @@ class TimeSeriesEditorQt(QMainWindow):
 
             self.extra_layout.addItem(self.extra_stretch)
             if self.plot_engine_combo.currentText().lower() == "default" and self._mpl_canvas is not None:
+                if self._mpl_toolbar is not None:
+                    self._mpl_toolbar.show()
                 self._mpl_canvas.show()
                 self.plot_view.hide()
             else:
                 self.plot_view.show()
+                if self._mpl_toolbar is not None:
+                    self._mpl_toolbar.hide()
                 if self._mpl_canvas is not None:
                     self._mpl_canvas.hide()
         else:
             self.plot_view.hide()
+            if self._mpl_toolbar is not None:
+                self._mpl_toolbar.hide()
             if self._mpl_canvas is not None:
                 self._mpl_canvas.hide()
             if self.plot_view.parent() is self.extra_widget:
