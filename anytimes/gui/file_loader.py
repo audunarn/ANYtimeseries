@@ -146,10 +146,10 @@ class FileLoader:
             except Exception as exc:
                 errors.append((fp, exc))
         if errors:
-            raise RuntimeError(
-                "Models not preloaded: "
-                + ", ".join(os.path.basename(m) for m, _ in errors)
+            details = "\n".join(
+                f"{os.path.basename(path)}: {exc}" for path, exc in errors
             )
+            raise RuntimeError(f"Models not preloaded.\n{details}")
 
 
         dialog = QDialog(self.parent_gui)
