@@ -55,6 +55,7 @@ import numpy as np
 import pandas as pd
 from PySide6.QtWidgets import QApplication, QMessageBox
 
+import anytimes.gui.editor as editor_module
 from anytimes.gui.editor import TimeSeriesEditorQt
 from anyqats import TimeSeries
 
@@ -158,6 +159,43 @@ def test_merge_common_name_with_colon_not_misclassified(qt_app, message_spy, mon
     assert expected in editor.tsdbs[0].getm()
     for tsdb in editor.tsdbs[1:]:
         assert expected not in tsdb.getm()
+    assert not message_spy["crit"]
+    assert not message_spy["warn"]
+
+
+def test_open_evm_user_variable_name_with_colon_uses_exact_match(qt_app, message_spy, monkeypatch):
+    files = ["file1.ts", "file2.ts"]
+    user_name = "sqr_sum_of_squares(file1.ts:VarA, file1.ts:VarB)"
+    tsdbs = [
+        DummyDB({user_name: TimeSeries(user_name, np.arange(5, dtype=float), np.arange(5, dtype=float))}),
+        DummyDB({}),
+    ]
+
+    editor = _build_editor(monkeypatch, tsdbs, files)
+    editor.user_variables = {user_name}
+    editor.refresh_variable_tabs()
+    editor.var_checkboxes[user_name].setChecked(True)
+
+    launched = {}
+
+    class DummyEVMWindow:
+        def __init__(self, db, name, parent):
+            launched["db"] = db
+            launched["name"] = name
+            launched["parent"] = parent
+
+        def exec(self):
+            launched["exec"] = True
+
+    monkeypatch.setattr(editor_module, "EVMWindow", DummyEVMWindow)
+
+    editor.open_evm_tool()
+    qt_app.processEvents()
+
+    assert launched["db"] is tsdbs[0]
+    assert launched["name"] == user_name
+    assert launched["parent"] is editor
+    assert launched["exec"] is True
     assert not message_spy["crit"]
     assert not message_spy["warn"]
 

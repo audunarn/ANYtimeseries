@@ -4723,10 +4723,16 @@ class TimeSeriesEditorQt(QMainWindow):
                 break
 
         if index is None:
-            if ":" in selected or "::" in selected:
-                QMessageBox.critical(self, "EVA Error", f"Could not locate the file for: {selected}")
-                return
-            index = 0
+            matches = [
+                (i, tsdb.getm().get(selected))
+                for i, tsdb in enumerate(self.tsdbs)
+                if selected in tsdb.getm()
+            ]
+            if matches:
+                index, ts = matches[0]
+                raw_key = ts.name
+            else:
+                index = 0
 
         if index >= len(self.tsdbs):
             QMessageBox.critical(self, "EVA Error", f"Could not locate the file for: {selected}")
