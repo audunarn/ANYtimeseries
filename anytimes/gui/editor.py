@@ -110,6 +110,7 @@ class TimeSeriesEditorQt(QMainWindow):
         # non-matplotlib engines without reloading the entire UI.
         self._last_plot_call: tuple[Callable[..., None], tuple, dict] | None = None
         self._refreshing_plot = False
+        self._marker_input_auto_value = ""
 
 
 
@@ -535,7 +536,7 @@ class TimeSeriesEditorQt(QMainWindow):
         yaxis_row.addWidget(self.yaxis_label)
         plot_layout.addLayout(yaxis_row)
 
-        # Rolling mean window
+        # Rolling mean window + x-axis marker
         rolling_row = QHBoxLayout()
         rolling_row.addWidget(QLabel("Rolling mean window:"))
         self.rolling_window = QSpinBox()
@@ -544,6 +545,9 @@ class TimeSeriesEditorQt(QMainWindow):
 
         self.rolling_window.setValue(1)
         rolling_row.addWidget(self.rolling_window)
+        rolling_row.addWidget(QLabel("X-axis marker:"))
+        self.x_axis_marker_input = QLineEdit()
+        rolling_row.addWidget(self.x_axis_marker_input)
         plot_layout.addLayout(rolling_row)
 
         self.controls_layout.addWidget(self.plot_group)
@@ -696,10 +700,14 @@ class TimeSeriesEditorQt(QMainWindow):
         self.theme_switch.stateChanged.connect(self.toggle_dark_theme)
         self.embed_plot_cb.stateChanged.connect(self.toggle_embed_layout)
         self.plot_engine_combo.currentTextChanged.connect(self._on_engine_changed)
+        self.plot_datetime_x_cb.stateChanged.connect(self._refresh_marker_input_defaults)
+        self.time_start.textChanged.connect(self._refresh_marker_input_defaults)
+        self.time_end.textChanged.connect(self._refresh_marker_input_defaults)
 
 
         # ==== Populate variable tabs on startup ====
         self.refresh_variable_tabs()
+        self._refresh_marker_input_defaults()
         # Apply the light palette by default
         self.apply_light_palette()
         #self.apply_dark_palette()
@@ -2768,6 +2776,98 @@ class TimeSeriesEditorQt(QMainWindow):
                 if hasattr(last, "inputs"):
                     self.var_offsets[k] = last.inputs.get(k)
 
+        self._connect_marker_input_refresh()
+        self._refresh_marker_input_defaults()
+
+    def _connect_marker_input_refresh(self):
+        for cb in self.var_checkboxes.values():
+            if cb.property("_marker_refresh_connected"):
+                continue
+            cb.toggled.connect(self._refresh_marker_input_defaults)
+            cb.setProperty("_marker_refresh_connected", True)
+
+    def _selected_series_marker_context(self):
+        for selected_key, checkbox in self.var_checkboxes.items():
+            if not checkbox.isChecked():
+                continue
+            for file_idx, (tsdb, fp) in enumerate(zip(self.tsdbs, self.file_paths), start=1):
+                fname = os.path.basename(fp)
+                if selected_key.startswith(f"{fname}::"):
+                    var = selected_key.split("::", 1)[1]
+                elif selected_key.startswith(f"{fname}:"):
+                    var = selected_key.split(":", 1)[1]
+                elif selected_key in tsdb.getm():
+                    var = selected_key
+                else:
+                    continue
+
+                ts = tsdb.getm().get(var)
+                if ts is None:
+                    continue
+
+                mask = self.get_time_window(ts)
+                dtg_ref = getattr(ts, "dtg_ref", None)
+                if isinstance(mask, slice):
+                    t_window = ts.t[mask]
+                    x_window = ts.x[mask]
+                else:
+                    if not mask.any():
+                        continue
+                    t_window = ts.t[mask]
+                    x_window = ts.x[mask]
+                if len(t_window) == 0:
+                    continue
+
+                ts_window = TimeSeries(ts.name, t_window, x_window, dtg_ref=dtg_ref)
+                t_plot = self._time_values_for_plot(ts_window)
+                if len(t_plot) == 0:
+                    continue
+                return t_plot[0]
+        return None
+
+    def _format_marker_example(self, marker_start):
+        if marker_start is None:
+            if getattr(self, "plot_datetime_x_cb", None) and self.plot_datetime_x_cb.isChecked():
+                return "2024-01-01 00:00:00"
+            return "0.0"
+
+        if isinstance(marker_start, pd.Timestamp):
+            return marker_start.strftime("%Y-%m-%d %H:%M:%S")
+
+        if isinstance(marker_start, np.datetime64):
+            return pd.Timestamp(marker_start).strftime("%Y-%m-%d %H:%M:%S")
+
+        try:
+            numeric_value = float(marker_start)
+        except (TypeError, ValueError):
+            parsed_dt = pd.to_datetime(marker_start, errors="coerce")
+            if pd.notna(parsed_dt):
+                return parsed_dt.strftime("%Y-%m-%d %H:%M:%S")
+            return str(marker_start)
+
+        return f"{numeric_value:g}"
+
+    def _refresh_marker_input_defaults(self, *_args):
+        marker_input = getattr(self, "x_axis_marker_input", None)
+        if marker_input is None:
+            return
+
+        marker_start = self._selected_series_marker_context()
+        default_value = self._format_marker_example(marker_start)
+        if getattr(self, "plot_datetime_x_cb", None) and self.plot_datetime_x_cb.isChecked():
+            marker_input.setPlaceholderText(
+                f"Start: {default_value} (example format: YYYY-MM-DD HH:MM:SS)"
+            )
+        else:
+            marker_input.setPlaceholderText(f"Start: {default_value} (numeric x-axis value)")
+
+        current_value = marker_input.text().strip()
+        if not current_value or current_value == self._marker_input_auto_value:
+            marker_input.setText(default_value)
+            self._marker_input_auto_value = default_value
+        elif current_value == default_value:
+            self._marker_input_auto_value = default_value
+
 
     # ------------------------------------------------------------------
     # Compatibility helper -------------------------------------------------
@@ -3016,6 +3116,7 @@ class TimeSeriesEditorQt(QMainWindow):
         mark_extrema = (
             hasattr(self, "plot_extrema_cb") and self.plot_extrema_cb.isChecked()
         )
+        marker_x = self._marker_x_value()
 
         import numpy as np, anyqats as qats, os
         from PySide6.QtWidgets import QMessageBox
@@ -3264,7 +3365,7 @@ class TimeSeriesEditorQt(QMainWindow):
             if engine == "bokeh":
                 from bokeh.plotting import figure, show
                 from bokeh.layouts import gridplot
-                from bokeh.models import HoverTool, ColumnDataSource, Range1d
+                from bokeh.models import HoverTool, ColumnDataSource, Range1d, Span
                 from bokeh.palettes import Category10_10
                 from bokeh.io import curdoc
                 from bokeh.embed import file_html
@@ -3318,6 +3419,16 @@ class TimeSeriesEditorQt(QMainWindow):
                         min_idx = np.argmin(all_y)
                         p.circle([all_t[max_idx]], [all_y[max_idx]], size=6, color="red")
                         p.circle([all_t[min_idx]], [all_y[min_idx]], size=6, color="blue")
+                    if marker_x is not None:
+                        p.add_layout(
+                            Span(
+                                location=marker_x,
+                                dimension="height",
+                                line_color="orange",
+                                line_width=2,
+                                line_dash="dashed",
+                            )
+                        )
                     if same_axes:
                         p.x_range = Range1d(x_min, x_max)
                         p.y_range = Range1d(y_min, y_max)
@@ -3412,6 +3523,13 @@ class TimeSeriesEditorQt(QMainWindow):
                             col=c,
                         )
 
+                if marker_x is not None:
+                    fig.add_vline(
+                        x=marker_x,
+                        line_color="orange",
+                        line_width=2,
+                        line_dash="dash",
+                    )
                 if same_axes:
                     fig.update_xaxes(range=[x_min, x_max])
                     fig.update_yaxes(range=[y_min, y_max])
@@ -3463,6 +3581,8 @@ class TimeSeriesEditorQt(QMainWindow):
                     min_idx = np.argmin(all_y)
                     ax.scatter(all_t[max_idx], all_y[max_idx], color="red", label="Max")
                     ax.scatter(all_t[min_idx], all_y[min_idx], color="blue", label="Min")
+                if marker_x is not None:
+                    ax.axvline(marker_x, color="orange", linestyle="--", linewidth=2, label="Marker")
                 ax.set_title(lbl)
                 ax.legend()
                 if same_axes:
@@ -3785,6 +3905,7 @@ class TimeSeriesEditorQt(QMainWindow):
                  't', 'y', 'label', 'alpha', 'is_mean'
         """
         self._clear_last_plot_call()
+        marker_x = self._marker_x_value()
 
         engine = (
             self.plot_engine_combo.currentText()
@@ -3800,7 +3921,7 @@ class TimeSeriesEditorQt(QMainWindow):
         # ───────────────────────── 1.  Bokeh branch ──────────────────────────
         if engine == "bokeh":
             from bokeh.plotting import figure, show
-            from bokeh.models import Button, CustomJS, ColumnDataSource, HoverTool
+            from bokeh.models import Button, CustomJS, ColumnDataSource, HoverTool, Span
             from bokeh.layouts import column
             from bokeh.palettes import Category10_10
             from bokeh.embed import file_html
@@ -3861,6 +3982,16 @@ class TimeSeriesEditorQt(QMainWindow):
                 r_max = p.circle([all_t[max_idx]], [all_y[max_idx]], size=6, color="red", legend_label="Max")
                 r_min = p.circle([all_t[min_idx]], [all_y[min_idx]], size=6, color="blue", legend_label="Min")
                 renderers.extend([r_max, r_min])
+            if marker_x is not None:
+                p.add_layout(
+                    Span(
+                        location=marker_x,
+                        dimension="height",
+                        line_color="orange",
+                        line_width=2,
+                        line_dash="dashed",
+                    )
+                )
 
             p.legend.click_policy = "mute"
             p.add_layout(p.legend[0], "right")
@@ -3960,6 +4091,13 @@ class TimeSeriesEditorQt(QMainWindow):
                 showlegend=True,
                 template="plotly_dark" if self.theme_switch.isChecked() else "plotly",
             )
+            if marker_x is not None:
+                fig.add_vline(
+                    x=marker_x,
+                    line_color="orange",
+                    line_width=2,
+                    line_dash="dash",
+                )
             if self.theme_switch.isChecked():
                 fig.update_layout(
                     paper_bgcolor="#2b2b2b",
@@ -4020,6 +4158,8 @@ class TimeSeriesEditorQt(QMainWindow):
             min_idx = np.argmin(all_y)
             ax.scatter(all_t[max_idx], all_y[max_idx], color="red", label="Max")
             ax.scatter(all_t[min_idx], all_y[min_idx], color="blue", label="Min")
+        if marker_x is not None:
+            ax.axvline(marker_x, color="orange", linestyle="--", linewidth=2, label="Marker")
 
         ax.set_title(title)
         ax.set_xlabel(self._x_axis_label())
@@ -4062,6 +4202,34 @@ class TimeSeriesEditorQt(QMainWindow):
                     return converted
 
         return self._convert_to_datetime_if_possible(ts.t)
+
+    def _marker_x_value(self):
+        marker_input = getattr(self, "x_axis_marker_input", None)
+        if marker_input is None:
+            return None
+
+        raw_value = marker_input.text().strip()
+        if not raw_value:
+            return None
+
+        if getattr(self, "plot_datetime_x_cb", None) and self.plot_datetime_x_cb.isChecked():
+            parsed_dt = pd.to_datetime(raw_value, errors="coerce")
+            if pd.notna(parsed_dt):
+                return parsed_dt
+
+        try:
+            return float(raw_value)
+        except ValueError:
+            parsed_dt = pd.to_datetime(raw_value, errors="coerce")
+            if pd.notna(parsed_dt):
+                return parsed_dt
+
+        QMessageBox.warning(
+            self,
+            "Invalid x-axis marker",
+            "Enter a numeric x-axis location or a datetime value that pandas can parse.",
+        )
+        return None
 
     def _x_axis_label(self) -> str:
         if getattr(self, "plot_datetime_x_cb", None) and self.plot_datetime_x_cb.isChecked():
