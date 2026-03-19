@@ -195,6 +195,22 @@ def test_add_unique_timeseries_attaches_metadata(monkeypatch):
     np.testing.assert_array_equal(ts.rao_amp, np.array([1.0, 2.0]))
 
 
+def test_crop_orcaflex_series_to_window_trims_full_results(monkeypatch):
+    file_loader = _load_file_loader(monkeypatch)
+    loader = file_loader.FileLoader()
+
+    model = object()
+    loader.orcaflex_time_windows[id(model)] = (2.0, 4.0)
+
+    time = np.array([0.0, 1.0, 2.0, 3.0, 4.0, 5.0])
+    data = np.array([10.0, 11.0, 12.0, 13.0, 14.0, 15.0])
+
+    cropped_time, cropped_data = loader._crop_orcaflex_series_to_window(model, time, data)
+
+    np.testing.assert_array_equal(cropped_time, np.array([2.0, 3.0, 4.0]))
+    np.testing.assert_array_equal(cropped_data, np.array([12.0, 13.0, 14.0]))
+
+
 def test_is_frequency_domain_model_detects_general_string(monkeypatch):
     file_loader = _load_file_loader(monkeypatch)
     loader = file_loader.FileLoader()
@@ -371,6 +387,80 @@ def test_load_orcaflex_time_histories_individually_handles_object_extra(monkeypa
     np.testing.assert_array_equal(captured[1][2], np.array([3.0, 4.0]))
     assert captured[0][3] is None
     assert captured[1][3] == spectral_lookup["obj:B"]
+
+
+def test_load_orcaflex_data_from_specs_respects_requested_window(monkeypatch):
+    file_loader = _load_file_loader(monkeypatch)
+
+    class _StubTimeSeries:
+        def __init__(self, name, t, x):
+            self.name = name
+            self.t = np.asarray(t, dtype=float)
+            self.x = np.asarray(x, dtype=float)
+
+    class _StubTsDB:
+        def __init__(self):
+            self.register = {}
+
+        def add(self, ts):
+            if ts.name in self.register:
+                raise KeyError(ts.name)
+            self.register[ts.name] = ts
+
+    class _FakeGeneral:
+        DynamicsSolutionMethod = "Time domain"
+
+        def TimeHistory(self, name, _time_spec):
+            assert name == "Time"
+            return np.array([0.0, 1.0, 2.0, 3.0, 4.0, 5.0])
+
+    class _FakeLine:
+        typeName = "Vessel"
+        Name = "LineA"
+
+    class _FakeModel:
+        def __init__(self):
+            self.objects = [_FakeLine()]
+            self.simulationStartTime = 0.0
+            self.simulationStopTime = 5.0
+            self.simulationTimeStatus = types.SimpleNamespace(CurrentTime=5.0)
+            self._general = _FakeGeneral()
+            self._line = self.objects[0]
+
+        def __getitem__(self, key):
+            if key == "General":
+                return self._general
+            if key == "LineA":
+                return self._line
+            raise KeyError(key)
+
+    captured_periods = []
+
+    fake_module = types.SimpleNamespace(
+        SpecifiedPeriod=lambda start, stop: captured_periods.append((start, stop)) or ("period", start, stop),
+        TimeHistorySpecification=lambda obj, var: ("spec", obj.Name, var),
+        GetMultipleTimeHistories=lambda _specs, _time_spec: np.array(
+            [[10.0], [11.0], [12.0], [13.0], [14.0], [15.0]]
+        ),
+    )
+
+    monkeypatch.setitem(sys.modules, "OrcFxAPI", fake_module)
+    monkeypatch.setattr(file_loader, "OrcFxAPI", fake_module)
+    monkeypatch.setattr(file_loader, "TsDB", _StubTsDB)
+    monkeypatch.setattr(file_loader, "TimeSeries", _StubTimeSeries)
+
+    loader = file_loader.FileLoader()
+    loader.orcaflex_global_time_window = (2.0, 4.0)
+
+    tsdb = loader._load_orcaflex_data_from_specs(
+        _FakeModel(),
+        [("LineA", "Axial", None, None)],
+    )
+
+    series = tsdb.register["LineA:Axial"]
+    assert captured_periods == [(2.0, 4.0)]
+    np.testing.assert_array_equal(series.t, np.array([2.0, 3.0, 4.0]))
+    np.testing.assert_array_equal(series.x, np.array([12.0, 13.0, 14.0]))
 
 
 def test_load_orcaflex_time_histories_individually_returns_last_error(monkeypatch):
