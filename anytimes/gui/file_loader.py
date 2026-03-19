@@ -1795,6 +1795,7 @@ class FileLoader:
 
         try:
             results = OrcFxAPI.GetMultipleTimeHistories(resolved_specs, time_spec)
+            time, results = self._crop_orcaflex_series_to_window(model, time, results)
             for i, name in enumerate(names):
                 metadata = spectral_lookup.get(name)
                 self._add_unique_timeseries(tsdb, name, time, results[:, i], metadata=metadata)
@@ -1846,6 +1847,7 @@ class FileLoader:
                     data = obj.TimeHistory(var_name, time_spec, object_extra)
                 metadata = spectral_lookup.get(name)
                 resolved_time = self._resolve_time_array(time, data)
+                resolved_time, data = self._crop_orcaflex_series_to_window(model, resolved_time, data)
                 self._add_unique_timeseries(tsdb, name, resolved_time, data, metadata=metadata)
                 loaded_any = True
             except Exception as ex:
@@ -1885,6 +1887,31 @@ class FileLoader:
                 return time_arr
 
         return np.arange(n_samples, dtype=float)
+
+    def _crop_orcaflex_series_to_window(self, model, time, data):
+        """Trim time-domain OrcaFlex results to the requested extraction window."""
+
+        time_arr = np.asarray(time, dtype=float)
+        data_arr = np.asarray(data)
+        if time_arr.ndim != 1 or time_arr.size == 0:
+            return time_arr, data_arr
+
+        if self._is_frequency_domain_model(model):
+            return time_arr, data_arr
+
+        requested = self.orcaflex_time_windows.get(id(model))
+        if requested is None:
+            return time_arr, data_arr
+
+        start, stop = requested
+        tol = max(1e-9, np.finfo(float).eps * max(1.0, abs(start), abs(stop)) * 10.0)
+        mask = (time_arr >= start - tol) & (time_arr <= stop + tol)
+        if mask.all() or not mask.any():
+            return time_arr, data_arr
+
+        if data_arr.ndim == 1:
+            return time_arr[mask], data_arr[mask]
+        return time_arr[mask], data_arr[mask, ...]
 
     def _add_unique_timeseries(self, tsdb, base_label, time, data, metadata=None):
         """Add ``TimeSeries`` to *tsdb* ensuring its name is unique."""
