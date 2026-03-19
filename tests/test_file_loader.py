@@ -7,6 +7,7 @@ import types
 
 import numpy as np
 import pandas as pd
+import pytest
 import xarray as xr
 
 
@@ -397,6 +398,25 @@ def test_load_orcaflex_time_histories_individually_returns_last_error(monkeypatc
 
     assert isinstance(error, RuntimeError)
     assert str(error) == "not available"
+
+
+def test_open_orcaflex_picker_includes_preload_error_details(monkeypatch):
+    file_loader = _load_file_loader(monkeypatch)
+    loader = file_loader.FileLoader()
+
+    def _fail_load(_self, filepath):
+        raise RuntimeError(
+            f"Problem reading time history file 'missing.txt' while opening '{filepath}'"
+        )
+
+    monkeypatch.setattr(file_loader.FileLoader, "_load_sim_model", _fail_load)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        loader.open_orcaflex_picker(["/tmp/example.sim"])
+
+    message = str(excinfo.value)
+    assert message.startswith("Models not preloaded.\n")
+    assert "example.sim: Problem reading time history file 'missing.txt'" in message
 
 def test_load_era5_netcdf_single_point(monkeypatch, tmp_path):
     file_loader = _load_file_loader(monkeypatch)
