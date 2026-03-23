@@ -324,6 +324,7 @@ def test_calculate_series_uses_multiprocessing_and_updates_progress(qt_app, mess
         tsdbs.append(DummyDB({"CommonVar": TimeSeries("CommonVar", t, x)}))
 
     submitted = []
+    tqdm_calls = []
 
     class FakeFuture:
         def __init__(self, value=None, error=None):
@@ -357,6 +358,19 @@ def test_calculate_series_uses_multiprocessing_and_updates_progress(qt_app, mess
     monkeypatch.setattr(editor_module, "ProcessPoolExecutor", FakeExecutor)
     monkeypatch.setattr(editor_module, "as_completed", lambda futures: list(futures))
 
+    class FakeTqdm:
+        def __init__(self, iterable, total=None, desc=None, leave=None):
+            tqdm_calls.append({"total": total, "desc": desc, "leave": leave})
+            self._iterable = iterable
+
+        def __enter__(self):
+            return iter(self._iterable)
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(editor_module, "tqdm", FakeTqdm)
+
     editor = _build_editor(monkeypatch, tsdbs, files)
     editor.calc_entry.setPlainText("c_CommonVar + 2")
 
@@ -364,6 +378,7 @@ def test_calculate_series_uses_multiprocessing_and_updates_progress(qt_app, mess
     qt_app.processEvents()
 
     assert submitted == [0, 1, 2]
+    assert tqdm_calls == [{"total": len(files), "desc": "Calculating", "leave": False}]
     assert editor.progress.maximum() == len(files)
     assert editor.progress.value() == len(files)
     assert "calc_cc_CommonVar_p_2_f1" in tsdbs[0].getm()
@@ -408,6 +423,7 @@ def test_quick_transformation_uses_multiprocessing_and_updates_progress(qt_app, 
         tsdbs.append(DummyDB({"CommonVar": TimeSeries("CommonVar", t, x)}))
 
     submitted = []
+    tqdm_calls = []
 
     class FakeFuture:
         def __init__(self, value=None, error=None):
@@ -441,6 +457,19 @@ def test_quick_transformation_uses_multiprocessing_and_updates_progress(qt_app, 
     monkeypatch.setattr(editor_module, "ProcessPoolExecutor", FakeExecutor)
     monkeypatch.setattr(editor_module, "as_completed", lambda futures: list(futures))
 
+    class FakeTqdm:
+        def __init__(self, iterable, total=None, desc=None, leave=None):
+            tqdm_calls.append({"total": total, "desc": desc, "leave": leave})
+            self._iterable = iterable
+
+        def __enter__(self):
+            return iter(self._iterable)
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(editor_module, "tqdm", FakeTqdm)
+
     editor = _build_editor(monkeypatch, tsdbs, files)
     editor.var_checkboxes["CommonVar"].setChecked(True)
 
@@ -448,6 +477,7 @@ def test_quick_transformation_uses_multiprocessing_and_updates_progress(qt_app, 
     qt_app.processEvents()
 
     assert submitted == [0, 1, 2]
+    assert tqdm_calls == [{"total": len(files), "desc": "Transforming", "leave": False}]
     assert editor.progress.maximum() == len(files)
     assert editor.progress.value() == len(files)
     assert np.allclose(tsdbs[0].getm()["CommonVar_×2_f1"].x, np.array([2, 4, 6, 8, 10], dtype=float))
