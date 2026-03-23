@@ -271,6 +271,26 @@ def test_calculate_series_auto_names_distinguish_plus_and_minus(qt_app, message_
     assert not message_spy["warn"]
 
 
+def test_calculate_series_auto_name_marks_common_variables(qt_app, message_spy, monkeypatch):
+    files = ["file1.ts", "file2.ts"]
+    tsdbs = []
+    for idx in range(2):
+        t = np.arange(5, dtype=float)
+        x = np.arange(5, dtype=float) + idx
+        tsdbs.append(DummyDB({"CommonVar": TimeSeries("CommonVar", t, x)}))
+
+    editor = _build_editor(monkeypatch, tsdbs, files)
+    editor.calc_entry.setPlainText("c_CommonVar + 2")
+
+    editor.calculate_series()
+    qt_app.processEvents()
+
+    assert "calc_common_CommonVar_plus_2_f1" in tsdbs[0].getm()
+    assert "calc_common_CommonVar_plus_2_f2" in tsdbs[1].getm()
+    assert not message_spy["crit"]
+    assert not message_spy["warn"]
+
+
 def test_merge_preserves_irregular_time_steps(qt_app, message_spy, monkeypatch):
     files = ["file1.ts"]
     t1 = np.array([0.0, 1.0, 11.0, 21.0])
