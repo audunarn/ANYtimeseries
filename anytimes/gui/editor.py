@@ -11,6 +11,7 @@ import sys
 import traceback
 import warnings
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from contextlib import nullcontext
 from array import array
 from collections.abc import Callable, Sequence
 
@@ -18,6 +19,7 @@ import anyqats as qats
 import numpy as np
 import pandas as pd
 import scipy.io
+from tqdm.auto import tqdm
 from anyqats import TimeSeries, TsDB
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
 from matplotlib.figure import Figure
@@ -79,6 +81,14 @@ from .variable_tab import VariableRowWidget, VariableTab
 
 _TRANSFORM_SPEC = None
 
+
+
+
+def _tqdm_progress(iterable, total, desc):
+    """Return a tqdm progress iterator when possible."""
+    if total <= 0:
+        return nullcontext(iterable)
+    return tqdm(iterable, total=total, desc=desc, leave=False)
 
 def _evaluate_calculator_task(file_idx, task):
     """Evaluate one calculator expression for a single file payload."""
@@ -1264,12 +1274,13 @@ class TimeSeriesEditorQt(QMainWindow):
                         executor.submit(_evaluate_calculator_task, file_idx, task): file_idx
                         for file_idx, task in enumerate(calculator_tasks)
                     }
-                    for future in as_completed(futures):
-                        file_idx = futures[future]
-                        current_file_idx = file_idx
-                        evaluated_results[file_idx] = future.result()[1]
-                        completed += 1
-                        self.update_progressbar(completed, len(self.tsdbs))
+                    with _tqdm_progress(as_completed(futures), len(self.tsdbs), "Calculating") as progress_iter:
+                        for future in progress_iter:
+                            file_idx = futures[future]
+                            current_file_idx = file_idx
+                            evaluated_results[file_idx] = future.result()[1]
+                            completed += 1
+                            self.update_progressbar(completed, len(self.tsdbs))
             else:
                 for file_idx, task in enumerate(calculator_tasks):
                     current_file_idx = file_idx
@@ -1672,13 +1683,14 @@ class TimeSeriesEditorQt(QMainWindow):
                         executor.submit(_evaluate_transform_payload, idx, task["y_src"]): idx
                         for idx, task in enumerate(tasks)
                     }
-                    for future in as_completed(futures):
-                        current_task = tasks[futures[future]]
-                        task_idx, y_new = future.result()
-                        task = tasks[task_idx]
-                        task["y_new"] = y_new
-                        completed += 1
-                        self.update_progressbar(completed, len(tasks))
+                    with _tqdm_progress(as_completed(futures), len(tasks), "Transforming") as progress_iter:
+                        for future in progress_iter:
+                            current_task = tasks[futures[future]]
+                            task_idx, y_new = future.result()
+                            task = tasks[task_idx]
+                            task["y_new"] = y_new
+                            completed += 1
+                            self.update_progressbar(completed, len(tasks))
             else:
                 for idx, task in enumerate(tasks):
                     current_task = task
