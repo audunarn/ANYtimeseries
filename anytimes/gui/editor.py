@@ -906,6 +906,20 @@ class TimeSeriesEditorQt(QMainWindow):
         # Keep typing focus in the calculator entry
         self.calc_entry.setFocus()
 
+    def _format_calculator_equation(self, expr: str) -> str:
+        """Return a readable representation of a calculator assignment."""
+        lhs, sep, rhs = expr.partition("=")
+        if not sep:
+            return expr.strip()
+
+        lhs = lhs.strip()
+        rhs = rhs.strip()
+        if not rhs:
+            return f"{lhs} ="
+
+        wrapped_rhs = "\n    ".join(line.strip() for line in rhs.splitlines() if line.strip())
+        return f"{lhs} =\n    {wrapped_rhs}"
+
     def calculate_series(self):
         """Evaluate the Calculator expression and create new series."""
         import traceback
@@ -1128,7 +1142,12 @@ class TimeSeriesEditorQt(QMainWindow):
             msg = base_output
         else:
             msg = ", ".join(f"{base_output}_f{n}" for n in sorted(file_tags_used))
-        QMessageBox.information(self, "Success", f"New variable(s): {msg}")
+        equation_text = self._format_calculator_equation(expr)
+        QMessageBox.information(
+            self,
+            "Success",
+            f"New variable(s): {msg}\n\nEquation used:\n{equation_text}",
+        )
 
     def show_calc_help(self):
         """Display calculator usage help in a message box."""
