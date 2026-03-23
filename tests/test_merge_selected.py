@@ -373,6 +373,32 @@ def test_calculate_series_uses_multiprocessing_and_updates_progress(qt_app, mess
     assert not message_spy["warn"]
 
 
+def test_calculate_series_preserves_per_file_lengths(qt_app, message_spy, monkeypatch):
+    files = ["file1.ts", "file2.ts"]
+    tsdbs = [
+        DummyDB({"CommonVar": TimeSeries("CommonVar", np.arange(5, dtype=float), np.arange(5, dtype=float) + 1.0)}),
+        DummyDB({"CommonVar": TimeSeries("CommonVar", np.arange(8, dtype=float), np.arange(8, dtype=float) + 10.0)}),
+    ]
+
+    editor = _build_editor(monkeypatch, tsdbs, files)
+    editor.calc_entry.setPlainText("c_CommonVar + 2")
+
+    editor.calculate_series()
+    qt_app.processEvents()
+
+    first = tsdbs[0].getm()["calc_cc_CommonVar_p_2_f1"]
+    second = tsdbs[1].getm()["calc_cc_CommonVar_p_2_f2"]
+
+    assert len(first.t) == 5
+    assert len(first.x) == 5
+    assert len(second.t) == 8
+    assert len(second.x) == 8
+    assert np.allclose(first.x, np.arange(5, dtype=float) + 3.0)
+    assert np.allclose(second.x, np.arange(8, dtype=float) + 12.0)
+    assert not message_spy["crit"]
+    assert not message_spy["warn"]
+
+
 def test_quick_transformation_uses_multiprocessing_and_updates_progress(qt_app, message_spy, monkeypatch):
     files = ["file1.ts", "file2.ts", "file3.ts"]
     tsdbs = []
@@ -427,6 +453,32 @@ def test_quick_transformation_uses_multiprocessing_and_updates_progress(qt_app, 
     assert np.allclose(tsdbs[0].getm()["CommonVar_×2_f1"].x, np.array([2, 4, 6, 8, 10], dtype=float))
     assert np.allclose(tsdbs[1].getm()["CommonVar_×2_f2"].x, np.array([4, 6, 8, 10, 12], dtype=float))
     assert np.allclose(tsdbs[2].getm()["CommonVar_×2_f3"].x, np.array([6, 8, 10, 12, 14], dtype=float))
+    assert not message_spy["crit"]
+    assert not message_spy["warn"]
+
+
+def test_quick_transformation_preserves_per_file_lengths(qt_app, message_spy, monkeypatch):
+    files = ["file1.ts", "file2.ts"]
+    tsdbs = [
+        DummyDB({"CommonVar": TimeSeries("CommonVar", np.arange(4, dtype=float), np.arange(4, dtype=float) + 1.0)}),
+        DummyDB({"CommonVar": TimeSeries("CommonVar", np.arange(7, dtype=float), np.arange(7, dtype=float) + 10.0)}),
+    ]
+
+    editor = _build_editor(monkeypatch, tsdbs, files)
+    editor.var_checkboxes["CommonVar"].setChecked(True)
+
+    editor.multiply_by_2()
+    qt_app.processEvents()
+
+    first = tsdbs[0].getm()["CommonVar_×2_f1"]
+    second = tsdbs[1].getm()["CommonVar_×2_f2"]
+
+    assert len(first.t) == 4
+    assert len(first.x) == 4
+    assert len(second.t) == 7
+    assert len(second.x) == 7
+    assert np.allclose(first.x, np.array([2.0, 4.0, 6.0, 8.0]))
+    assert np.allclose(second.x, np.array([20.0, 22.0, 24.0, 26.0, 28.0, 30.0, 32.0]))
     assert not message_spy["crit"]
     assert not message_spy["warn"]
 

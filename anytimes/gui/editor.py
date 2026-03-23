@@ -77,27 +77,15 @@ from .sortable_table_widget_item import SortableTableWidgetItem
 from .variable_tab import VariableRowWidget, VariableTab
 
 
-_CALCULATOR_SHARED_CTX = None
-_CALCULATOR_TIME_WINDOW = None
-_CALCULATOR_EXEC_EXPR = None
-_CALCULATOR_BASE_OUTPUT = None
 _TRANSFORM_SPEC = None
 
 
-def _init_calculator_worker(shared_ctx, time_window, exec_expr, base_output):
-    """Initialize calculator worker state for multiprocessing."""
-    global _CALCULATOR_SHARED_CTX, _CALCULATOR_TIME_WINDOW, _CALCULATOR_EXEC_EXPR, _CALCULATOR_BASE_OUTPUT
-    _CALCULATOR_SHARED_CTX = shared_ctx
-    _CALCULATOR_TIME_WINDOW = np.asarray(time_window, dtype=float)
-    _CALCULATOR_EXEC_EXPR = exec_expr
-    _CALCULATOR_BASE_OUTPUT = base_output
-
-
-def _evaluate_calculator_file(file_idx, file_ctx):
+def _evaluate_calculator_task(file_idx, task):
     """Evaluate one calculator expression for a single file payload."""
-    ctx = dict(_CALCULATOR_SHARED_CTX or {})
-    ctx.update(file_ctx)
-    ctx["time"] = _CALCULATOR_TIME_WINDOW
+    time_window = np.asarray(task["time_window"], dtype=float)
+    ctx = dict(task.get("shared_ctx") or {})
+    ctx.update(task.get("file_ctx") or {})
+    ctx["time"] = time_window
     ctx.update({
         "np": np,
         "sin": np.sin,
@@ -114,11 +102,11 @@ def _evaluate_calculator_file(file_idx, file_ctx):
         "degrees": np.degrees,
     })
 
-    exec(_CALCULATOR_EXEC_EXPR, ctx)
-    y = np.asarray(ctx[_CALCULATOR_BASE_OUTPUT], dtype=float)
+    exec(task["exec_expr"], ctx)
+    y = np.asarray(ctx[task["base_output"]], dtype=float)
     if y.ndim == 0:
-        y = np.full_like(_CALCULATOR_TIME_WINDOW, y, dtype=float)
-    if len(y) != len(_CALCULATOR_TIME_WINDOW):
+        y = np.full_like(time_window, y, dtype=float)
+    if len(y) != len(time_window):
         raise ValueError("Result length mismatch with time vector")
     return file_idx, y
 
@@ -1101,9 +1089,9 @@ class TimeSeriesEditorQt(QMainWindow):
             exec_expr = f"{base_output} = {expr}"
             display_expr = exec_expr
 
-        t_window = None
-        t_window_coord = None
-        t_window_dtg_ref = None
+        file_windows = []
+        file_window_coords = []
+        file_window_dtg_refs = []
 
         def _time_coordinates(ts):
             """Return alignment coordinates for a series.
@@ -1121,23 +1109,23 @@ class TimeSeriesEditorQt(QMainWindow):
                 return coord.astype("datetime64[us]").astype(np.int64).astype(float)
             return coord.astype(float)
 
-        def _align_to_window(ts, x_values):
+        def _align_to_window(ts, x_values, target_time, target_coord):
             coord = _time_coordinates(ts)
-            idx = (coord >= t_window_coord[0]) & (coord <= t_window_coord[-1])
+            idx = (coord >= target_coord[0]) & (coord <= target_coord[-1])
             if not np.any(idx):
-                return np.full_like(t_window, np.nan, dtype=float)
+                return np.full_like(target_time, np.nan, dtype=float)
 
             coord_part = coord[idx]
             x_part = np.asarray(x_values[idx], dtype=float)
-            if np.array_equal(coord_part, t_window_coord):
+            if np.array_equal(coord_part, target_coord):
                 return x_part
 
-            overlap = (t_window_coord >= coord_part[0]) & (t_window_coord <= coord_part[-1])
+            overlap = (target_coord >= coord_part[0]) & (target_coord <= coord_part[-1])
             if not np.any(overlap):
-                return np.full_like(t_window, np.nan, dtype=float)
+                return np.full_like(target_time, np.nan, dtype=float)
 
-            full = np.full_like(t_window, np.nan, dtype=float)
-            target_numeric = _coord_to_numeric(t_window_coord[overlap])
+            full = np.full_like(target_time, np.nan, dtype=float)
+            target_numeric = _coord_to_numeric(target_coord[overlap])
             source_numeric = _coord_to_numeric(coord_part)
 
             if source_numeric.size == 1:
@@ -1147,20 +1135,24 @@ class TimeSeriesEditorQt(QMainWindow):
             return full
 
         for tsdb in self.tsdbs:
+            file_t_window = None
+            file_t_window_coord = None
+            file_t_window_dtg_ref = None
             for ts in tsdb.getm().values():
                 mask = self.get_time_window(ts)
                 if mask is not None and np.any(mask):
-                    t_window = ts.t[mask]
-                    t_window_coord = _time_coordinates(ts)[mask]
-                    t_window_dtg_ref = ts.dtg_ref
+                    file_t_window = ts.t[mask]
+                    file_t_window_coord = _time_coordinates(ts)[mask]
+                    file_t_window_dtg_ref = ts.dtg_ref
                     break
-            if t_window is not None:
-                break
-        if t_window is None:
-            self.progress.reset()
-            self.progress.setFormat("%p%")
-            QMessageBox.critical(self, "No Time Window", "Could not infer a valid time window.")
-            return
+            if file_t_window is None:
+                self.progress.reset()
+                self.progress.setFormat("%p%")
+                QMessageBox.critical(self, "No Time Window", "Could not infer a valid time window for one or more files.")
+                return
+            file_windows.append(file_t_window)
+            file_window_coords.append(file_t_window_coord)
+            file_window_dtg_refs.append(file_t_window_dtg_ref)
 
         common_tokens = {m.group(1) for m in re.finditer(r"\bc_([\w\- ]+)\b", exec_expr)}
         user_tokens = {m.group(1) for m in re.finditer(r"\bu_([\w\- ]+)", exec_expr)}
@@ -1178,122 +1170,112 @@ class TimeSeriesEditorQt(QMainWindow):
             QMessageBox.critical(self, "Unknown user variable", ", ".join(sorted(missing)))
             return
 
-        def align_all_files(name, name_by_file=None):
-            vecs = []
-            for i, tsdb in enumerate(self.tsdbs):
-                lookup = None
-                if name_by_file and i < len(name_by_file):
-                    lookup = name_by_file[i]
-                ts = tsdb.getm().get(lookup or name)
-                if ts is None and not name_by_file:
-                    alt = next(
-                        (key for key in tsdb.getm() if re.sub(r"^f\d+_", "", key) == name),
-                        None,
-                    )
-                    if alt:
-                        ts = tsdb.getm().get(alt)
-                        lookup = alt
+        def _resolve_series(file_index, name, name_by_file=None):
+            tsdb = self.tsdbs[file_index]
+            lookup = None
+            if name_by_file and file_index < len(name_by_file):
+                lookup = name_by_file[file_index]
+            ts = tsdb.getm().get(lookup or name)
+            if ts is None and not name_by_file:
+                alt = next(
+                    (key for key in tsdb.getm() if re.sub(r"^f\d+_", "", key) == name),
+                    None,
+                )
+                if alt:
+                    ts = tsdb.getm().get(alt)
+                    lookup = alt
+            return ts, lookup or name
+
+        calculator_tasks = []
+        current_file_idx = 0
+        for file_idx, tsdb in enumerate(self.tsdbs):
+            target_time = file_windows[file_idx]
+            target_coord = file_window_coords[file_idx]
+            shared_ctx = {}
+            for src_idx, db in enumerate(self.tsdbs):
+                tag = f"f{src_idx + 1}"
+                for key, ts in db.getm().items():
+                    x_part = _align_to_window(ts, self.apply_filters(ts), target_time, target_coord)
+                    if np.all(np.isnan(x_part)):
+                        continue
+                    shared_ctx[f"{tag}_{_safe(key)}"] = x_part.astype(float)
+
+            file_ctx = {}
+            for k in common_tokens:
+                names = None
+                if self.common_lookup and k in self.common_lookup:
+                    names = self.common_lookup[k]
+                    if len(names) != len(self.tsdbs):
+                        names = None
+                ts, missing_name = _resolve_series(file_idx, k, name_by_file=names)
                 if ts is None:
-                    missing = lookup or name
-                    return None, f"'{missing}' not in {os.path.basename(self.file_paths[i])}"
-                vecs.append(_align_to_window(ts, ts.x))
-            return vecs, None
+                    self.progress.reset()
+                    self.progress.setFormat("%p%")
+                    QMessageBox.critical(self, "Common variable error", f"'{missing_name}' not in {os.path.basename(self.file_paths[file_idx])}")
+                    return
+                file_ctx[f"c_{_safe(k)}"] = _align_to_window(ts, ts.x, target_time, target_coord)
 
-        aligned_common, aligned_u_global = {}, {}
-        for k in common_tokens:
-            names = None
-            if self.common_lookup and k in self.common_lookup:
-                names = self.common_lookup[k]
-                if len(names) != len(self.tsdbs):
-                    names = None
-            v, err = align_all_files(k, name_by_file=names)
-            if err:
-                self.progress.reset()
-                self.progress.setFormat("%p%")
-                QMessageBox.critical(self, "Common variable error", err)
-                return
-            aligned_common[k] = v
-        for k in u_global:
-            v, err = align_all_files(k)
-            if err:
-                self.progress.reset()
-                self.progress.setFormat("%p%")
-                QMessageBox.critical(self, "User variable error", err)
-                return
-            aligned_u_global[k] = v
+            for k in u_global:
+                ts, missing_name = _resolve_series(file_idx, k)
+                if ts is None:
+                    self.progress.reset()
+                    self.progress.setFormat("%p%")
+                    QMessageBox.critical(self, "User variable error", f"'{missing_name}' not in {os.path.basename(self.file_paths[file_idx])}")
+                    return
+                file_ctx[f"u_{_safe(k)}"] = _align_to_window(ts, ts.x, target_time, target_coord)
 
-        aligned_u_perfile = {}
-        for tok in u_perfile:
-            m = re.match(r"(.+)_f(\d+)$", tok)
-            if not m:
-                continue
-            src_idx = int(m.group(2)) - 1
-            if src_idx >= len(self.tsdbs):
-                self.progress.reset()
-                self.progress.setFormat("%p%")
-                QMessageBox.critical(self, "User variable error", f"File #{m.group(2)} does not exist.")
-                return
-            ts = self.tsdbs[src_idx].getm().get(tok)
-            if ts is None:
-                self.progress.reset()
-                self.progress.setFormat("%p%")
-                QMessageBox.critical(self, "User variable error", f"Variable '{tok}' not found in {os.path.basename(self.file_paths[src_idx])}")
-                return
-            aligned_u_perfile[tok] = _align_to_window(ts, ts.x)
-
-        create_common_output = len(explicit_file_tags) >= 2
-
-        total_files = len(self.tsdbs)
-        shared_ctx = {}
-        for i, db in enumerate(self.tsdbs):
-            tag = f"f{i + 1}"
-            for key, ts in db.getm().items():
-                x_part = _align_to_window(ts, self.apply_filters(ts))
-                if np.all(np.isnan(x_part)):
+            for tok in u_perfile:
+                m = re.match(r"(.+)_f(\d+)$", tok)
+                if not m:
                     continue
-                shared_ctx[f"{tag}_{_safe(key)}"] = x_part.astype(float)
+                src_idx = int(m.group(2)) - 1
+                if src_idx >= len(self.tsdbs):
+                    self.progress.reset()
+                    self.progress.setFormat("%p%")
+                    QMessageBox.critical(self, "User variable error", f"File #{m.group(2)} does not exist.")
+                    return
+                ts = self.tsdbs[src_idx].getm().get(tok)
+                if ts is None:
+                    self.progress.reset()
+                    self.progress.setFormat("%p%")
+                    QMessageBox.critical(self, "User variable error", f"Variable '{tok}' not found in {os.path.basename(self.file_paths[src_idx])}")
+                    return
+                file_ctx[f"u_{tok}"] = _align_to_window(ts, ts.x, target_time, target_coord)
 
-        per_file_ctx = []
-        for file_idx, _tsdb in enumerate(self.tsdbs):
-            ctx = {}
-            for k, vecs in aligned_common.items():
-                ctx[f"c_{_safe(k)}"] = vecs[file_idx]
-            for k, vecs in aligned_u_global.items():
-                ctx[f"u_{_safe(k)}"] = vecs[file_idx]
-            for tok, vec in aligned_u_perfile.items():
-                ctx[f"u_{tok}"] = vec
-            per_file_ctx.append(ctx)
+            calculator_tasks.append({
+                "time_window": target_time,
+                "dtg_ref": file_window_dtg_refs[file_idx],
+                "shared_ctx": shared_ctx,
+                "file_ctx": file_ctx,
+                "exec_expr": exec_expr,
+                "base_output": base_output,
+            })
 
         evaluated_results = {}
         completed = 0
-        use_multiprocessing = total_files > 1
+        use_multiprocessing = len(self.tsdbs) > 1
 
         current_file_idx = 0
         try:
             if use_multiprocessing:
-                max_workers = min(total_files, max(1, multiprocessing.cpu_count()))
-                with ProcessPoolExecutor(
-                    max_workers=max_workers,
-                    initializer=_init_calculator_worker,
-                    initargs=(shared_ctx, t_window, exec_expr, base_output),
-                ) as executor:
+                max_workers = min(len(self.tsdbs), max(1, multiprocessing.cpu_count()))
+                with ProcessPoolExecutor(max_workers=max_workers) as executor:
                     futures = {
-                        executor.submit(_evaluate_calculator_file, file_idx, file_ctx): file_idx
-                        for file_idx, file_ctx in enumerate(per_file_ctx)
+                        executor.submit(_evaluate_calculator_task, file_idx, task): file_idx
+                        for file_idx, task in enumerate(calculator_tasks)
                     }
                     for future in as_completed(futures):
                         file_idx = futures[future]
                         current_file_idx = file_idx
                         evaluated_results[file_idx] = future.result()[1]
                         completed += 1
-                        self.update_progressbar(completed, total_files)
+                        self.update_progressbar(completed, len(self.tsdbs))
             else:
-                _init_calculator_worker(shared_ctx, t_window, exec_expr, base_output)
-                for file_idx, file_ctx in enumerate(per_file_ctx):
+                for file_idx, task in enumerate(calculator_tasks):
                     current_file_idx = file_idx
-                    evaluated_results[file_idx] = _evaluate_calculator_file(file_idx, file_ctx)[1]
+                    evaluated_results[file_idx] = _evaluate_calculator_task(file_idx, task)[1]
                     completed += 1
-                    self.update_progressbar(completed, total_files)
+                    self.update_progressbar(completed, len(self.tsdbs))
         except Exception as e:
             self.progress.reset()
             self.progress.setFormat("%p%")
@@ -1304,6 +1286,7 @@ class TimeSeriesEditorQt(QMainWindow):
             )
             return
 
+        create_common_output = len(explicit_file_tags) >= 2
         results = []
         for file_idx, tsdb in enumerate(self.tsdbs):
             f_no = file_idx + 1
@@ -1318,7 +1301,9 @@ class TimeSeriesEditorQt(QMainWindow):
             if filt_tag:
                 out_name += f"_{filt_tag}"
             out_name += suffix
-            ts_new = qats.TimeSeries(out_name, t_window, y, dtg_ref=t_window_dtg_ref)
+            time_window = calculator_tasks[file_idx]["time_window"]
+            dtg_ref = calculator_tasks[file_idx]["dtg_ref"]
+            ts_new = qats.TimeSeries(out_name, time_window, y, dtg_ref=dtg_ref)
 
             tsdb.add(ts_new)
 
