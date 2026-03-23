@@ -1166,7 +1166,8 @@ class TimeSeriesEditorQt(QMainWindow):
 
         common_tokens = {m.group(1) for m in re.finditer(r"\bc_([\w\- ]+)\b", exec_expr)}
         user_tokens = {m.group(1) for m in re.finditer(r"\bu_([\w\- ]+)", exec_expr)}
-        explicit_file_tags = {int(m.group(1)) for m in re.finditer(r"\bf(\d+)_", exec_expr)}
+        explicit_file_refs = list(re.finditer(r"\bf(\d+)_([A-Za-z_]\w*)\b", exec_expr))
+        explicit_file_tags = {int(m.group(1)) for m in explicit_file_refs}
         file_tags_used = explicit_file_tags or set(range(1, len(self.tsdbs) + 1))
 
         u_global = {u for u in user_tokens if not re.search(r"_f\d+$", u)}
@@ -1196,6 +1197,42 @@ class TimeSeriesEditorQt(QMainWindow):
                     lookup = alt
             return ts, lookup or name
 
+        explicit_var_names: dict[int, set[str]] = {}
+        if explicit_file_refs:
+            db_safe_name_maps = []
+            for db in self.tsdbs:
+                safe_name_map = {}
+                for key in db.getm().keys():
+                    safe_name_map.setdefault(_safe(key), set()).add(key)
+                db_safe_name_maps.append(safe_name_map)
+
+            for match in explicit_file_refs:
+                src_idx = int(match.group(1)) - 1
+                if not (0 <= src_idx < len(self.tsdbs)):
+                    self.progress.reset()
+                    self.progress.setFormat("%p%")
+                    QMessageBox.critical(self, "Calculation Error", f"File #{match.group(1)} does not exist.")
+                    return
+                safe_var = match.group(2)
+                matches = db_safe_name_maps[src_idx].get(safe_var)
+                if not matches:
+                    self.progress.reset()
+                    self.progress.setFormat("%p%")
+                    QMessageBox.critical(
+                        self,
+                        "Calculation Error",
+                        f"Variable reference 'f{match.group(1)}_{safe_var}' was not found in {os.path.basename(self.file_paths[src_idx])}.",
+                    )
+                    return
+                explicit_var_names.setdefault(src_idx, set()).update(matches)
+
+        filtered_series_cache = []
+        for db in self.tsdbs:
+            cache = {}
+            for key, ts in db.getm().items():
+                cache[key] = np.asarray(self.apply_filters(ts), dtype=float)
+            filtered_series_cache.append(cache)
+
         calculator_tasks = []
         current_file_idx = 0
         for file_idx, tsdb in enumerate(self.tsdbs):
@@ -1204,8 +1241,14 @@ class TimeSeriesEditorQt(QMainWindow):
             shared_ctx = {}
             for src_idx, db in enumerate(self.tsdbs):
                 tag = f"f{src_idx + 1}"
-                for key, ts in db.getm().items():
-                    x_part = _align_to_window(ts, self.apply_filters(ts), target_time, target_coord)
+                source_names = explicit_var_names.get(src_idx)
+                items = (
+                    ((name, db.getm()[name]) for name in source_names)
+                    if source_names is not None
+                    else db.getm().items()
+                )
+                for key, ts in items:
+                    x_part = _align_to_window(ts, filtered_series_cache[src_idx][key], target_time, target_coord)
                     if np.all(np.isnan(x_part)):
                         continue
                     shared_ctx[f"{tag}_{_safe(key)}"] = x_part.astype(float)
