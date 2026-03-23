@@ -40,6 +40,10 @@ from .filename_parser import choose_parse_target, parse_embedded_values
 class StatsDialog(QDialog):
     """Qt table dialog with copy and plotting features."""
 
+    _PSD_CUMULATIVE_POWER_COVERAGE = 0.995
+    _PSD_RELATIVE_LEVEL_THRESHOLD = 1.0e-3
+    _PSD_XLIM_PADDING = 1.1
+
     def __init__(self, series_info, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Statistics Table")
@@ -517,6 +521,43 @@ class StatsDialog(QDialog):
             lines.append("\t".join(vals))
         QGuiApplication.clipboard().setText("\n".join(lines))
 
+    def _suggest_psd_frequency_limit(self, freqs: np.ndarray, psd_vals: np.ndarray) -> float | None:
+        """Return a frequency limit that focuses the PSD plot on the informative region."""
+        freqs = np.asarray(freqs, dtype=float)
+        psd_vals = np.asarray(psd_vals, dtype=float)
+        valid = np.isfinite(freqs) & np.isfinite(psd_vals)
+        if not np.any(valid):
+            return None
+
+        freqs = freqs[valid]
+        psd_vals = psd_vals[valid]
+        order = np.argsort(freqs)
+        freqs = freqs[order]
+        psd_vals = psd_vals[order]
+
+        positive = freqs >= 0.0
+        freqs = freqs[positive]
+        psd_vals = psd_vals[positive]
+        if freqs.size < 2 or np.all(psd_vals <= 0.0):
+            return None
+
+        cumulative_power = np.concatenate(([0.0], np.cumsum(np.diff(freqs) * (psd_vals[1:] + psd_vals[:-1]) * 0.5)))
+        total_power = cumulative_power[-1]
+        if total_power <= 0.0:
+            return None
+
+        cumulative_idx = int(np.searchsorted(cumulative_power, self._PSD_CUMULATIVE_POWER_COVERAGE * total_power, side="left"))
+        cumulative_idx = min(cumulative_idx, freqs.size - 1)
+
+        prominent = np.flatnonzero(psd_vals >= self._PSD_RELATIVE_LEVEL_THRESHOLD * np.nanmax(psd_vals))
+        prominent_idx = int(prominent[-1]) if prominent.size else 0
+
+        limit_idx = max(cumulative_idx, prominent_idx)
+        limit_freq = freqs[limit_idx] * self._PSD_XLIM_PADDING
+        positive_freqs = freqs[freqs > 0.0]
+        min_limit = positive_freqs[0] if positive_freqs.size else freqs[-1]
+        return float(np.clip(limit_freq, min_limit, freqs[-1]))
+
     def update_plots(self):
         sel_rows = [idx.row() for idx in self.table.selectionModel().selectedRows()]
         if not sel_rows:
@@ -534,6 +575,7 @@ class StatsDialog(QDialog):
         ax = self.line_fig.add_subplot(111)
         self.psd_fig.clear()
         axp = self.psd_fig.add_subplot(111)
+        psd_limits = []
         for r in sel_rows:
             file = self.table.item(r, 0).text()
             var = self.table.item(r, 2).text()
@@ -557,6 +599,9 @@ class StatsDialog(QDialog):
                     freqs, psd_vals = ts_tmp.psd(resample=dt)
                 if freqs.size and psd_vals.size:
                     axp.plot(freqs, psd_vals, label=label)
+                    limit = self._suggest_psd_frequency_limit(freqs, psd_vals)
+                    if limit is not None:
+                        psd_limits.append(limit)
 
         ax.set_xlabel("Time")
         ax.set_ylabel("Value")
@@ -567,6 +612,8 @@ class StatsDialog(QDialog):
 
         axp.set_xlabel("Frequency [Hz]")
         axp.set_ylabel("Power spectral density")
+        if psd_limits:
+            axp.set_xlim(left=0.0, right=max(psd_limits))
         axp.legend()
         axp.grid(True)
 
