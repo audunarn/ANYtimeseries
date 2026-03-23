@@ -238,7 +238,7 @@ def test_calculate_series_without_assignment_auto_creates_name(qt_app, message_s
     editor.calculate_series()
     qt_app.processEvents()
 
-    auto_name = "calc_sin_radians_60_f1_VarA_2_f1"
+    auto_name = "calc_sin_rad_60_f1_VarA_x_2_f1"
     assert auto_name in tsdb.getm()
     assert message_spy["info"]
     title, text = message_spy["info"][-1]
@@ -265,8 +265,8 @@ def test_calculate_series_auto_names_distinguish_plus_and_minus(qt_app, message_
     editor.calculate_series()
     qt_app.processEvents()
 
-    assert "calc_f1_VarA_plus_2_f1" in tsdb.getm()
-    assert "calc_f1_VarA_minus_2_f1" in tsdb.getm()
+    assert "calc_f1_VarA_p_2_f1" in tsdb.getm()
+    assert "calc_f1_VarA_m_2_f1" in tsdb.getm()
     assert not message_spy["crit"]
     assert not message_spy["warn"]
 
@@ -285,8 +285,200 @@ def test_calculate_series_auto_name_marks_common_variables(qt_app, message_spy, 
     editor.calculate_series()
     qt_app.processEvents()
 
-    assert "calc_common_CommonVar_plus_2_f1" in tsdbs[0].getm()
-    assert "calc_common_CommonVar_plus_2_f2" in tsdbs[1].getm()
+    assert "calc_cc_CommonVar_p_2_f1" in tsdbs[0].getm()
+    assert "calc_cc_CommonVar_p_2_f2" in tsdbs[1].getm()
+    assert not message_spy["crit"]
+    assert not message_spy["warn"]
+
+
+def test_calculate_series_auto_name_shortens_long_equation_tokens(qt_app, message_spy, monkeypatch):
+    files = ["file1.ts"]
+    t = np.arange(5, dtype=float)
+    x = np.arange(5, dtype=float) + 1.0
+    tsdb = DummyDB({"MX_PIPE": TimeSeries("MX_PIPE", t, x), "common_f1": TimeSeries("common_f1", t, x)})
+
+    editor = _build_editor(monkeypatch, [tsdb], files)
+    editor.calc_entry.setPlainText("c_MX_PIPE * cos(radians(45)) + f1_common_f1")
+
+    editor.calculate_series()
+    qt_app.processEvents()
+
+    created = next(name for name in tsdb.getm() if name.startswith("calc_"))
+    assert "cc_MX_PIPE" in created
+    assert "rad_45" in created
+    assert "_x_" in created
+    assert "_p_" in created
+    assert "times" not in created
+    assert "radians" not in created
+    assert "common" not in created.removeprefix("calc_")
+    assert not message_spy["crit"]
+    assert not message_spy["warn"]
+
+
+def test_calculate_series_uses_multiprocessing_and_updates_progress(qt_app, message_spy, monkeypatch):
+    files = ["file1.ts", "file2.ts", "file3.ts"]
+    tsdbs = []
+    for idx in range(3):
+        t = np.arange(5, dtype=float)
+        x = np.arange(5, dtype=float) + idx
+        tsdbs.append(DummyDB({"CommonVar": TimeSeries("CommonVar", t, x)}))
+
+    submitted = []
+
+    class FakeFuture:
+        def __init__(self, value=None, error=None):
+            self._value = value
+            self._error = error
+
+        def result(self):
+            if self._error is not None:
+                raise self._error
+            return self._value
+
+    class FakeExecutor:
+        def __init__(self, max_workers=None, initializer=None, initargs=()):
+            self.max_workers = max_workers
+            if initializer is not None:
+                initializer(*initargs)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def submit(self, fn, *args, **kwargs):
+            submitted.append(args[0])
+            try:
+                return FakeFuture(fn(*args, **kwargs))
+            except Exception as exc:
+                return FakeFuture(error=exc)
+
+    monkeypatch.setattr(editor_module, "ProcessPoolExecutor", FakeExecutor)
+    monkeypatch.setattr(editor_module, "as_completed", lambda futures: list(futures))
+
+    editor = _build_editor(monkeypatch, tsdbs, files)
+    editor.calc_entry.setPlainText("c_CommonVar + 2")
+
+    editor.calculate_series()
+    qt_app.processEvents()
+
+    assert submitted == [0, 1, 2]
+    assert editor.progress.maximum() == len(files)
+    assert editor.progress.value() == len(files)
+    assert "calc_cc_CommonVar_p_2_f1" in tsdbs[0].getm()
+    assert "calc_cc_CommonVar_p_2_f2" in tsdbs[1].getm()
+    assert "calc_cc_CommonVar_p_2_f3" in tsdbs[2].getm()
+    assert not message_spy["crit"]
+    assert not message_spy["warn"]
+
+
+def test_calculate_series_preserves_per_file_lengths(qt_app, message_spy, monkeypatch):
+    files = ["file1.ts", "file2.ts"]
+    tsdbs = [
+        DummyDB({"CommonVar": TimeSeries("CommonVar", np.arange(5, dtype=float), np.arange(5, dtype=float) + 1.0)}),
+        DummyDB({"CommonVar": TimeSeries("CommonVar", np.arange(8, dtype=float), np.arange(8, dtype=float) + 10.0)}),
+    ]
+
+    editor = _build_editor(monkeypatch, tsdbs, files)
+    editor.calc_entry.setPlainText("c_CommonVar + 2")
+
+    editor.calculate_series()
+    qt_app.processEvents()
+
+    first = tsdbs[0].getm()["calc_cc_CommonVar_p_2_f1"]
+    second = tsdbs[1].getm()["calc_cc_CommonVar_p_2_f2"]
+
+    assert len(first.t) == 5
+    assert len(first.x) == 5
+    assert len(second.t) == 8
+    assert len(second.x) == 8
+    assert np.allclose(first.x, np.arange(5, dtype=float) + 3.0)
+    assert np.allclose(second.x, np.arange(8, dtype=float) + 12.0)
+    assert not message_spy["crit"]
+    assert not message_spy["warn"]
+
+
+def test_quick_transformation_uses_multiprocessing_and_updates_progress(qt_app, message_spy, monkeypatch):
+    files = ["file1.ts", "file2.ts", "file3.ts"]
+    tsdbs = []
+    for idx in range(3):
+        t = np.arange(5, dtype=float)
+        x = np.arange(5, dtype=float) + idx + 1
+        tsdbs.append(DummyDB({"CommonVar": TimeSeries("CommonVar", t, x)}))
+
+    submitted = []
+
+    class FakeFuture:
+        def __init__(self, value=None, error=None):
+            self._value = value
+            self._error = error
+
+        def result(self):
+            if self._error is not None:
+                raise self._error
+            return self._value
+
+    class FakeExecutor:
+        def __init__(self, max_workers=None, initializer=None, initargs=()):
+            self.max_workers = max_workers
+            if initializer is not None:
+                initializer(*initargs)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def submit(self, fn, *args, **kwargs):
+            submitted.append(args[0])
+            try:
+                return FakeFuture(fn(*args, **kwargs))
+            except Exception as exc:
+                return FakeFuture(error=exc)
+
+    monkeypatch.setattr(editor_module, "ProcessPoolExecutor", FakeExecutor)
+    monkeypatch.setattr(editor_module, "as_completed", lambda futures: list(futures))
+
+    editor = _build_editor(monkeypatch, tsdbs, files)
+    editor.var_checkboxes["CommonVar"].setChecked(True)
+
+    editor.multiply_by_2()
+    qt_app.processEvents()
+
+    assert submitted == [0, 1, 2]
+    assert editor.progress.maximum() == len(files)
+    assert editor.progress.value() == len(files)
+    assert np.allclose(tsdbs[0].getm()["CommonVar_×2_f1"].x, np.array([2, 4, 6, 8, 10], dtype=float))
+    assert np.allclose(tsdbs[1].getm()["CommonVar_×2_f2"].x, np.array([4, 6, 8, 10, 12], dtype=float))
+    assert np.allclose(tsdbs[2].getm()["CommonVar_×2_f3"].x, np.array([6, 8, 10, 12, 14], dtype=float))
+    assert not message_spy["crit"]
+    assert not message_spy["warn"]
+
+
+def test_quick_transformation_preserves_per_file_lengths(qt_app, message_spy, monkeypatch):
+    files = ["file1.ts", "file2.ts"]
+    tsdbs = [
+        DummyDB({"CommonVar": TimeSeries("CommonVar", np.arange(4, dtype=float), np.arange(4, dtype=float) + 1.0)}),
+        DummyDB({"CommonVar": TimeSeries("CommonVar", np.arange(7, dtype=float), np.arange(7, dtype=float) + 10.0)}),
+    ]
+
+    editor = _build_editor(monkeypatch, tsdbs, files)
+    editor.var_checkboxes["CommonVar"].setChecked(True)
+
+    editor.multiply_by_2()
+    qt_app.processEvents()
+
+    first = tsdbs[0].getm()["CommonVar_×2_f1"]
+    second = tsdbs[1].getm()["CommonVar_×2_f2"]
+
+    assert len(first.t) == 4
+    assert len(first.x) == 4
+    assert len(second.t) == 7
+    assert len(second.x) == 7
+    assert np.allclose(first.x, np.array([2.0, 4.0, 6.0, 8.0]))
+    assert np.allclose(second.x, np.array([20.0, 22.0, 24.0, 26.0, 28.0, 30.0, 32.0]))
     assert not message_spy["crit"]
     assert not message_spy["warn"]
 
