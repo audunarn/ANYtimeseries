@@ -906,6 +906,55 @@ class TimeSeriesEditorQt(QMainWindow):
         # Keep typing focus in the calculator entry
         self.calc_entry.setFocus()
 
+    def _format_calculator_equation(self, expr: str, output_names: Sequence[str] | None = None) -> str:
+        """Return readable equation lines for the created calculator output(s)."""
+        lhs, sep, rhs = expr.partition("=")
+        if not sep:
+            return expr.strip()
+
+        lhs = lhs.strip()
+        rhs_lines = [line.strip() for line in rhs.splitlines() if line.strip()]
+        if not rhs_lines:
+            rhs_lines = [""]
+
+        names = list(output_names) if output_names else [lhs]
+        formatted = []
+        for name in names:
+            if len(rhs_lines) == 1:
+                formatted.append(f"{name} = {rhs_lines[0]}")
+            else:
+                formatted.append(f"{name} =\n    " + "\n    ".join(rhs_lines))
+        return "\n\n".join(formatted)
+
+    def _auto_calculator_output_name(self, expr: str) -> str:
+        """Create a unique user-variable name from a bare calculator expression."""
+        stem_src = expr
+        for old, new in (
+            ("**", " power "),
+            ("+", " plus "),
+            ("-", " minus "),
+            ("*", " times "),
+            ("/", " div "),
+            ("%", " mod "),
+        ):
+            stem_src = stem_src.replace(old, new)
+
+        stem = _safe(stem_src).strip("_") or "result"
+        stem = stem[:48].rstrip("_") or "result"
+        candidate = f"calc_{stem}"
+
+        existing = set(getattr(self, "user_variables", set()))
+        for tsdb in self.tsdbs:
+            existing.update(tsdb.getm())
+
+        if candidate not in existing:
+            return candidate
+
+        idx = 2
+        while f"{candidate}_{idx}" in existing:
+            idx += 1
+        return f"{candidate}_{idx}"
+
     def calculate_series(self):
         """Evaluate the Calculator expression and create new series."""
         import traceback
@@ -916,10 +965,14 @@ class TimeSeriesEditorQt(QMainWindow):
             return
 
         m_out = re.match(r"\s*([A-Za-z_]\w*)\s*=", expr)
-        if not m_out:
-            QMessageBox.critical(self, "No Assignment", "Write the formula like   result = <expression>")
-            return
-        base_output = m_out.group(1)
+        if m_out:
+            base_output = m_out.group(1)
+            exec_expr = expr
+            display_expr = expr
+        else:
+            base_output = self._auto_calculator_output_name(expr)
+            exec_expr = f"{base_output} = {expr}"
+            display_expr = exec_expr
 
         t_window = None
         t_window_coord = None
@@ -980,9 +1033,9 @@ class TimeSeriesEditorQt(QMainWindow):
             QMessageBox.critical(self, "No Time Window", "Could not infer a valid time window.")
             return
 
-        common_tokens = {m.group(1) for m in re.finditer(r"\bc_([\w\- ]+)\b", expr)}
-        user_tokens = {m.group(1) for m in re.finditer(r"\bu_([\w\- ]+)", expr)}
-        explicit_file_tags = {int(m.group(1)) for m in re.finditer(r"\bf(\d+)_", expr)}
+        common_tokens = {m.group(1) for m in re.finditer(r"\bc_([\w\- ]+)\b", exec_expr)}
+        user_tokens = {m.group(1) for m in re.finditer(r"\bu_([\w\- ]+)", exec_expr)}
+        explicit_file_tags = {int(m.group(1)) for m in re.finditer(r"\bf(\d+)_", exec_expr)}
         file_tags_used = explicit_file_tags or set(range(1, len(self.tsdbs) + 1))
 
         u_global = {u for u in user_tokens if not re.search(r"_f\d+$", u)}
@@ -1088,7 +1141,7 @@ class TimeSeriesEditorQt(QMainWindow):
             })
 
             try:
-                exec(expr, ctx)
+                exec(exec_expr, ctx)
                 y = np.asarray(ctx[base_output], dtype=float)
                 if y.ndim == 0:
                     y = np.full_like(t_window, y, dtype=float)
@@ -1126,9 +1179,16 @@ class TimeSeriesEditorQt(QMainWindow):
 
         if create_common_output:
             msg = base_output
+            output_names = [base_output]
         else:
-            msg = ", ".join(f"{base_output}_f{n}" for n in sorted(file_tags_used))
-        QMessageBox.information(self, "Success", f"New variable(s): {msg}")
+            output_names = [f"{base_output}_f{n}" for n in sorted(file_tags_used)]
+            msg = ", ".join(output_names)
+        equation_text = self._format_calculator_equation(display_expr, output_names=output_names)
+        QMessageBox.information(
+            self,
+            "Success",
+            f"New variable(s): {msg}\n\nEquation used:\n{equation_text}",
+        )
 
     def show_calc_help(self):
         """Display calculator usage help in a message box."""
@@ -1153,6 +1213,7 @@ class TimeSeriesEditorQt(QMainWindow):
             "📝  Examples",
             "     result = f1_AccX + f2_AccY",
             "     diff   = c_WAVE1 - u_MyVar_f1",
+            "     sin(radians(60)) + f1_AccX * 2",
             "",
             "The file number N corresponds to the indices shown in the",
             "'Loaded Files' list:",
@@ -1171,8 +1232,10 @@ class TimeSeriesEditorQt(QMainWindow):
                 "",
                 "💡  Tips",
                 "  •  Any valid Python / NumPy expression works (np.mean, np.std, …).",
-                "  •  Give the left-hand side any name you like – it becomes a new",
-                "     user variable (and appears under the 'User Variables' tab).",
+                "  •  You can give the left-hand side any name you like, or omit it",
+                "     and let the Calculator create an automatic name from the equation.",
+                "  •  Assigned or generated names become new user variables and appear",
+                "     under the 'User Variables' tab.",
                 "  •  Autocomplete suggests prefixes and math functions as you type.",
             ]
         )
