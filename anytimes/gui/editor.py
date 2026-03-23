@@ -928,7 +928,18 @@ class TimeSeriesEditorQt(QMainWindow):
 
     def _auto_calculator_output_name(self, expr: str) -> str:
         """Create a unique user-variable name from a bare calculator expression."""
-        stem = _safe(expr).strip("_") or "result"
+        stem_src = expr
+        for old, new in (
+            ("**", " power "),
+            ("+", " plus "),
+            ("-", " minus "),
+            ("*", " times "),
+            ("/", " div "),
+            ("%", " mod "),
+        ):
+            stem_src = stem_src.replace(old, new)
+
+        stem = _safe(stem_src).strip("_") or "result"
         stem = stem[:48].rstrip("_") or "result"
         candidate = f"calc_{stem}"
 
