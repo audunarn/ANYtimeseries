@@ -200,6 +200,77 @@ def test_open_evm_user_variable_name_with_colon_uses_exact_match(qt_app, message
     assert not message_spy["warn"]
 
 
+
+
+def test_calculate_series_success_popup_includes_equation(qt_app, message_spy, monkeypatch):
+    files = ["file1.ts"]
+    t = np.arange(5, dtype=float)
+    x = np.arange(5, dtype=float) + 1.0
+    tsdb = DummyDB({"VarA": TimeSeries("VarA", t, x)})
+
+    editor = _build_editor(monkeypatch, [tsdb], files)
+    editor.calc_entry.setPlainText("result = sin(radians(60)) + f1_VarA * 2")
+
+    editor.calculate_series()
+    qt_app.processEvents()
+
+    assert "result_f1" in tsdb.getm()
+    assert message_spy["info"]
+    title, text = message_spy["info"][-1]
+    assert title == "Success"
+    assert "New variable(s): result_f1" in text
+    assert "Equation used:" in text
+    assert "result_f1 = sin(radians(60)) + f1_VarA * 2" in text
+    assert "60" in text
+    assert not message_spy["crit"]
+    assert not message_spy["warn"]
+
+
+def test_calculate_series_without_assignment_auto_creates_name(qt_app, message_spy, monkeypatch):
+    files = ["file1.ts"]
+    t = np.arange(5, dtype=float)
+    x = np.arange(5, dtype=float) + 1.0
+    tsdb = DummyDB({"VarA": TimeSeries("VarA", t, x)})
+
+    editor = _build_editor(monkeypatch, [tsdb], files)
+    editor.calc_entry.setPlainText("sin(radians(60)) + f1_VarA * 2")
+
+    editor.calculate_series()
+    qt_app.processEvents()
+
+    auto_name = "calc_sin_radians_60_f1_VarA_2_f1"
+    assert auto_name in tsdb.getm()
+    assert message_spy["info"]
+    title, text = message_spy["info"][-1]
+    assert title == "Success"
+    assert f"New variable(s): {auto_name}" in text
+    assert f"{auto_name} = sin(radians(60)) + f1_VarA * 2" in text
+    assert not message_spy["crit"]
+    assert not message_spy["warn"]
+
+
+def test_calculate_series_auto_names_distinguish_plus_and_minus(qt_app, message_spy, monkeypatch):
+    files = ["file1.ts"]
+    t = np.arange(5, dtype=float)
+    x = np.arange(5, dtype=float) + 1.0
+    tsdb = DummyDB({"VarA": TimeSeries("VarA", t, x)})
+
+    editor = _build_editor(monkeypatch, [tsdb], files)
+
+    editor.calc_entry.setPlainText("f1_VarA + 2")
+    editor.calculate_series()
+    qt_app.processEvents()
+
+    editor.calc_entry.setPlainText("f1_VarA - 2")
+    editor.calculate_series()
+    qt_app.processEvents()
+
+    assert "calc_f1_VarA_plus_2_f1" in tsdb.getm()
+    assert "calc_f1_VarA_minus_2_f1" in tsdb.getm()
+    assert not message_spy["crit"]
+    assert not message_spy["warn"]
+
+
 def test_merge_preserves_irregular_time_steps(qt_app, message_spy, monkeypatch):
     files = ["file1.ts"]
     t1 = np.array([0.0, 1.0, 11.0, 21.0])
