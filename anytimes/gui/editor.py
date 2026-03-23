@@ -906,19 +906,25 @@ class TimeSeriesEditorQt(QMainWindow):
         # Keep typing focus in the calculator entry
         self.calc_entry.setFocus()
 
-    def _format_calculator_equation(self, expr: str) -> str:
-        """Return a readable representation of a calculator assignment."""
+    def _format_calculator_equation(self, expr: str, output_names: Sequence[str] | None = None) -> str:
+        """Return readable equation lines for the created calculator output(s)."""
         lhs, sep, rhs = expr.partition("=")
         if not sep:
             return expr.strip()
 
         lhs = lhs.strip()
-        rhs = rhs.strip()
-        if not rhs:
-            return f"{lhs} ="
+        rhs_lines = [line.strip() for line in rhs.splitlines() if line.strip()]
+        if not rhs_lines:
+            rhs_lines = [""]
 
-        wrapped_rhs = "\n    ".join(line.strip() for line in rhs.splitlines() if line.strip())
-        return f"{lhs} =\n    {wrapped_rhs}"
+        names = list(output_names) if output_names else [lhs]
+        formatted = []
+        for name in names:
+            if len(rhs_lines) == 1:
+                formatted.append(f"{name} = {rhs_lines[0]}")
+            else:
+                formatted.append(f"{name} =\n    " + "\n    ".join(rhs_lines))
+        return "\n\n".join(formatted)
 
     def calculate_series(self):
         """Evaluate the Calculator expression and create new series."""
@@ -1140,9 +1146,11 @@ class TimeSeriesEditorQt(QMainWindow):
 
         if create_common_output:
             msg = base_output
+            output_names = [base_output]
         else:
-            msg = ", ".join(f"{base_output}_f{n}" for n in sorted(file_tags_used))
-        equation_text = self._format_calculator_equation(expr)
+            output_names = [f"{base_output}_f{n}" for n in sorted(file_tags_used)]
+            msg = ", ".join(output_names)
+        equation_text = self._format_calculator_equation(expr, output_names=output_names)
         QMessageBox.information(
             self,
             "Success",

@@ -209,7 +209,7 @@ def test_calculate_series_success_popup_includes_equation(qt_app, message_spy, m
     tsdb = DummyDB({"VarA": TimeSeries("VarA", t, x)})
 
     editor = _build_editor(monkeypatch, [tsdb], files)
-    editor.calc_entry.setPlainText("result = f1_VarA * 2")
+    editor.calc_entry.setPlainText("result = sin(radians(60)) + f1_VarA * 2")
 
     editor.calculate_series()
     qt_app.processEvents()
@@ -220,8 +220,8 @@ def test_calculate_series_success_popup_includes_equation(qt_app, message_spy, m
     assert title == "Success"
     assert "New variable(s): result_f1" in text
     assert "Equation used:" in text
-    assert "result =" in text
-    assert "f1_VarA * 2" in text
+    assert "result_f1 = sin(radians(60)) + f1_VarA * 2" in text
+    assert "60" in text
     assert not message_spy["crit"]
     assert not message_spy["warn"]
 
