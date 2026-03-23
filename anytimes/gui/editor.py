@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import datetime
 import json
+import multiprocessing
 import os
 import re
 import subprocess
 import sys
 import traceback
 import warnings
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from array import array
 from collections.abc import Callable, Sequence
 
@@ -73,6 +75,117 @@ from ..fatigue import FatigueSeries
 from .fatigue_dialog import FatigueDialog
 from .sortable_table_widget_item import SortableTableWidgetItem
 from .variable_tab import VariableRowWidget, VariableTab
+
+
+_CALCULATOR_SHARED_CTX = None
+_CALCULATOR_TIME_WINDOW = None
+_CALCULATOR_EXEC_EXPR = None
+_CALCULATOR_BASE_OUTPUT = None
+_TRANSFORM_SPEC = None
+
+
+def _init_calculator_worker(shared_ctx, time_window, exec_expr, base_output):
+    """Initialize calculator worker state for multiprocessing."""
+    global _CALCULATOR_SHARED_CTX, _CALCULATOR_TIME_WINDOW, _CALCULATOR_EXEC_EXPR, _CALCULATOR_BASE_OUTPUT
+    _CALCULATOR_SHARED_CTX = shared_ctx
+    _CALCULATOR_TIME_WINDOW = np.asarray(time_window, dtype=float)
+    _CALCULATOR_EXEC_EXPR = exec_expr
+    _CALCULATOR_BASE_OUTPUT = base_output
+
+
+def _evaluate_calculator_file(file_idx, file_ctx):
+    """Evaluate one calculator expression for a single file payload."""
+    ctx = dict(_CALCULATOR_SHARED_CTX or {})
+    ctx.update(file_ctx)
+    ctx["time"] = _CALCULATOR_TIME_WINDOW
+    ctx.update({
+        "np": np,
+        "sin": np.sin,
+        "cos": np.cos,
+        "tan": np.tan,
+        "exp": np.exp,
+        "sqrt": np.sqrt,
+        "log": np.log,
+        "abs": np.abs,
+        "min": np.min,
+        "max": np.max,
+        "power": np.power,
+        "radians": np.radians,
+        "degrees": np.degrees,
+    })
+
+    exec(_CALCULATOR_EXEC_EXPR, ctx)
+    y = np.asarray(ctx[_CALCULATOR_BASE_OUTPUT], dtype=float)
+    if y.ndim == 0:
+        y = np.full_like(_CALCULATOR_TIME_WINDOW, y, dtype=float)
+    if len(y) != len(_CALCULATOR_TIME_WINDOW):
+        raise ValueError("Result length mismatch with time vector")
+    return file_idx, y
+
+
+def _init_transform_worker(transform_spec):
+    """Initialize transformation worker state for multiprocessing."""
+    global _TRANSFORM_SPEC
+    _TRANSFORM_SPEC = transform_spec
+
+
+def _rolling_mean(y_values, window):
+    """Return a trailing rolling mean with min_periods=1."""
+    y = np.asarray(y_values, dtype=float)
+    if window <= 1 or y.size <= 1:
+        return y.copy()
+    cumsum = np.cumsum(np.insert(y, 0, 0.0))
+    counts = np.minimum(np.arange(1, y.size + 1), window)
+    totals = cumsum[window:] - cumsum[:-window]
+    prefix = np.cumsum(y[: window - 1])
+    return np.concatenate((prefix / counts[: window - 1], totals / counts[window - 1 :]))
+
+
+def _apply_transform_spec(y_values, transform_spec):
+    """Apply a serializable quick-transformation specification."""
+    y = np.asarray(y_values, dtype=float)
+    kind = transform_spec["kind"]
+    if kind == "abs":
+        return np.abs(y)
+    if kind == "scale":
+        return y * float(transform_spec["factor"])
+    if kind == "offset":
+        return y + float(transform_spec["value"])
+    if kind == "radians":
+        return np.radians(y)
+    if kind == "degrees":
+        return np.degrees(y)
+    if kind == "rolling_mean":
+        return _rolling_mean(y, int(transform_spec["window"]))
+    if kind == "trig_scale":
+        return y * float(transform_spec["factor"])
+    if kind == "shift_min_to_zero":
+        lower = np.sort(y)[int(len(y) * 0.01)] if transform_spec.get("ignore_anomalies") and len(y) else np.min(y)
+        return y if lower >= 0 else y - lower
+    if kind == "shift_repeated_neg_min":
+        if y.size == 0:
+            return y
+        ymin = y.min()
+        if ymin >= 0:
+            return y
+        tol_abs = abs(ymin) * float(transform_spec["tol_pct"])
+        plate_cnt = np.count_nonzero(np.abs(y - ymin) <= tol_abs)
+        return y - ymin if plate_cnt >= int(transform_spec["min_count"]) else y
+    if kind == "shift_mean_to_zero":
+        if transform_spec.get("ignore_anomalies") and y.size:
+            p01, p99 = np.percentile(y, [1, 99])
+            mask = (y >= p01) & (y <= p99)
+            mean_value = np.mean(y[mask]) if np.any(mask) else np.mean(y)
+        else:
+            mean_value = np.mean(y)
+        return y - mean_value
+    raise ValueError(f"Unknown transformation kind: {kind}")
+
+
+def _evaluate_transform_payload(task_idx, y_values):
+    """Evaluate one quick transformation payload."""
+    return task_idx, _apply_transform_spec(y_values, _TRANSFORM_SPEC)
+
 from .utils import (
     MATH_FUNCTIONS,
     ORCAFLEX_VARIABLE_MAP,
@@ -1122,81 +1235,93 @@ class TimeSeriesEditorQt(QMainWindow):
 
         create_common_output = len(explicit_file_tags) >= 2
 
-        results = []
         total_files = len(self.tsdbs)
-        for file_idx, tsdb in enumerate(self.tsdbs):
-            f_no = file_idx + 1
-            ctx = {}
-            for i, db in enumerate(self.tsdbs):
-                tag = f"f{i + 1}"
-                for key, ts in db.getm().items():
-                    x_part = _align_to_window(ts, self.apply_filters(ts))
-                    if np.all(np.isnan(x_part)):
-                        continue
-                    ctx[f"{tag}_{_safe(key)}"] = x_part.astype(float)
+        shared_ctx = {}
+        for i, db in enumerate(self.tsdbs):
+            tag = f"f{i + 1}"
+            for key, ts in db.getm().items():
+                x_part = _align_to_window(ts, self.apply_filters(ts))
+                if np.all(np.isnan(x_part)):
+                    continue
+                shared_ctx[f"{tag}_{_safe(key)}"] = x_part.astype(float)
 
+        per_file_ctx = []
+        for file_idx, _tsdb in enumerate(self.tsdbs):
+            ctx = {}
             for k, vecs in aligned_common.items():
                 ctx[f"c_{_safe(k)}"] = vecs[file_idx]
             for k, vecs in aligned_u_global.items():
                 ctx[f"u_{_safe(k)}"] = vecs[file_idx]
             for tok, vec in aligned_u_perfile.items():
                 ctx[f"u_{tok}"] = vec
+            per_file_ctx.append(ctx)
 
-            ctx["time"] = t_window
-            ctx.update({
-                "np": np,
-                "sin": np.sin,
-                "cos": np.cos,
-                "tan": np.tan,
-                "exp": np.exp,
-                "sqrt": np.sqrt,
-                "log": np.log,
-                "abs": np.abs,
-                "min": np.min,
-                "max": np.max,
-                "power": np.power,
-                "radians": np.radians,
-                "degrees": np.degrees,
-            })
+        evaluated_results = {}
+        completed = 0
+        use_multiprocessing = total_files > 1
 
-            try:
-                exec(exec_expr, ctx)
-                y = np.asarray(ctx[base_output], dtype=float)
-                if y.ndim == 0:
-                    y = np.full_like(t_window, y, dtype=float)
-                if len(y) != len(t_window):
-                    raise ValueError("Result length mismatch with time vector")
+        current_file_idx = 0
+        try:
+            if use_multiprocessing:
+                max_workers = min(total_files, max(1, multiprocessing.cpu_count()))
+                with ProcessPoolExecutor(
+                    max_workers=max_workers,
+                    initializer=_init_calculator_worker,
+                    initargs=(shared_ctx, t_window, exec_expr, base_output),
+                ) as executor:
+                    futures = {
+                        executor.submit(_evaluate_calculator_file, file_idx, file_ctx): file_idx
+                        for file_idx, file_ctx in enumerate(per_file_ctx)
+                    }
+                    for future in as_completed(futures):
+                        file_idx = futures[future]
+                        current_file_idx = file_idx
+                        evaluated_results[file_idx] = future.result()[1]
+                        completed += 1
+                        self.update_progressbar(completed, total_files)
+            else:
+                _init_calculator_worker(shared_ctx, t_window, exec_expr, base_output)
+                for file_idx, file_ctx in enumerate(per_file_ctx):
+                    current_file_idx = file_idx
+                    evaluated_results[file_idx] = _evaluate_calculator_file(file_idx, file_ctx)[1]
+                    completed += 1
+                    self.update_progressbar(completed, total_files)
+        except Exception as e:
+            self.progress.reset()
+            self.progress.setFormat("%p%")
+            QMessageBox.critical(
+                self,
+                "Calculation Error",
+                f"{os.path.basename(self.file_paths[current_file_idx])}:\n{e}\n\n{traceback.format_exc()}",
+            )
+            return
 
-                must_write_here = (create_common_output and f_no == min(file_tags_used)) or (not create_common_output and f_no in file_tags_used)
-                if not must_write_here:
-                    continue
+        results = []
+        for file_idx, tsdb in enumerate(self.tsdbs):
+            f_no = file_idx + 1
+            y = evaluated_results[file_idx]
+            must_write_here = (create_common_output and f_no == min(file_tags_used)) or (not create_common_output and f_no in file_tags_used)
+            if not must_write_here:
+                continue
 
-                filt_tag = self._filter_tag()
-                suffix = "" if create_common_output else f"_f{f_no}"
-                out_name = base_output
-                if filt_tag:
-                    out_name += f"_{filt_tag}"
-                out_name += suffix
-                ts_new = qats.TimeSeries(out_name, t_window, y, dtg_ref=t_window_dtg_ref)
+            filt_tag = self._filter_tag()
+            suffix = "" if create_common_output else f"_f{f_no}"
+            out_name = base_output
+            if filt_tag:
+                out_name += f"_{filt_tag}"
+            out_name += suffix
+            ts_new = qats.TimeSeries(out_name, t_window, y, dtg_ref=t_window_dtg_ref)
 
-                tsdb.add(ts_new)
+            tsdb.add(ts_new)
 
-                if create_common_output:
-                    for other_db in self.tsdbs:
-                        if out_name not in other_db.getm():
-                            other_db.add(ts_new.copy())
+            if create_common_output:
+                for other_db in self.tsdbs:
+                    if out_name not in other_db.getm():
+                        other_db.add(ts_new.copy())
 
-                self.user_variables = getattr(self, "user_variables", set())
-                self.user_variables.add(out_name)
-                results.append((tsdb, ts_new))
-
-            except Exception as e:
-                self.progress.reset()
-                self.progress.setFormat("%p%")
-                QMessageBox.critical(self, "Calculation Error", f"{os.path.basename(self.file_paths[file_idx])}:\n{e}\n\n{traceback.format_exc()}")
-                return
-
-            self.update_progressbar(file_idx + 1, total_files)
+            self.user_variables = getattr(self, "user_variables", set())
+            self.user_variables.add(out_name)
+            results.append((tsdb, ts_new))
 
         self.progress.setFormat("%p%")
         self.refresh_variable_tabs()
@@ -1456,7 +1581,7 @@ class TimeSeriesEditorQt(QMainWindow):
                 keys.extend(tab.selected_variables())
         return list(set(keys))
 
-    def _apply_transformation(self, func, suffix, announce=True):
+    def _apply_transformation(self, func, suffix, announce=True, transform_spec=None):
         """
         Apply *func* to every selected time-series and push the result back
         into the corresponding TsDB.
@@ -1471,6 +1596,7 @@ class TimeSeriesEditorQt(QMainWindow):
 
         self.rebuild_var_lookup()
         made = []
+        tasks = []
         fnames = [os.path.basename(p) for p in self.file_paths]
 
         def _has_file_prefix(key: str) -> bool:
@@ -1514,8 +1640,6 @@ class TimeSeriesEditorQt(QMainWindow):
                     y_src = self.apply_filters(ts)[mask]
                 # ----------------------------------------------------------------
 
-                y_new = func(y_src)
-
                 # ── unique name inside this file ─────────────────────────────
                 filt_tag = self._filter_tag()
                 base = f"{ts.name}_{suffix}"
@@ -1528,12 +1652,65 @@ class TimeSeriesEditorQt(QMainWindow):
                     new_name = f"{base}_{k}"
                     k += 1
 
-                tsdb.add(TimeSeries(new_name, t_win, y_new, dtg_ref=ts.dtg_ref))
-                made.append(new_name)
+                tasks.append({
+                    "file_idx": f_idx - 1,
+                    "tsdb": tsdb,
+                    "new_name": new_name,
+                    "t_win": t_win,
+                    "dtg_ref": ts.dtg_ref,
+                    "y_src": np.asarray(y_src, dtype=float),
+                })
 
-                # mark global user-var
-                self.user_variables = getattr(self, "user_variables", set())
-                self.user_variables.add(new_name)
+        self.progress.setFormat("Transforming %v/%m series")
+        self.update_progressbar(0, max(len(tasks), 1))
+
+        use_multiprocessing = len(tasks) > 1 and transform_spec is not None
+        completed = 0
+        current_task = None
+        try:
+            if use_multiprocessing:
+                max_workers = min(len(tasks), max(1, multiprocessing.cpu_count()))
+                with ProcessPoolExecutor(
+                    max_workers=max_workers,
+                    initializer=_init_transform_worker,
+                    initargs=(transform_spec,),
+                ) as executor:
+                    futures = {
+                        executor.submit(_evaluate_transform_payload, idx, task["y_src"]): idx
+                        for idx, task in enumerate(tasks)
+                    }
+                    for future in as_completed(futures):
+                        current_task = tasks[futures[future]]
+                        task_idx, y_new = future.result()
+                        task = tasks[task_idx]
+                        task["y_new"] = y_new
+                        completed += 1
+                        self.update_progressbar(completed, len(tasks))
+            else:
+                for idx, task in enumerate(tasks):
+                    current_task = task
+                    y_new = _apply_transform_spec(task["y_src"], transform_spec) if transform_spec is not None else func(task["y_src"])
+                    task["y_new"] = y_new
+                    completed += 1
+                    self.update_progressbar(completed, len(tasks))
+        except Exception as exc:
+            self.progress.reset()
+            self.progress.setFormat("%p%")
+            failing_name = current_task["new_name"] if current_task else suffix
+            QMessageBox.critical(
+                self,
+                "Transformation Error",
+                f"{failing_name}:\n{exc}\n\n{traceback.format_exc()}",
+            )
+            return
+
+        for task in tasks:
+            task["tsdb"].add(TimeSeries(task["new_name"], task["t_win"], task["y_new"], dtg_ref=task["dtg_ref"]))
+            made.append(task["new_name"])
+            self.user_variables = getattr(self, "user_variables", set())
+            self.user_variables.add(task["new_name"])
+
+        self.progress.setFormat("%p%")
 
         # ── GUI refresh & popup ──────────────────────────────────────────────
         if made:
@@ -1566,7 +1743,7 @@ class TimeSeriesEditorQt(QMainWindow):
         import numpy as np
         from PySide6.QtWidgets import QMessageBox
 
-        self._apply_transformation(lambda y: np.abs(y), "abs", True)
+        self._apply_transformation(lambda y: np.abs(y), "abs", True, transform_spec={"kind": "abs"})
 
     def rolling_average(self):
         """Apply rolling mean to all selected series."""
@@ -1580,7 +1757,7 @@ class TimeSeriesEditorQt(QMainWindow):
                 window = 1
 
         func = lambda y, w=window: pd.Series(y).rolling(window=w, min_periods=1).mean().to_numpy()
-        self._apply_transformation(func, "rollMean", True)
+        self._apply_transformation(func, "rollMean", True, transform_spec={"kind": "rolling_mean", "window": window})
 
     def reduce_selected_points(self):
         """Create reduced-resolution copies of selected series."""
@@ -2257,35 +2434,35 @@ class TimeSeriesEditorQt(QMainWindow):
             )
 
     def multiply_by_1000(self):
-        self._apply_transformation(lambda y: y * 1000, "×1000", True)
+        self._apply_transformation(lambda y: y * 1000, "×1000", True, transform_spec={"kind": "scale", "factor": 1000})
 
     def divide_by_1000(self):
-        self._apply_transformation(lambda y: y / 1000, "÷1000", True)
+        self._apply_transformation(lambda y: y / 1000, "÷1000", True, transform_spec={"kind": "scale", "factor": 1 / 1000})
 
     def multiply_by_10(self):
-        self._apply_transformation(lambda y: y * 10, "×10", True)
+        self._apply_transformation(lambda y: y * 10, "×10", True, transform_spec={"kind": "scale", "factor": 10})
 
     def divide_by_10(self):
-        self._apply_transformation(lambda y: y / 10, "÷10", True)
+        self._apply_transformation(lambda y: y / 10, "÷10", True, transform_spec={"kind": "scale", "factor": 0.1})
 
     def multiply_by_2(self):
-        self._apply_transformation(lambda y: y * 2, "×2", True)
+        self._apply_transformation(lambda y: y * 2, "×2", True, transform_spec={"kind": "scale", "factor": 2})
 
     def divide_by_2(self):
-        self._apply_transformation(lambda y: y / 2, "÷2", True)
+        self._apply_transformation(lambda y: y / 2, "÷2", True, transform_spec={"kind": "scale", "factor": 0.5})
 
     def multiply_by_neg1(self):
-        self._apply_transformation(lambda y: y * -1, "×-1", True)
+        self._apply_transformation(lambda y: y * -1, "×-1", True, transform_spec={"kind": "scale", "factor": -1})
 
     def to_radians(self):
         import numpy as np
 
-        self._apply_transformation(lambda y: np.radians(y), "rad", True)
+        self._apply_transformation(lambda y: np.radians(y), "rad", True, transform_spec={"kind": "radians"})
 
     def to_degrees(self):
         import numpy as np
 
-        self._apply_transformation(lambda y: np.degrees(y), "deg", True)
+        self._apply_transformation(lambda y: np.degrees(y), "deg", True, transform_spec={"kind": "degrees"})
 
     def apply_trig_from_degrees(self):
         import numpy as np
@@ -2309,7 +2486,7 @@ class TimeSeriesEditorQt(QMainWindow):
             return np.asarray(y, dtype=float) * factor
 
         suffix = f"*{func_name}({angle_deg:g})"
-        self._apply_transformation(_apply_trig, suffix, True)
+        self._apply_transformation(_apply_trig, suffix, True, transform_spec={"kind": "trig_scale", "factor": trig_value})
 
 
     def shift_min_to_zero(self):
@@ -2331,7 +2508,7 @@ class TimeSeriesEditorQt(QMainWindow):
             return y - lower
 
         # Create a new series with suffix “…_shift0”
-        self._apply_transformation(shift, "shift0", True)
+        self._apply_transformation(shift, "shift0", True, transform_spec={"kind": "shift_min_to_zero", "ignore_anomalies": self.ignore_anomalies_cb.isChecked()})
 
     def shift_repeated_neg_min(self):
         """
@@ -2392,7 +2569,7 @@ class TimeSeriesEditorQt(QMainWindow):
             return y  # leave unchanged
 
         # reuse the generic helper (takes care of naming, user_variables, refresh)
-        self._apply_transformation(_shift_if_plateau, "shiftNZ", True)
+        self._apply_transformation(_shift_if_plateau, "shiftNZ", True, transform_spec={"kind": "shift_repeated_neg_min", "tol_pct": tol_pct, "min_count": min_count})
 
     def shift_common_max(self):
         """
@@ -2492,7 +2669,10 @@ class TimeSeriesEditorQt(QMainWindow):
 
             # Call _apply_transformation (this will add one “_shiftCommon_fN” per file)
             self._apply_transformation(
-                lambda y: y + max_shift, "shiftCommon", print_it=False
+                lambda y: y + max_shift,
+                "shiftCommon",
+                announce=False,
+                transform_spec={"kind": "offset", "value": max_shift},
             )
         finally:
             # Restore the original check states
@@ -2529,7 +2709,7 @@ class TimeSeriesEditorQt(QMainWindow):
             return y - m
 
         # suffix “shiftMean0” keeps the style of “shift0”, “shiftNZ”, …
-        self._apply_transformation(_demean, "shiftMean0", True)
+        self._apply_transformation(_demean, "shiftMean0", True, transform_spec={"kind": "shift_mean_to_zero", "ignore_anomalies": self.ignore_anomalies_cb.isChecked()})
 
     def shift_x_start_to_zero(self):
         """Create copies where x starts at zero by subtracting the initial x value."""
