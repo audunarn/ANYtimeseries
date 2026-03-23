@@ -960,8 +960,13 @@ class TimeSeriesEditorQt(QMainWindow):
         """Evaluate the Calculator expression and create new series."""
         import traceback
 
+        self.progress.setFormat("Calculating %v/%m files")
+        self.update_progressbar(0, max(len(self.tsdbs), 1))
+
         expr = self.calc_entry.toPlainText().strip()
         if not expr:
+            self.progress.reset()
+            self.progress.setFormat("%p%")
             QMessageBox.warning(self, "No Formula", "Please enter a formula.")
             return
 
@@ -1031,6 +1036,8 @@ class TimeSeriesEditorQt(QMainWindow):
             if t_window is not None:
                 break
         if t_window is None:
+            self.progress.reset()
+            self.progress.setFormat("%p%")
             QMessageBox.critical(self, "No Time Window", "Could not infer a valid time window.")
             return
 
@@ -1045,6 +1052,8 @@ class TimeSeriesEditorQt(QMainWindow):
         known_user = getattr(self, "user_variables", set())
         missing = u_global - known_user
         if missing:
+            self.progress.reset()
+            self.progress.setFormat("%p%")
             QMessageBox.critical(self, "Unknown user variable", ", ".join(sorted(missing)))
             return
 
@@ -1078,12 +1087,16 @@ class TimeSeriesEditorQt(QMainWindow):
                     names = None
             v, err = align_all_files(k, name_by_file=names)
             if err:
+                self.progress.reset()
+                self.progress.setFormat("%p%")
                 QMessageBox.critical(self, "Common variable error", err)
                 return
             aligned_common[k] = v
         for k in u_global:
             v, err = align_all_files(k)
             if err:
+                self.progress.reset()
+                self.progress.setFormat("%p%")
                 QMessageBox.critical(self, "User variable error", err)
                 return
             aligned_u_global[k] = v
@@ -1095,10 +1108,14 @@ class TimeSeriesEditorQt(QMainWindow):
                 continue
             src_idx = int(m.group(2)) - 1
             if src_idx >= len(self.tsdbs):
+                self.progress.reset()
+                self.progress.setFormat("%p%")
                 QMessageBox.critical(self, "User variable error", f"File #{m.group(2)} does not exist.")
                 return
             ts = self.tsdbs[src_idx].getm().get(tok)
             if ts is None:
+                self.progress.reset()
+                self.progress.setFormat("%p%")
                 QMessageBox.critical(self, "User variable error", f"Variable '{tok}' not found in {os.path.basename(self.file_paths[src_idx])}")
                 return
             aligned_u_perfile[tok] = _align_to_window(ts, ts.x)
@@ -1106,6 +1123,7 @@ class TimeSeriesEditorQt(QMainWindow):
         create_common_output = len(explicit_file_tags) >= 2
 
         results = []
+        total_files = len(self.tsdbs)
         for file_idx, tsdb in enumerate(self.tsdbs):
             f_no = file_idx + 1
             ctx = {}
@@ -1173,9 +1191,14 @@ class TimeSeriesEditorQt(QMainWindow):
                 results.append((tsdb, ts_new))
 
             except Exception as e:
+                self.progress.reset()
+                self.progress.setFormat("%p%")
                 QMessageBox.critical(self, "Calculation Error", f"{os.path.basename(self.file_paths[file_idx])}:\n{e}\n\n{traceback.format_exc()}")
                 return
 
+            self.update_progressbar(file_idx + 1, total_files)
+
+        self.progress.setFormat("%p%")
         self.refresh_variable_tabs()
 
         if create_common_output:
