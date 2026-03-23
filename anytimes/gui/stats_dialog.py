@@ -134,6 +134,9 @@ class StatsDialog(QDialog):
         self.parse_filename_cb = QCheckBox("Parse file name")
         self.parse_filename_cb.setChecked(False)
         hline_layout.addWidget(self.parse_filename_cb)
+        self.plot_period_cb = QCheckBox("Period [s]")
+        self.plot_period_cb.setChecked(False)
+        hline_layout.addWidget(self.plot_period_cb)
         hline_layout.addStretch()
         main_layout.addLayout(hline_layout)
 
@@ -213,6 +216,7 @@ class StatsDialog(QDialog):
         self.hist_lines_edit.editingFinished.connect(self.update_plots)
         self.hist_show_text_cb.toggled.connect(self.update_plots)
         self.parse_filename_cb.toggled.connect(self.update_data)
+        self.plot_period_cb.toggled.connect(self.update_plots)
         self.fatigue_filter_cb.toggled.connect(self.update_data)
         self.order_combo.currentIndexChanged.connect(self.update_data)
         self.table.selectionModel().selectionChanged.connect(self.update_plots)
@@ -521,8 +525,8 @@ class StatsDialog(QDialog):
             lines.append("\t".join(vals))
         QGuiApplication.clipboard().setText("\n".join(lines))
 
-    def _suggest_psd_frequency_limit(self, freqs: np.ndarray, psd_vals: np.ndarray) -> float | None:
-        """Return a frequency limit that focuses the PSD plot on the informative region."""
+    def _suggest_psd_frequency_limit(self, freqs: np.ndarray, psd_vals: np.ndarray) -> tuple[float, float] | None:
+        """Return a focused PSD frequency limit and the smallest positive frequency."""
         freqs = np.asarray(freqs, dtype=float)
         psd_vals = np.asarray(psd_vals, dtype=float)
         valid = np.isfinite(freqs) & np.isfinite(psd_vals)
@@ -535,28 +539,55 @@ class StatsDialog(QDialog):
         freqs = freqs[order]
         psd_vals = psd_vals[order]
 
-        positive = freqs >= 0.0
-        freqs = freqs[positive]
-        psd_vals = psd_vals[positive]
-        if freqs.size < 2 or np.all(psd_vals <= 0.0):
+        non_negative = freqs >= 0.0
+        freqs = freqs[non_negative]
+        psd_vals = psd_vals[non_negative]
+        positive_freqs = freqs[freqs > 0.0]
+        if freqs.size < 2 or positive_freqs.size == 0 or np.all(psd_vals <= 0.0):
             return None
 
-        cumulative_power = np.concatenate(([0.0], np.cumsum(np.diff(freqs) * (psd_vals[1:] + psd_vals[:-1]) * 0.5)))
+        cumulative_power = np.concatenate(
+            ([0.0], np.cumsum(np.diff(freqs) * (psd_vals[1:] + psd_vals[:-1]) * 0.5))
+        )
         total_power = cumulative_power[-1]
         if total_power <= 0.0:
             return None
 
-        cumulative_idx = int(np.searchsorted(cumulative_power, self._PSD_CUMULATIVE_POWER_COVERAGE * total_power, side="left"))
+        target_power = self._PSD_CUMULATIVE_POWER_COVERAGE * total_power
+        cumulative_idx = int(np.searchsorted(cumulative_power, target_power, side="left"))
         cumulative_idx = min(cumulative_idx, freqs.size - 1)
 
-        prominent = np.flatnonzero(psd_vals >= self._PSD_RELATIVE_LEVEL_THRESHOLD * np.nanmax(psd_vals))
+        prominent = np.flatnonzero(
+            psd_vals >= self._PSD_RELATIVE_LEVEL_THRESHOLD * np.nanmax(psd_vals)
+        )
         prominent_idx = int(prominent[-1]) if prominent.size else 0
 
         limit_idx = max(cumulative_idx, prominent_idx)
         limit_freq = freqs[limit_idx] * self._PSD_XLIM_PADDING
-        positive_freqs = freqs[freqs > 0.0]
-        min_limit = positive_freqs[0] if positive_freqs.size else freqs[-1]
-        return float(np.clip(limit_freq, min_limit, freqs[-1]))
+        min_positive_freq = float(positive_freqs[0])
+        return float(np.clip(limit_freq, min_positive_freq, freqs[-1])), min_positive_freq
+
+    @staticmethod
+    def _psd_plot_axis(freqs: np.ndarray, psd_vals: np.ndarray, use_period: bool) -> tuple[np.ndarray, np.ndarray, str]:
+        """Return PSD x-values, y-values, and x-axis label for the selected unit."""
+        freqs = np.asarray(freqs, dtype=float)
+        psd_vals = np.asarray(psd_vals, dtype=float)
+        valid = np.isfinite(freqs) & np.isfinite(psd_vals)
+        freqs = freqs[valid]
+        psd_vals = psd_vals[valid]
+
+        if not use_period:
+            return freqs, psd_vals, "Frequency [Hz]"
+
+        positive = freqs > 0.0
+        freqs = freqs[positive]
+        psd_vals = psd_vals[positive]
+        if freqs.size == 0:
+            return freqs, psd_vals, "Period [s]"
+
+        periods = 1.0 / freqs
+        order = np.argsort(periods)
+        return periods[order], psd_vals[order], "Period [s]"
 
     def update_plots(self):
         sel_rows = [idx.row() for idx in self.table.selectionModel().selectedRows()]
@@ -566,6 +597,7 @@ class StatsDialog(QDialog):
             return
 
         show_text = self.hist_show_text_cb.isChecked()
+        use_period = self.plot_period_cb.isChecked()
         import matplotlib.pyplot as plt
         from matplotlib import colors as mcolors
 
@@ -576,6 +608,8 @@ class StatsDialog(QDialog):
         self.psd_fig.clear()
         axp = self.psd_fig.add_subplot(111)
         psd_limits = []
+        psd_period_limits = []
+        psd_xlabel = "Frequency [Hz]"
         for r in sel_rows:
             file = self.table.item(r, 0).text()
             var = self.table.item(r, 2).text()
@@ -598,10 +632,14 @@ class StatsDialog(QDialog):
                         continue
                     freqs, psd_vals = ts_tmp.psd(resample=dt)
                 if freqs.size and psd_vals.size:
-                    axp.plot(freqs, psd_vals, label=label)
-                    limit = self._suggest_psd_frequency_limit(freqs, psd_vals)
-                    if limit is not None:
-                        psd_limits.append(limit)
+                    x_vals, y_vals, psd_xlabel = self._psd_plot_axis(freqs, psd_vals, use_period)
+                    if x_vals.size and y_vals.size:
+                        axp.plot(x_vals, y_vals, label=label)
+                    limit_info = self._suggest_psd_frequency_limit(freqs, psd_vals)
+                    if limit_info is not None:
+                        limit_freq, min_positive_freq = limit_info
+                        psd_limits.append(limit_freq)
+                        psd_period_limits.append((1.0 / limit_freq, 1.0 / min_positive_freq))
 
         ax.set_xlabel("Time")
         ax.set_ylabel("Value")
@@ -610,9 +648,14 @@ class StatsDialog(QDialog):
 
         self._tight_draw(self.line_fig, self.line_canvas)
 
-        axp.set_xlabel("Frequency [Hz]")
+        axp.set_xlabel(psd_xlabel)
         axp.set_ylabel("Power spectral density")
-        if psd_limits:
+        if use_period and psd_period_limits:
+            axp.set_xlim(
+                left=min(limit[0] for limit in psd_period_limits),
+                right=max(limit[1] for limit in psd_period_limits),
+            )
+        elif psd_limits:
             axp.set_xlim(left=0.0, right=max(psd_limits))
         axp.legend()
         axp.grid(True)
