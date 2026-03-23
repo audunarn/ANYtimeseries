@@ -238,7 +238,7 @@ def test_calculate_series_without_assignment_auto_creates_name(qt_app, message_s
     editor.calculate_series()
     qt_app.processEvents()
 
-    auto_name = "calc_sin_radians_60_f1_VarA_2_f1"
+    auto_name = "calc_sin_rad_60_f1_VarA_x_2_f1"
     assert auto_name in tsdb.getm()
     assert message_spy["info"]
     title, text = message_spy["info"][-1]
@@ -265,8 +265,8 @@ def test_calculate_series_auto_names_distinguish_plus_and_minus(qt_app, message_
     editor.calculate_series()
     qt_app.processEvents()
 
-    assert "calc_f1_VarA_plus_2_f1" in tsdb.getm()
-    assert "calc_f1_VarA_minus_2_f1" in tsdb.getm()
+    assert "calc_f1_VarA_p_2_f1" in tsdb.getm()
+    assert "calc_f1_VarA_m_2_f1" in tsdb.getm()
     assert not message_spy["crit"]
     assert not message_spy["warn"]
 
@@ -285,8 +285,32 @@ def test_calculate_series_auto_name_marks_common_variables(qt_app, message_spy, 
     editor.calculate_series()
     qt_app.processEvents()
 
-    assert "calc_common_CommonVar_plus_2_f1" in tsdbs[0].getm()
-    assert "calc_common_CommonVar_plus_2_f2" in tsdbs[1].getm()
+    assert "calc_cc_CommonVar_p_2_f1" in tsdbs[0].getm()
+    assert "calc_cc_CommonVar_p_2_f2" in tsdbs[1].getm()
+    assert not message_spy["crit"]
+    assert not message_spy["warn"]
+
+
+def test_calculate_series_auto_name_shortens_long_equation_tokens(qt_app, message_spy, monkeypatch):
+    files = ["file1.ts"]
+    t = np.arange(5, dtype=float)
+    x = np.arange(5, dtype=float) + 1.0
+    tsdb = DummyDB({"MX_PIPE": TimeSeries("MX_PIPE", t, x), "common_f1": TimeSeries("common_f1", t, x)})
+
+    editor = _build_editor(monkeypatch, [tsdb], files)
+    editor.calc_entry.setPlainText("c_MX_PIPE * cos(radians(45)) + f1_common_f1")
+
+    editor.calculate_series()
+    qt_app.processEvents()
+
+    created = next(name for name in tsdb.getm() if name.startswith("calc_"))
+    assert "cc_MX_PIPE" in created
+    assert "rad_45" in created
+    assert "_x_" in created
+    assert "_p_" in created
+    assert "times" not in created
+    assert "radians" not in created
+    assert "common" not in created.removeprefix("calc_")
     assert not message_spy["crit"]
     assert not message_spy["warn"]
 
@@ -342,9 +366,9 @@ def test_calculate_series_uses_multiprocessing_and_updates_progress(qt_app, mess
     assert submitted == [0, 1, 2]
     assert editor.progress.maximum() == len(files)
     assert editor.progress.value() == len(files)
-    assert "calc_common_CommonVar_plus_2_f1" in tsdbs[0].getm()
-    assert "calc_common_CommonVar_plus_2_f2" in tsdbs[1].getm()
-    assert "calc_common_CommonVar_plus_2_f3" in tsdbs[2].getm()
+    assert "calc_cc_CommonVar_p_2_f1" in tsdbs[0].getm()
+    assert "calc_cc_CommonVar_p_2_f2" in tsdbs[1].getm()
+    assert "calc_cc_CommonVar_p_2_f3" in tsdbs[2].getm()
     assert not message_spy["crit"]
     assert not message_spy["warn"]
 
