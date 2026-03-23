@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import datetime
 import json
+import multiprocessing
 import os
 import re
 import subprocess
 import sys
 import traceback
 import warnings
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from array import array
 from collections.abc import Callable, Sequence
 
@@ -73,6 +75,52 @@ from ..fatigue import FatigueSeries
 from .fatigue_dialog import FatigueDialog
 from .sortable_table_widget_item import SortableTableWidgetItem
 from .variable_tab import VariableRowWidget, VariableTab
+
+
+_CALCULATOR_SHARED_CTX = None
+_CALCULATOR_TIME_WINDOW = None
+_CALCULATOR_EXEC_EXPR = None
+_CALCULATOR_BASE_OUTPUT = None
+
+
+def _init_calculator_worker(shared_ctx, time_window, exec_expr, base_output):
+    """Initialize calculator worker state for multiprocessing."""
+    global _CALCULATOR_SHARED_CTX, _CALCULATOR_TIME_WINDOW, _CALCULATOR_EXEC_EXPR, _CALCULATOR_BASE_OUTPUT
+    _CALCULATOR_SHARED_CTX = shared_ctx
+    _CALCULATOR_TIME_WINDOW = np.asarray(time_window, dtype=float)
+    _CALCULATOR_EXEC_EXPR = exec_expr
+    _CALCULATOR_BASE_OUTPUT = base_output
+
+
+def _evaluate_calculator_file(file_idx, file_ctx):
+    """Evaluate one calculator expression for a single file payload."""
+    ctx = dict(_CALCULATOR_SHARED_CTX or {})
+    ctx.update(file_ctx)
+    ctx["time"] = _CALCULATOR_TIME_WINDOW
+    ctx.update({
+        "np": np,
+        "sin": np.sin,
+        "cos": np.cos,
+        "tan": np.tan,
+        "exp": np.exp,
+        "sqrt": np.sqrt,
+        "log": np.log,
+        "abs": np.abs,
+        "min": np.min,
+        "max": np.max,
+        "power": np.power,
+        "radians": np.radians,
+        "degrees": np.degrees,
+    })
+
+    exec(_CALCULATOR_EXEC_EXPR, ctx)
+    y = np.asarray(ctx[_CALCULATOR_BASE_OUTPUT], dtype=float)
+    if y.ndim == 0:
+        y = np.full_like(_CALCULATOR_TIME_WINDOW, y, dtype=float)
+    if len(y) != len(_CALCULATOR_TIME_WINDOW):
+        raise ValueError("Result length mismatch with time vector")
+    return file_idx, y
+
 from .utils import (
     MATH_FUNCTIONS,
     ORCAFLEX_VARIABLE_MAP,
@@ -1122,81 +1170,93 @@ class TimeSeriesEditorQt(QMainWindow):
 
         create_common_output = len(explicit_file_tags) >= 2
 
-        results = []
         total_files = len(self.tsdbs)
-        for file_idx, tsdb in enumerate(self.tsdbs):
-            f_no = file_idx + 1
-            ctx = {}
-            for i, db in enumerate(self.tsdbs):
-                tag = f"f{i + 1}"
-                for key, ts in db.getm().items():
-                    x_part = _align_to_window(ts, self.apply_filters(ts))
-                    if np.all(np.isnan(x_part)):
-                        continue
-                    ctx[f"{tag}_{_safe(key)}"] = x_part.astype(float)
+        shared_ctx = {}
+        for i, db in enumerate(self.tsdbs):
+            tag = f"f{i + 1}"
+            for key, ts in db.getm().items():
+                x_part = _align_to_window(ts, self.apply_filters(ts))
+                if np.all(np.isnan(x_part)):
+                    continue
+                shared_ctx[f"{tag}_{_safe(key)}"] = x_part.astype(float)
 
+        per_file_ctx = []
+        for file_idx, _tsdb in enumerate(self.tsdbs):
+            ctx = {}
             for k, vecs in aligned_common.items():
                 ctx[f"c_{_safe(k)}"] = vecs[file_idx]
             for k, vecs in aligned_u_global.items():
                 ctx[f"u_{_safe(k)}"] = vecs[file_idx]
             for tok, vec in aligned_u_perfile.items():
                 ctx[f"u_{tok}"] = vec
+            per_file_ctx.append(ctx)
 
-            ctx["time"] = t_window
-            ctx.update({
-                "np": np,
-                "sin": np.sin,
-                "cos": np.cos,
-                "tan": np.tan,
-                "exp": np.exp,
-                "sqrt": np.sqrt,
-                "log": np.log,
-                "abs": np.abs,
-                "min": np.min,
-                "max": np.max,
-                "power": np.power,
-                "radians": np.radians,
-                "degrees": np.degrees,
-            })
+        evaluated_results = {}
+        completed = 0
+        use_multiprocessing = total_files > 1
 
-            try:
-                exec(exec_expr, ctx)
-                y = np.asarray(ctx[base_output], dtype=float)
-                if y.ndim == 0:
-                    y = np.full_like(t_window, y, dtype=float)
-                if len(y) != len(t_window):
-                    raise ValueError("Result length mismatch with time vector")
+        current_file_idx = 0
+        try:
+            if use_multiprocessing:
+                max_workers = min(total_files, max(1, multiprocessing.cpu_count()))
+                with ProcessPoolExecutor(
+                    max_workers=max_workers,
+                    initializer=_init_calculator_worker,
+                    initargs=(shared_ctx, t_window, exec_expr, base_output),
+                ) as executor:
+                    futures = {
+                        executor.submit(_evaluate_calculator_file, file_idx, file_ctx): file_idx
+                        for file_idx, file_ctx in enumerate(per_file_ctx)
+                    }
+                    for future in as_completed(futures):
+                        file_idx = futures[future]
+                        current_file_idx = file_idx
+                        evaluated_results[file_idx] = future.result()[1]
+                        completed += 1
+                        self.update_progressbar(completed, total_files)
+            else:
+                _init_calculator_worker(shared_ctx, t_window, exec_expr, base_output)
+                for file_idx, file_ctx in enumerate(per_file_ctx):
+                    current_file_idx = file_idx
+                    evaluated_results[file_idx] = _evaluate_calculator_file(file_idx, file_ctx)[1]
+                    completed += 1
+                    self.update_progressbar(completed, total_files)
+        except Exception as e:
+            self.progress.reset()
+            self.progress.setFormat("%p%")
+            QMessageBox.critical(
+                self,
+                "Calculation Error",
+                f"{os.path.basename(self.file_paths[current_file_idx])}:\n{e}\n\n{traceback.format_exc()}",
+            )
+            return
 
-                must_write_here = (create_common_output and f_no == min(file_tags_used)) or (not create_common_output and f_no in file_tags_used)
-                if not must_write_here:
-                    continue
+        results = []
+        for file_idx, tsdb in enumerate(self.tsdbs):
+            f_no = file_idx + 1
+            y = evaluated_results[file_idx]
+            must_write_here = (create_common_output and f_no == min(file_tags_used)) or (not create_common_output and f_no in file_tags_used)
+            if not must_write_here:
+                continue
 
-                filt_tag = self._filter_tag()
-                suffix = "" if create_common_output else f"_f{f_no}"
-                out_name = base_output
-                if filt_tag:
-                    out_name += f"_{filt_tag}"
-                out_name += suffix
-                ts_new = qats.TimeSeries(out_name, t_window, y, dtg_ref=t_window_dtg_ref)
+            filt_tag = self._filter_tag()
+            suffix = "" if create_common_output else f"_f{f_no}"
+            out_name = base_output
+            if filt_tag:
+                out_name += f"_{filt_tag}"
+            out_name += suffix
+            ts_new = qats.TimeSeries(out_name, t_window, y, dtg_ref=t_window_dtg_ref)
 
-                tsdb.add(ts_new)
+            tsdb.add(ts_new)
 
-                if create_common_output:
-                    for other_db in self.tsdbs:
-                        if out_name not in other_db.getm():
-                            other_db.add(ts_new.copy())
+            if create_common_output:
+                for other_db in self.tsdbs:
+                    if out_name not in other_db.getm():
+                        other_db.add(ts_new.copy())
 
-                self.user_variables = getattr(self, "user_variables", set())
-                self.user_variables.add(out_name)
-                results.append((tsdb, ts_new))
-
-            except Exception as e:
-                self.progress.reset()
-                self.progress.setFormat("%p%")
-                QMessageBox.critical(self, "Calculation Error", f"{os.path.basename(self.file_paths[file_idx])}:\n{e}\n\n{traceback.format_exc()}")
-                return
-
-            self.update_progressbar(file_idx + 1, total_files)
+            self.user_variables = getattr(self, "user_variables", set())
+            self.user_variables.add(out_name)
+            results.append((tsdb, ts_new))
 
         self.progress.setFormat("%p%")
         self.refresh_variable_tabs()
