@@ -239,7 +239,14 @@ class EVMWindow(QDialog):
             exceedances = int(np.count_nonzero(comparator(peaks, threshold)))
             if exceedances >= 10:
                 break
-            threshold *= 0.95 if tail == "upper" else 1.05
+            if tail == "upper":
+                threshold *= 0.95
+            else:
+                # Move the lower-tail threshold towards less extreme values when
+                # we have too few exceedances. For negative thresholds this means
+                # moving upwards (towards zero), while for positive thresholds it
+                # means moving higher.
+                threshold *= 0.95 if threshold < 0 else 1.05
             attempts += 1
 
         return threshold
@@ -1521,4 +1528,3 @@ class EVMWindow(QDialog):
             self.fig_canvas.draw()
 
 __all__ = ['EVMWindow']
-
