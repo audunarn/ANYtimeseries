@@ -501,7 +501,7 @@ class TimeSeriesEditorQt(QMainWindow):
         self.animate_marked_axes_btn = QPushButton("Animate X/Y(/Z)")
         self.colormap_label = QLabel("Colormap:")
         self.colormap_combo = QComboBox()
-        self.colormap_combo.addItems(["Viridis", "Plasma", "Inferno", "Magma", "Cividis"])
+        self.colormap_combo.addItems(["Viridis", "Plasma", "Inferno", "Magma", "Cividis", "Turbo"])
         self.colormap_combo.setCurrentText("Viridis")
         apply_plot_row = QHBoxLayout()
         apply_plot_row.addWidget(self.apply_values_btn)
