@@ -1616,6 +1616,7 @@ class TimeSeriesEditorQt(QMainWindow):
         """Scatter-plot variables marked as x/y/z in the variable input fields."""
         import os
 
+        self._clear_last_plot_call()
         role_entries = {"x": [], "y": [], "z": []}
         for key, entry in self.var_offsets.items():
             if entry is None:
@@ -1720,40 +1721,137 @@ class TimeSeriesEditorQt(QMainWindow):
             )
             return
 
+        engine = (
+            self.plot_engine_combo.currentText()
+            if hasattr(self, "plot_engine_combo")
+            else "plotly"
+        ).lower()
+        title = "3D scatter plot (x, y, z)" if use_3d else "2D scatter plot (x, y)"
+        axis_labels = traces[0]
+        if engine == "bokeh" and use_3d:
+            QMessageBox.information(
+                self,
+                "Plot X/Y(/Z)",
+                "Bokeh does not support native 3D scatter here. Falling back to Matplotlib for 3D.",
+            )
+            engine = "default"
+
+        if engine == "bokeh":
+            from bokeh.embed import file_html
+            from bokeh.models import ColumnDataSource, HoverTool
+            from bokeh.palettes import Category10_10
+            from bokeh.plotting import figure, show
+            from bokeh.resources import INLINE
+            import itertools
+            import tempfile
+
+            fig = figure(
+                width=900,
+                height=450,
+                title=title,
+                x_axis_label=axis_labels["x_var"],
+                y_axis_label=axis_labels["y_var"],
+                tools="pan,wheel_zoom,box_zoom,reset,save",
+                sizing_mode="stretch_both",
+            )
+            if self.theme_switch.isChecked():
+                fig.background_fill_color = "#2b2b2b"
+                fig.border_fill_color = "#2b2b2b"
+            fig.add_tools(HoverTool(tooltips=[("Series", "@label"), ("x", "@x"), ("y", "@y")]))
+
+            color_cycle = itertools.cycle(Category10_10)
+            for trace in traces:
+                color = next(color_cycle)
+                src = ColumnDataSource(
+                    data=dict(
+                        x=trace["x"],
+                        y=trace["y"],
+                        label=[trace["file_label"]] * len(trace["x"]),
+                    )
+                )
+                fig.circle(
+                    x="x",
+                    y="y",
+                    source=src,
+                    size=5,
+                    alpha=0.8,
+                    color=color,
+                    legend_label=trace["file_label"],
+                    muted_alpha=0.1,
+                )
+            fig.legend.click_policy = "mute"
+
+            if getattr(self, "embed_plot_cb", None) and self.embed_plot_cb.isChecked():
+                if self._temp_plot_file and os.path.exists(self._temp_plot_file):
+                    try:
+                        os.remove(self._temp_plot_file)
+                    except OSError:
+                        pass
+                html = file_html(fig, INLINE, title)
+                with tempfile.NamedTemporaryFile("w", delete=False, suffix=".html", encoding="utf-8") as tmp:
+                    tmp.write(html)
+                    tmp.flush()
+                    self._temp_plot_file = tmp.name
+                self.plot_view.load(QUrl.fromLocalFile(self._temp_plot_file))
+                self.plot_view.show()
+                self._remember_plot_call(self.plot_marked_axes)
+            else:
+                self.plot_view.hide()
+                show(fig)
+            return
+
+        if engine == "default":
+            import matplotlib.pyplot as plt
+
+            if use_3d:
+                fig = plt.figure(figsize=(10, 6))
+                ax = fig.add_subplot(111, projection="3d")
+                for trace in traces:
+                    z_vals = trace.get("z")
+                    if z_vals is None:
+                        continue
+                    ax.scatter(trace["x"], trace["y"], z_vals, s=10, label=trace["file_label"])
+                ax.set_zlabel(axis_labels.get("z_var", "z"))
+            else:
+                fig, ax = plt.subplots(figsize=(10, 6))
+                for trace in traces:
+                    ax.scatter(trace["x"], trace["y"], s=14, alpha=0.8, label=trace["file_label"])
+            ax.set_title(title)
+            ax.set_xlabel(axis_labels["x_var"])
+            ax.set_ylabel(axis_labels["y_var"])
+            ax.legend(loc="best")
+            ax.grid(True, alpha=0.25)
+            fig.tight_layout()
+
+            if getattr(self, "embed_plot_cb", None) and self.embed_plot_cb.isChecked():
+                self._show_embedded_mpl_figure(fig)
+                self._remember_plot_call(self.plot_marked_axes)
+            else:
+                self.plot_view.hide()
+                fig.show()
+            return
+
+        # Plotly branch (default for non-"default"/non-"bokeh" engines)
         import plotly.graph_objects as go
         from plotly.io import to_html
+        import tempfile
 
         fig = go.Figure()
         for trace in traces:
             label = trace["file_label"]
             if use_3d and "z" in trace:
                 fig.add_trace(
-                    go.Scatter3d(
-                        x=trace["x"],
-                        y=trace["y"],
-                        z=trace["z"],
-                        mode="markers",
-                        name=label,
-                    )
+                    go.Scatter3d(x=trace["x"], y=trace["y"], z=trace["z"], mode="markers", name=label)
                 )
             else:
-                fig.add_trace(
-                    go.Scatter(
-                        x=trace["x"],
-                        y=trace["y"],
-                        mode="markers",
-                        name=label,
-                    )
-                )
+                fig.add_trace(go.Scatter(x=trace["x"], y=trace["y"], mode="markers", name=label))
 
-        title = "3D scatter plot (x, y, z)" if use_3d else "2D scatter plot (x, y)"
-        axis_labels = traces[0]
-        layout_kwargs = dict(
-            title=title,
-            xaxis_title=axis_labels["x_var"],
-            yaxis_title=axis_labels["y_var"],
-            template="plotly_dark" if self.theme_switch.isChecked() else "plotly",
-        )
+        layout_kwargs = {
+            "title": title,
+            "xaxis_title": axis_labels["x_var"],
+            "yaxis_title": axis_labels["y_var"],
+            "template": "plotly_dark" if self.theme_switch.isChecked() else "plotly",
+        }
         if use_3d:
             layout_kwargs["scene"] = dict(
                 xaxis_title=axis_labels["x_var"],
@@ -1768,20 +1866,17 @@ class TimeSeriesEditorQt(QMainWindow):
                     os.remove(self._temp_plot_file)
                 except OSError:
                     pass
-
-            import tempfile
-
             html = to_html(fig, include_plotlyjs=True, full_html=True)
             with tempfile.NamedTemporaryFile("w", delete=False, suffix=".html", encoding="utf-8") as tmp:
                 tmp.write(html)
                 tmp.flush()
                 self._temp_plot_file = tmp.name
-            self.plot_view.load(QUrl.fromLocalFile(tmp.name))
+            self.plot_view.load(QUrl.fromLocalFile(self._temp_plot_file))
             self.plot_view.show()
             self._remember_plot_call(self.plot_marked_axes)
         else:
             self.plot_view.hide()
-            fig.show()
+            fig.show(renderer="browser")
 
     def get_selected_keys(self):
         """Return all checked variables from all VariableTabs except User Variables."""
