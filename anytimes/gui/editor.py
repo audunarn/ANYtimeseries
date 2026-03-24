@@ -481,10 +481,12 @@ class TimeSeriesEditorQt(QMainWindow):
         self.apply_value_user_var_cb = QCheckBox("Create user variable instead of overwriting?")
         offset_layout.addWidget(self.apply_value_user_var_cb)
         self.apply_values_btn = QPushButton("Apply Values")
+        self.clear_values_btn = QPushButton("Clear Values")
         self.plot_marked_axes_btn = QPushButton("Plot X/Y(/Z)")
         self.animate_marked_axes_btn = QPushButton("Animate X/Y(/Z)")
         apply_plot_row = QHBoxLayout()
         apply_plot_row.addWidget(self.apply_values_btn)
+        apply_plot_row.addWidget(self.clear_values_btn)
         apply_plot_row.addWidget(self.plot_marked_axes_btn)
         apply_plot_row.addWidget(self.animate_marked_axes_btn)
         offset_layout.addLayout(apply_plot_row)
@@ -771,6 +773,7 @@ class TimeSeriesEditorQt(QMainWindow):
         self.select_pos_btn.clicked.connect(self._select_all_by_list_pos)
         self.file_list.currentRowChanged.connect(self.highlight_file_tab)
         self.apply_values_btn.clicked.connect(self.apply_values)
+        self.clear_values_btn.clicked.connect(self.clear_all_variable_input_values)
         self.plot_marked_axes_btn.clicked.connect(self.plot_marked_axes)
         self.animate_marked_axes_btn.clicked.connect(self.animate_marked_axes)
         self.mult_by_1000_btn.clicked.connect(self.multiply_by_1000)
@@ -1616,6 +1619,21 @@ class TimeSeriesEditorQt(QMainWindow):
             summary.append("\nConflicts (skipped):")
             summary.extend(f"  • {c}" for c in conflicts)
         QMessageBox.information(self, "Apply Values", "\n".join(summary))
+
+    def clear_all_variable_input_values(self):
+        """Clear all variable input fields across common, file, and user tabs."""
+        cleared = 0
+        for entry in self.var_offsets.values():
+            if entry is None:
+                continue
+            if entry.text():
+                cleared += 1
+            entry.clear()
+        QMessageBox.information(
+            self,
+            "Clear Values",
+            f"Cleared {cleared} variable input field{'s' if cleared != 1 else ''}.",
+        )
 
     def plot_marked_axes(self):
         """Scatter-plot variables marked as x/y/z in the variable input fields."""
