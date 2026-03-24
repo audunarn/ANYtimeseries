@@ -526,7 +526,7 @@ class StatsDialog(QDialog):
         QGuiApplication.clipboard().setText("\n".join(lines))
 
     def _suggest_psd_frequency_limit(self, freqs: np.ndarray, psd_vals: np.ndarray) -> tuple[float, float] | None:
-        """Return a focused PSD frequency limit and the smallest positive frequency."""
+        """Return focused high/low frequency limits for the informative PSD region."""
         freqs = np.asarray(freqs, dtype=float)
         psd_vals = np.asarray(psd_vals, dtype=float)
         valid = np.isfinite(freqs) & np.isfinite(psd_vals)
@@ -553,19 +553,26 @@ class StatsDialog(QDialog):
         if total_power <= 0.0:
             return None
 
-        target_power = self._PSD_CUMULATIVE_POWER_COVERAGE * total_power
-        cumulative_idx = int(np.searchsorted(cumulative_power, target_power, side="left"))
-        cumulative_idx = min(cumulative_idx, freqs.size - 1)
+        high_target_power = self._PSD_CUMULATIVE_POWER_COVERAGE * total_power
+        low_target_power = (1.0 - self._PSD_CUMULATIVE_POWER_COVERAGE) * total_power
+        high_cumulative_idx = int(np.searchsorted(cumulative_power, high_target_power, side="left"))
+        high_cumulative_idx = min(high_cumulative_idx, freqs.size - 1)
+        low_cumulative_idx = int(np.searchsorted(cumulative_power, low_target_power, side="left"))
+        low_cumulative_idx = min(low_cumulative_idx, freqs.size - 1)
 
         prominent = np.flatnonzero(
             psd_vals >= self._PSD_RELATIVE_LEVEL_THRESHOLD * np.nanmax(psd_vals)
         )
-        prominent_idx = int(prominent[-1]) if prominent.size else 0
+        prominent_low_idx = int(prominent[0]) if prominent.size else 0
+        prominent_high_idx = int(prominent[-1]) if prominent.size else 0
 
-        limit_idx = max(cumulative_idx, prominent_idx)
-        limit_freq = freqs[limit_idx] * self._PSD_XLIM_PADDING
+        high_idx = max(high_cumulative_idx, prominent_high_idx)
+        low_idx = max(low_cumulative_idx, prominent_low_idx)
+
         min_positive_freq = float(positive_freqs[0])
-        return float(np.clip(limit_freq, min_positive_freq, freqs[-1])), min_positive_freq
+        low_freq = float(np.clip(freqs[low_idx], min_positive_freq, freqs[-1]))
+        high_freq = float(np.clip(freqs[high_idx] * self._PSD_XLIM_PADDING, low_freq, freqs[-1]))
+        return high_freq, low_freq
 
     @staticmethod
     def _psd_plot_axis(
@@ -653,9 +660,9 @@ class StatsDialog(QDialog):
                     if x_vals.size and y_vals.size:
                         axp.plot(x_vals, y_vals, label=label)
                     if limit_info is not None:
-                        _, min_positive_freq = limit_info
+                        _, low_freq = limit_info
                         psd_limits.append(limit_freq)
-                        psd_period_limits.append((1.0 / limit_freq, 1.0 / min_positive_freq))
+                        psd_period_limits.append((1.0 / limit_freq, 1.0 / low_freq))
 
         ax.set_xlabel("Time")
         ax.set_ylabel("Value")
