@@ -1859,6 +1859,20 @@ class TimeSeriesEditorQt(QMainWindow):
         mpl_cmap = self._selected_colormap()
         bokeh_palette = self._bokeh_palette_name()
         manual_cmin, manual_cmax = self._manual_colormap_limits()
+        has_color = any("c" in trace for trace in traces)
+        color_min = None
+        color_max = None
+        if has_color:
+            all_c = np.concatenate([np.asarray(trace["c"]) for trace in traces if "c" in trace])
+            if len(all_c):
+                color_min = float(np.min(all_c))
+                color_max = float(np.max(all_c))
+                if manual_cmin is not None:
+                    color_min = manual_cmin
+                if manual_cmax is not None:
+                    color_max = manual_cmax
+                if abs(color_max - color_min) < 1e-12:
+                    color_max = color_min + 1.0
         title = "3D scatter plot (x, y, z)" if use_3d else "2D scatter plot (x, y)"
         axis_labels = traces[0]
         if engine == "bokeh" and use_3d:
@@ -2021,20 +2035,6 @@ class TimeSeriesEditorQt(QMainWindow):
 
         fig = go.Figure()
         has_color = any("c" in trace for trace in traces)
-        manual_cmin, manual_cmax = self._manual_colormap_limits()
-        color_min = None
-        color_max = None
-        if has_color:
-            all_c = np.concatenate([np.asarray(trace["c"]) for trace in traces if "c" in trace])
-            if len(all_c):
-                color_min = float(np.min(all_c))
-                color_max = float(np.max(all_c))
-                if manual_cmin is not None:
-                    color_min = manual_cmin
-                if manual_cmax is not None:
-                    color_max = manual_cmax
-                if abs(color_max - color_min) < 1e-12:
-                    color_max = color_min + 1.0
         colorbar_drawn = False
         for trace in traces:
             label = trace["file_label"]
@@ -2283,6 +2283,7 @@ class TimeSeriesEditorQt(QMainWindow):
         plotly_scale = self._plotly_colorscale_name()
         mpl_cmap = self._selected_colormap()
         bokeh_palette = self._bokeh_palette_name()
+        manual_cmin, manual_cmax = self._manual_colormap_limits()
 
         if engine == "default":
             import matplotlib.pyplot as plt
