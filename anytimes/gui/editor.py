@@ -1618,11 +1618,13 @@ class TimeSeriesEditorQt(QMainWindow):
         import os
 
         self._clear_last_plot_call()
-        role_entries = {"x": [], "y": [], "z": []}
+        role_entries = {"x": [], "y": [], "z": [], "color": []}
         for key, entry in self.var_offsets.items():
             if entry is None:
                 continue
             role = entry.text().strip().lower()
+            if role == "c":
+                role = "color"
             if role in role_entries:
                 role_entries[role].append(key)
 
@@ -1684,12 +1686,15 @@ class TimeSeriesEditorQt(QMainWindow):
             x_ts = tsdb.getm().get(roles["x"])
             y_ts = tsdb.getm().get(roles["y"])
             z_ts = tsdb.getm().get(roles["z"]) if "z" in roles else None
+            c_ts = tsdb.getm().get(roles["color"]) if "color" in roles else None
             if x_ts is None or y_ts is None:
                 continue
 
             x_vals = np.asarray(x_ts.x)
             y_vals = np.asarray(y_ts.x)
             min_len = min(len(x_vals), len(y_vals))
+            if c_ts is not None:
+                min_len = min(min_len, len(c_ts.x))
             if min_len <= 0:
                 continue
             x_vals = x_vals[:min_len]
@@ -1704,6 +1709,9 @@ class TimeSeriesEditorQt(QMainWindow):
                 "x": x_vals,
                 "y": y_vals,
             }
+            if c_ts is not None:
+                trace["c"] = np.asarray(c_ts.x)[:min_len]
+                trace["c_var"] = roles["color"]
             if z_ts is not None:
                 z_vals = np.asarray(z_ts.x)
                 min_len = min(min_len, len(z_vals))
@@ -1712,6 +1720,8 @@ class TimeSeriesEditorQt(QMainWindow):
                 trace["t"] = trace["t"][:min_len]
                 trace["x"] = trace["x"][:min_len]
                 trace["y"] = trace["y"][:min_len]
+                if "c" in trace:
+                    trace["c"] = trace["c"][:min_len]
                 trace["z"] = z_vals[:min_len]
                 trace["z_var"] = roles["z"]
                 use_3d = True
@@ -1728,6 +1738,8 @@ class TimeSeriesEditorQt(QMainWindow):
                 trace["t"] = trace["t"][mask]
                 trace["x"] = trace["x"][mask]
                 trace["y"] = trace["y"][mask]
+                if "c" in trace:
+                    trace["c"] = trace["c"][mask]
                 if "z" in trace:
                     trace["z"] = trace["z"][mask]
             else:
@@ -1736,6 +1748,8 @@ class TimeSeriesEditorQt(QMainWindow):
                 trace["t"] = trace["t"][mask]
                 trace["x"] = trace["x"][mask]
                 trace["y"] = trace["y"][mask]
+                if "c" in trace:
+                    trace["c"] = trace["c"][mask]
                 if "z" in trace:
                     trace["z"] = trace["z"][mask]
             if len(trace["x"]) == 0:
@@ -1767,10 +1781,11 @@ class TimeSeriesEditorQt(QMainWindow):
 
         if engine == "bokeh":
             from bokeh.embed import file_html
-            from bokeh.models import ColumnDataSource, HoverTool
+            from bokeh.models import ColumnDataSource, HoverTool, LinearColorMapper, ColorBar
             from bokeh.palettes import Category10_10
             from bokeh.plotting import figure, show
             from bokeh.resources import INLINE
+            from bokeh.transform import linear_cmap
             import itertools
             import tempfile
 
@@ -1786,28 +1801,57 @@ class TimeSeriesEditorQt(QMainWindow):
             if self.theme_switch.isChecked():
                 fig.background_fill_color = "#2b2b2b"
                 fig.border_fill_color = "#2b2b2b"
-            fig.add_tools(HoverTool(tooltips=[("Series", "@label"), ("x", "@x"), ("y", "@y")]))
+            has_color = any("c" in tr for tr in traces)
+            if has_color:
+                hover_tips = [("Series", "@label"), ("x", "@x"), ("y", "@y"), ("color", "@c")]
+            else:
+                hover_tips = [("Series", "@label"), ("x", "@x"), ("y", "@y")]
+            fig.add_tools(HoverTool(tooltips=hover_tips))
+
+            mapper = None
+            if has_color:
+                all_c = np.concatenate([np.asarray(tr["c"]) for tr in traces if "c" in tr])
+                if len(all_c):
+                    c_min = float(np.min(all_c))
+                    c_max = float(np.max(all_c))
+                    if abs(c_max - c_min) < 1e-12:
+                        c_max = c_min + 1.0
+                    mapper = LinearColorMapper(palette="Viridis256", low=c_min, high=c_max)
+                    fig.add_layout(ColorBar(color_mapper=mapper, title=traces[0].get("c_var", "color")), "right")
 
             color_cycle = itertools.cycle(Category10_10)
             for trace in traces:
                 color = next(color_cycle)
-                src = ColumnDataSource(
-                    data=dict(
-                        x=trace["x"],
-                        y=trace["y"],
-                        label=[trace["file_label"]] * len(trace["x"]),
+                data = dict(
+                    x=trace["x"],
+                    y=trace["y"],
+                    label=[trace["file_label"]] * len(trace["x"]),
+                )
+                if "c" in trace:
+                    data["c"] = trace["c"]
+                src = ColumnDataSource(data=data)
+                if mapper is not None and "c" in trace:
+                    fig.circle(
+                        x="x",
+                        y="y",
+                        source=src,
+                        size=5,
+                        alpha=0.8,
+                        color=linear_cmap("c", "Viridis256", mapper.low, mapper.high),
+                        legend_label=trace["file_label"],
+                        muted_alpha=0.1,
                     )
-                )
-                fig.circle(
-                    x="x",
-                    y="y",
-                    source=src,
-                    size=5,
-                    alpha=0.8,
-                    color=color,
-                    legend_label=trace["file_label"],
-                    muted_alpha=0.1,
-                )
+                else:
+                    fig.circle(
+                        x="x",
+                        y="y",
+                        source=src,
+                        size=5,
+                        alpha=0.8,
+                        color=color,
+                        legend_label=trace["file_label"],
+                        muted_alpha=0.1,
+                    )
             fig.legend.click_policy = "mute"
 
             if getattr(self, "embed_plot_cb", None) and self.embed_plot_cb.isChecked():
@@ -1839,15 +1883,27 @@ class TimeSeriesEditorQt(QMainWindow):
                     z_vals = trace.get("z")
                     if z_vals is None:
                         continue
-                    ax.scatter(trace["x"], trace["y"], z_vals, s=10, label=trace["file_label"])
+                    if "c" in trace:
+                        sc = ax.scatter(
+                            trace["x"], trace["y"], z_vals, c=trace["c"], cmap="viridis", s=12, label=trace["file_label"]
+                        )
+                    else:
+                        sc = ax.scatter(trace["x"], trace["y"], z_vals, s=10, label=trace["file_label"])
                 ax.set_zlabel(axis_labels.get("z_var", "z"))
             else:
                 fig, ax = plt.subplots(figsize=(10, 6))
                 for trace in traces:
-                    ax.scatter(trace["x"], trace["y"], s=14, alpha=0.8, label=trace["file_label"])
+                    if "c" in trace:
+                        sc = ax.scatter(
+                            trace["x"], trace["y"], c=trace["c"], cmap="viridis", s=18, alpha=0.8, label=trace["file_label"]
+                        )
+                    else:
+                        sc = ax.scatter(trace["x"], trace["y"], s=14, alpha=0.8, label=trace["file_label"])
             ax.set_title(title)
             ax.set_xlabel(axis_labels["x_var"])
             ax.set_ylabel(axis_labels["y_var"])
+            if any("c" in tr for tr in traces):
+                fig.colorbar(sc, ax=ax, label=axis_labels.get("c_var", "color"))
             ax.legend(loc="best")
             ax.grid(True, alpha=0.25)
             fig.tight_layout()
@@ -1870,10 +1926,30 @@ class TimeSeriesEditorQt(QMainWindow):
             label = trace["file_label"]
             if use_3d and "z" in trace:
                 fig.add_trace(
-                    go.Scatter3d(x=trace["x"], y=trace["y"], z=trace["z"], mode="markers", name=label)
+                    go.Scatter3d(
+                        x=trace["x"],
+                        y=trace["y"],
+                        z=trace["z"],
+                        mode="markers",
+                        name=label,
+                        marker=dict(
+                            color=trace.get("c"),
+                            colorscale="Viridis",
+                            showscale=("c" in trace),
+                            colorbar=dict(title=trace.get("c_var", "color")),
+                        ),
+                    )
                 )
             else:
-                fig.add_trace(go.Scatter(x=trace["x"], y=trace["y"], mode="markers", name=label))
+                marker = dict(size=7)
+                if "c" in trace:
+                    marker.update(
+                        color=trace["c"],
+                        colorscale="Viridis",
+                        showscale=True,
+                        colorbar=dict(title=trace.get("c_var", "color")),
+                    )
+                fig.add_trace(go.Scatter(x=trace["x"], y=trace["y"], mode="markers", name=label, marker=marker))
 
         layout_kwargs = {
             "title": title,
