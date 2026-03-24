@@ -1945,6 +1945,15 @@ class TimeSeriesEditorQt(QMainWindow):
 
         fig = go.Figure()
         has_color = any("c" in trace for trace in traces)
+        color_min = None
+        color_max = None
+        if has_color:
+            all_c = np.concatenate([np.asarray(trace["c"]) for trace in traces if "c" in trace])
+            if len(all_c):
+                color_min = float(np.min(all_c))
+                color_max = float(np.max(all_c))
+                if abs(color_max - color_min) < 1e-12:
+                    color_max = color_min + 1.0
         colorbar_drawn = False
         for trace in traces:
             label = trace["file_label"]
@@ -1954,6 +1963,8 @@ class TimeSeriesEditorQt(QMainWindow):
                     marker_cfg = dict(
                         color=trace.get("c"),
                         colorscale="Viridis",
+                        cmin=color_min,
+                        cmax=color_max,
                         showscale=not colorbar_drawn,
                         colorbar=dict(
                             title=trace.get("c_var", "color"),
@@ -1980,6 +1991,8 @@ class TimeSeriesEditorQt(QMainWindow):
                     marker.update(
                         color=trace["c"],
                         colorscale="Viridis",
+                        cmin=color_min,
+                        cmax=color_max,
                         showscale=not colorbar_drawn,
                         colorbar=dict(
                             title=trace.get("c_var", "color"),
