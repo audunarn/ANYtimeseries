@@ -1706,7 +1706,7 @@ class TimeSeriesEditorQt(QMainWindow):
             t_vals = np.asarray(x_ts.t)[:min_len]
 
             trace = {
-                "file_label": os.path.basename(self.file_paths[file_idx]),
+                "file_label": f"F{file_idx + 1}: {os.path.basename(self.file_paths[file_idx])}",
                 "x_var": roles["x"],
                 "y_var": roles["y"],
                 "t": t_vals,
@@ -2119,7 +2119,7 @@ class TimeSeriesEditorQt(QMainWindow):
                 "time": time_labels,
                 "x": x_vals,
                 "y": y_vals,
-                "series": [os.path.basename(self.file_paths[file_idx])] * len(x_vals),
+                "series": [f"F{file_idx + 1}: {os.path.basename(self.file_paths[file_idx])}"] * len(x_vals),
             }
             if z_vals is not None:
                 data["z"] = z_vals
