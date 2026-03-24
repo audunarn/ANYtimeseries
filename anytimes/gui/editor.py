@@ -1694,11 +1694,13 @@ class TimeSeriesEditorQt(QMainWindow):
                 continue
             x_vals = x_vals[:min_len]
             y_vals = y_vals[:min_len]
+            t_vals = np.asarray(x_ts.t)[:min_len]
 
             trace = {
                 "file_label": os.path.basename(self.file_paths[file_idx]),
                 "x_var": roles["x"],
                 "y_var": roles["y"],
+                "t": t_vals,
                 "x": x_vals,
                 "y": y_vals,
             }
@@ -1707,11 +1709,37 @@ class TimeSeriesEditorQt(QMainWindow):
                 min_len = min(min_len, len(z_vals))
                 if min_len <= 0:
                     continue
+                trace["t"] = trace["t"][:min_len]
                 trace["x"] = trace["x"][:min_len]
                 trace["y"] = trace["y"][:min_len]
                 trace["z"] = z_vals[:min_len]
                 trace["z_var"] = roles["z"]
                 use_3d = True
+
+            # Respect the active time window (if any start/end input is given).
+            ts_for_window = TimeSeries(
+                "__xy_plot_window__",
+                trace["t"],
+                np.zeros(len(trace["t"])),
+                dtg_ref=getattr(x_ts, "dtg_ref", None),
+            )
+            mask = self.get_time_window(ts_for_window)
+            if isinstance(mask, slice):
+                trace["t"] = trace["t"][mask]
+                trace["x"] = trace["x"][mask]
+                trace["y"] = trace["y"][mask]
+                if "z" in trace:
+                    trace["z"] = trace["z"][mask]
+            else:
+                if not np.asarray(mask).any():
+                    continue
+                trace["t"] = trace["t"][mask]
+                trace["x"] = trace["x"][mask]
+                trace["y"] = trace["y"][mask]
+                if "z" in trace:
+                    trace["z"] = trace["z"][mask]
+            if len(trace["x"]) == 0:
+                continue
             traces.append(trace)
 
         if not traces:
