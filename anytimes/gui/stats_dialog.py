@@ -568,13 +568,23 @@ class StatsDialog(QDialog):
         return float(np.clip(limit_freq, min_positive_freq, freqs[-1])), min_positive_freq
 
     @staticmethod
-    def _psd_plot_axis(freqs: np.ndarray, psd_vals: np.ndarray, use_period: bool) -> tuple[np.ndarray, np.ndarray, str]:
+    def _psd_plot_axis(
+        freqs: np.ndarray,
+        psd_vals: np.ndarray,
+        use_period: bool,
+        limit_freq: float | None = None,
+    ) -> tuple[np.ndarray, np.ndarray, str]:
         """Return PSD x-values, y-values, and x-axis label for the selected unit."""
         freqs = np.asarray(freqs, dtype=float)
         psd_vals = np.asarray(psd_vals, dtype=float)
         valid = np.isfinite(freqs) & np.isfinite(psd_vals)
         freqs = freqs[valid]
         psd_vals = psd_vals[valid]
+
+        if limit_freq is not None:
+            within_limit = freqs <= limit_freq
+            freqs = freqs[within_limit]
+            psd_vals = psd_vals[within_limit]
 
         if not use_period:
             return freqs, psd_vals, "Frequency [Hz]"
@@ -632,12 +642,18 @@ class StatsDialog(QDialog):
                         continue
                     freqs, psd_vals = ts_tmp.psd(resample=dt)
                 if freqs.size and psd_vals.size:
-                    x_vals, y_vals, psd_xlabel = self._psd_plot_axis(freqs, psd_vals, use_period)
+                    limit_info = self._suggest_psd_frequency_limit(freqs, psd_vals)
+                    limit_freq = limit_info[0] if limit_info is not None else None
+                    x_vals, y_vals, psd_xlabel = self._psd_plot_axis(
+                        freqs,
+                        psd_vals,
+                        use_period,
+                        limit_freq=limit_freq,
+                    )
                     if x_vals.size and y_vals.size:
                         axp.plot(x_vals, y_vals, label=label)
-                    limit_info = self._suggest_psd_frequency_limit(freqs, psd_vals)
                     if limit_info is not None:
-                        limit_freq, min_positive_freq = limit_info
+                        _, min_positive_freq = limit_info
                         psd_limits.append(limit_freq)
                         psd_period_limits.append((1.0 / limit_freq, 1.0 / min_positive_freq))
 
