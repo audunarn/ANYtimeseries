@@ -14,6 +14,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from contextlib import nullcontext
 from array import array
 from collections.abc import Callable, Sequence
+from matplotlib import pyplot as plt
 
 import anyqats as qats
 import numpy as np
