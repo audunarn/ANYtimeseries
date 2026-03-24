@@ -474,7 +474,8 @@ class TimeSeriesEditorQt(QMainWindow):
         offset_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         offset_layout = QVBoxLayout(offset_group)
         offset_examples = QLabel('Examples: add "+1 / 1" substract "-1" divide "/2" multiply "*2"   '
-                                 'To plot 2D scatter input "x" and "y" in the fields. For 3D scatter also input "z".')
+                                 'To plot 2D scatter input "x" and "y" in the fields. For 3D scatter also input "z".'
+                                 '  Use Animate button to plot single points over time.')
         offset_examples.setWordWrap(True)
         offset_layout.addWidget(offset_examples)
         self.apply_value_user_var_cb = QCheckBox("Create user variable instead of overwriting?")
