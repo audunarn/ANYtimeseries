@@ -2135,6 +2135,184 @@ class TimeSeriesEditorQt(QMainWindow):
             return
 
         df = pd.concat(rows, ignore_index=True)
+        engine = (
+            self.plot_engine_combo.currentText()
+            if hasattr(self, "plot_engine_combo")
+            else "plotly"
+        ).lower()
+
+        if engine == "default":
+            import matplotlib.pyplot as plt
+            from matplotlib.animation import FuncAnimation
+
+            frame_times = list(dict.fromkeys(df["time"].tolist()))
+            if not frame_times:
+                QMessageBox.warning(self, "Animate X/Y(/Z)", "No animation frames available.")
+                return
+
+            x_min, x_max = float(df["x"].min()), float(df["x"].max())
+            y_min, y_max = float(df["y"].min()), float(df["y"].max())
+            if abs(x_max - x_min) < 1e-12:
+                x_min, x_max = x_min - 0.5, x_max + 0.5
+            if abs(y_max - y_min) < 1e-12:
+                y_min, y_max = y_min - 0.5, y_max + 0.5
+
+            if use_3d and "z" in df.columns:
+                fig = plt.figure(figsize=(10, 6))
+                ax = fig.add_subplot(111, projection="3d")
+                z_min, z_max = float(df["z"].min()), float(df["z"].max())
+                if abs(z_max - z_min) < 1e-12:
+                    z_min, z_max = z_min - 0.5, z_max + 0.5
+                ax.set_xlim(x_min, x_max)
+                ax.set_ylim(y_min, y_max)
+                ax.set_zlim(z_min, z_max)
+                scat = ax.scatter([], [], [], s=18, cmap="viridis")
+                time_text = ax.text2D(0.02, 0.95, "", transform=ax.transAxes)
+
+                def _update(frame_idx):
+                    dff = df[df["time"] == frame_times[frame_idx]]
+                    if "color" in dff.columns:
+                        scat._A = np.asarray(dff["color"])
+                        scat.set_array(np.asarray(dff["color"]))
+                    scat._offsets3d = (
+                        np.asarray(dff["x"]),
+                        np.asarray(dff["y"]),
+                        np.asarray(dff["z"]),
+                    )
+                    time_text.set_text(f"time: {frame_times[frame_idx]}")
+                    return scat, time_text
+            else:
+                fig, ax = plt.subplots(figsize=(10, 6))
+                ax.set_xlim(x_min, x_max)
+                ax.set_ylim(y_min, y_max)
+                scat = ax.scatter([], [], s=24, cmap="viridis")
+                time_text = ax.text(0.02, 0.95, "", transform=ax.transAxes)
+
+                def _update(frame_idx):
+                    dff = df[df["time"] == frame_times[frame_idx]]
+                    xy = np.column_stack((np.asarray(dff["x"]), np.asarray(dff["y"])))
+                    scat.set_offsets(xy)
+                    if "color" in dff.columns:
+                        scat.set_array(np.asarray(dff["color"]))
+                    time_text.set_text(f"time: {frame_times[frame_idx]}")
+                    return scat, time_text
+
+            ax.set_title("Animated scatter plot from marked axes")
+            ax.set_xlabel(role_per_file[next(iter(role_per_file))].get("x", "x"))
+            ax.set_ylabel(role_per_file[next(iter(role_per_file))].get("y", "y"))
+            if use_3d and "z" in df.columns:
+                ax.set_zlabel(role_per_file[next(iter(role_per_file))].get("z", "z"))
+            ax.grid(True, alpha=0.25)
+            if "color" in df.columns:
+                fig.colorbar(scat, ax=ax, label="color")
+            ani = FuncAnimation(fig, _update, frames=len(frame_times), interval=120, blit=False, repeat=True)
+            # Keep a reference to avoid garbage collection.
+            self._marked_axes_animation = ani
+            self.plot_view.hide()
+            fig.show()
+            return
+
+        if engine == "bokeh":
+            from bokeh.layouts import column
+            from bokeh.models import ColumnDataSource, CustomJS, HoverTool, Slider
+            from bokeh.plotting import figure, show
+            from bokeh.embed import file_html
+            from bokeh.resources import INLINE
+            from bokeh.transform import linear_cmap
+            import tempfile
+
+            frame_times = list(dict.fromkeys(df["time"].tolist()))
+            if not frame_times:
+                QMessageBox.warning(self, "Animate X/Y(/Z)", "No animation frames available.")
+                return
+
+            first = df[df["time"] == frame_times[0]]
+            src = ColumnDataSource(
+                data=dict(
+                    x=np.asarray(first["x"]),
+                    y=np.asarray(first["y"]),
+                    c=np.asarray(first["color"]) if "color" in first.columns else np.zeros(len(first)),
+                    series=np.asarray(first["series"]),
+                )
+            )
+
+            p = figure(
+                width=900,
+                height=450,
+                title="Animated scatter plot from marked axes",
+                x_axis_label=role_per_file[next(iter(role_per_file))].get("x", "x"),
+                y_axis_label=role_per_file[next(iter(role_per_file))].get("y", "y"),
+                tools="pan,wheel_zoom,box_zoom,reset,save",
+                sizing_mode="stretch_both",
+            )
+            if self.theme_switch.isChecked():
+                p.background_fill_color = "#2b2b2b"
+                p.border_fill_color = "#2b2b2b"
+            p.add_tools(HoverTool(tooltips=[("Series", "@series"), ("x", "@x"), ("y", "@y"), ("c", "@c")]))
+            if "color" in df.columns:
+                c_min = float(df["color"].min())
+                c_max = float(df["color"].max())
+                if abs(c_max - c_min) < 1e-12:
+                    c_max = c_min + 1.0
+                p.circle(
+                    "x",
+                    "y",
+                    source=src,
+                    size=7,
+                    alpha=0.85,
+                    color=linear_cmap("c", "Viridis256", c_min, c_max),
+                )
+            else:
+                p.circle("x", "y", source=src, size=7, alpha=0.85)
+
+            slider = Slider(start=0, end=len(frame_times) - 1, value=0, step=1, title="Frame")
+            full_data = dict(
+                time=df["time"].tolist(),
+                x=df["x"].tolist(),
+                y=df["y"].tolist(),
+                c=df["color"].tolist() if "color" in df.columns else [0.0] * len(df),
+                series=df["series"].tolist(),
+            )
+            slider.js_on_change(
+                "value",
+                CustomJS(
+                    args=dict(src=src, all_data=full_data, frames=frame_times),
+                    code="""
+                    const target = frames[cb_obj.value];
+                    const x = [], y = [], c = [], s = [];
+                    for (let i = 0; i < all_data.time.length; i++) {
+                        if (all_data.time[i] === target) {
+                            x.push(all_data.x[i]);
+                            y.push(all_data.y[i]);
+                            c.push(all_data.c[i]);
+                            s.push(all_data.series[i]);
+                        }
+                    }
+                    src.data = {x:x, y:y, c:c, series:s};
+                    src.change.emit();
+                """,
+                ),
+            )
+            layout = column(slider, p, sizing_mode="stretch_both")
+            if getattr(self, "embed_plot_cb", None) and self.embed_plot_cb.isChecked():
+                if self._temp_plot_file and os.path.exists(self._temp_plot_file):
+                    try:
+                        os.remove(self._temp_plot_file)
+                    except OSError:
+                        pass
+                html = file_html(layout, INLINE, "Animated scatter plot from marked axes")
+                with tempfile.NamedTemporaryFile("w", delete=False, suffix=".html", encoding="utf-8") as tmp:
+                    tmp.write(html)
+                    tmp.flush()
+                    self._temp_plot_file = tmp.name
+                self.plot_view.load(QUrl.fromLocalFile(self._temp_plot_file))
+                self.plot_view.show()
+                self._remember_plot_call(self.animate_marked_axes)
+            else:
+                self.plot_view.hide()
+                show(layout)
+            return
+
         base_kwargs = dict(
             data_frame=df,
             x="x",
