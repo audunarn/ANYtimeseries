@@ -479,7 +479,11 @@ class TimeSeriesEditorQt(QMainWindow):
         self.apply_value_user_var_cb = QCheckBox("Create user variable instead of overwriting?")
         offset_layout.addWidget(self.apply_value_user_var_cb)
         self.apply_values_btn = QPushButton("Apply Values")
-        offset_layout.addWidget(self.apply_values_btn)
+        self.plot_marked_axes_btn = QPushButton("Plot X/Y(/Z)")
+        apply_plot_row = QHBoxLayout()
+        apply_plot_row.addWidget(self.apply_values_btn)
+        apply_plot_row.addWidget(self.plot_marked_axes_btn)
+        offset_layout.addLayout(apply_plot_row)
         self.controls_layout.addWidget(offset_group)
 
         # ---- File list group ----
@@ -763,6 +767,7 @@ class TimeSeriesEditorQt(QMainWindow):
         self.select_pos_btn.clicked.connect(self._select_all_by_list_pos)
         self.file_list.currentRowChanged.connect(self.highlight_file_tab)
         self.apply_values_btn.clicked.connect(self.apply_values)
+        self.plot_marked_axes_btn.clicked.connect(self.plot_marked_axes)
         self.mult_by_1000_btn.clicked.connect(self.multiply_by_1000)
         self.div_by_1000_btn.clicked.connect(self.divide_by_1000)
         self.mult_by_10_btn.clicked.connect(self.multiply_by_10)
@@ -1606,6 +1611,177 @@ class TimeSeriesEditorQt(QMainWindow):
             summary.append("\nConflicts (skipped):")
             summary.extend(f"  • {c}" for c in conflicts)
         QMessageBox.information(self, "Apply Values", "\n".join(summary))
+
+    def plot_marked_axes(self):
+        """Scatter-plot variables marked as x/y/z in the variable input fields."""
+        import os
+
+        role_entries = {"x": [], "y": [], "z": []}
+        for key, entry in self.var_offsets.items():
+            if entry is None:
+                continue
+            role = entry.text().strip().lower()
+            if role in role_entries:
+                role_entries[role].append(key)
+
+        if not role_entries["x"] or not role_entries["y"]:
+            QMessageBox.warning(
+                self,
+                "Plot X/Y(/Z)",
+                'Mark one variable as "x" and one as "y" in the input fields.',
+            )
+            return
+
+        def _expand_key(series_key: str):
+            expanded = []
+            if "::" in series_key:
+                fname, var = series_key.split("::", 1)
+                for file_idx, fp in enumerate(self.file_paths):
+                    if os.path.basename(fp) == fname:
+                        expanded.append((file_idx, var))
+            elif ":" in series_key:
+                fname, var = series_key.split(":", 1)
+                for file_idx, fp in enumerate(self.file_paths):
+                    if os.path.basename(fp) == fname:
+                        expanded.append((file_idx, var))
+            else:
+                for file_idx, tsdb in enumerate(self.tsdbs):
+                    if series_key in tsdb.getm():
+                        expanded.append((file_idx, series_key))
+            return expanded
+
+        role_per_file: dict[int, dict[str, str]] = {}
+        conflicts = []
+        for role, keys in role_entries.items():
+            for key in keys:
+                for file_idx, var_name in _expand_key(key):
+                    bucket = role_per_file.setdefault(file_idx, {})
+                    if role in bucket and bucket[role] != var_name:
+                        conflicts.append(
+                            f'File {file_idx + 1}: multiple "{role}" variables '
+                            f'({bucket[role]}, {var_name})'
+                        )
+                    else:
+                        bucket[role] = var_name
+
+        if conflicts:
+            QMessageBox.warning(
+                self,
+                "Plot X/Y(/Z)",
+                "Resolve marked-axis conflicts before plotting:\n\n" + "\n".join(conflicts),
+            )
+            return
+
+        traces = []
+        use_3d = False
+        for file_idx, roles in sorted(role_per_file.items()):
+            if "x" not in roles or "y" not in roles:
+                continue
+
+            tsdb = self.tsdbs[file_idx]
+            x_ts = tsdb.getm().get(roles["x"])
+            y_ts = tsdb.getm().get(roles["y"])
+            z_ts = tsdb.getm().get(roles["z"]) if "z" in roles else None
+            if x_ts is None or y_ts is None:
+                continue
+
+            x_vals = np.asarray(x_ts.x)
+            y_vals = np.asarray(y_ts.x)
+            min_len = min(len(x_vals), len(y_vals))
+            if min_len <= 0:
+                continue
+            x_vals = x_vals[:min_len]
+            y_vals = y_vals[:min_len]
+
+            trace = {
+                "file_label": os.path.basename(self.file_paths[file_idx]),
+                "x_var": roles["x"],
+                "y_var": roles["y"],
+                "x": x_vals,
+                "y": y_vals,
+            }
+            if z_ts is not None:
+                z_vals = np.asarray(z_ts.x)
+                min_len = min(min_len, len(z_vals))
+                if min_len <= 0:
+                    continue
+                trace["x"] = trace["x"][:min_len]
+                trace["y"] = trace["y"][:min_len]
+                trace["z"] = z_vals[:min_len]
+                trace["z_var"] = roles["z"]
+                use_3d = True
+            traces.append(trace)
+
+        if not traces:
+            QMessageBox.warning(
+                self,
+                "Plot X/Y(/Z)",
+                "No matching file with marked x/y variables could be plotted.",
+            )
+            return
+
+        import plotly.graph_objects as go
+        from plotly.io import to_html
+
+        fig = go.Figure()
+        for trace in traces:
+            label = trace["file_label"]
+            if use_3d and "z" in trace:
+                fig.add_trace(
+                    go.Scatter3d(
+                        x=trace["x"],
+                        y=trace["y"],
+                        z=trace["z"],
+                        mode="markers",
+                        name=label,
+                    )
+                )
+            else:
+                fig.add_trace(
+                    go.Scatter(
+                        x=trace["x"],
+                        y=trace["y"],
+                        mode="markers",
+                        name=label,
+                    )
+                )
+
+        title = "3D scatter plot (x, y, z)" if use_3d else "2D scatter plot (x, y)"
+        axis_labels = traces[0]
+        layout_kwargs = dict(
+            title=title,
+            xaxis_title=axis_labels["x_var"],
+            yaxis_title=axis_labels["y_var"],
+            template="plotly_dark" if self.theme_switch.isChecked() else "plotly",
+        )
+        if use_3d:
+            layout_kwargs["scene"] = dict(
+                xaxis_title=axis_labels["x_var"],
+                yaxis_title=axis_labels["y_var"],
+                zaxis_title=axis_labels.get("z_var", "z"),
+            )
+        fig.update_layout(**layout_kwargs)
+
+        if getattr(self, "embed_plot_cb", None) and self.embed_plot_cb.isChecked():
+            if self._temp_plot_file and os.path.exists(self._temp_plot_file):
+                try:
+                    os.remove(self._temp_plot_file)
+                except OSError:
+                    pass
+
+            import tempfile
+
+            html = to_html(fig, include_plotlyjs=True, full_html=True)
+            with tempfile.NamedTemporaryFile("w", delete=False, suffix=".html", encoding="utf-8") as tmp:
+                tmp.write(html)
+                tmp.flush()
+                self._temp_plot_file = tmp.name
+            self.plot_view.load(QUrl.fromLocalFile(tmp.name))
+            self.plot_view.show()
+            self._remember_plot_call(self.plot_marked_axes)
+        else:
+            self.plot_view.hide()
+            fig.show()
 
     def get_selected_keys(self):
         """Return all checked variables from all VariableTabs except User Variables."""
