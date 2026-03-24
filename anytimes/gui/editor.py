@@ -2156,16 +2156,33 @@ class TimeSeriesEditorQt(QMainWindow):
         else:
             fig = px.scatter(**base_kwargs)
 
+        # Keep axis limits fixed for all animation frames.
+        x_min, x_max = float(df["x"].min()), float(df["x"].max())
+        y_min, y_max = float(df["y"].min()), float(df["y"].max())
+        if abs(x_max - x_min) < 1e-12:
+            x_min, x_max = x_min - 0.5, x_max + 0.5
+        if abs(y_max - y_min) < 1e-12:
+            y_min, y_max = y_min - 0.5, y_max + 0.5
+
         fig.update_layout(
             xaxis_title=role_per_file[next(iter(role_per_file))].get("x", "x"),
             yaxis_title=role_per_file[next(iter(role_per_file))].get("y", "y"),
         )
+        fig.update_xaxes(range=[x_min, x_max])
+        fig.update_yaxes(range=[y_min, y_max])
         if use_3d and "z" in df.columns:
+            z_min, z_max = float(df["z"].min()), float(df["z"].max())
+            if abs(z_max - z_min) < 1e-12:
+                z_min, z_max = z_min - 0.5, z_max + 0.5
             fig.update_layout(
                 scene=dict(
                     xaxis_title=role_per_file[next(iter(role_per_file))].get("x", "x"),
                     yaxis_title=role_per_file[next(iter(role_per_file))].get("y", "y"),
                     zaxis_title=role_per_file[next(iter(role_per_file))].get("z", "z"),
+                    xaxis=dict(range=[x_min, x_max], autorange=False),
+                    yaxis=dict(range=[y_min, y_max], autorange=False),
+                    zaxis=dict(range=[z_min, z_max], autorange=False),
+                    aspectmode="data",
                 )
             )
 
