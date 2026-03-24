@@ -479,7 +479,22 @@ class TimeSeriesEditorQt(QMainWindow):
         offset_examples.setWordWrap(True)
         offset_layout.addWidget(offset_examples)
         self.apply_value_user_var_cb = QCheckBox("Create user variable instead of overwriting?")
-        offset_layout.addWidget(self.apply_value_user_var_cb)
+        self.colormap_min_label = QLabel("Color Min")
+        self.colormap_max_label = QLabel("Color Max")
+        self.colormap_min_input = QLineEdit()
+        self.colormap_max_input = QLineEdit()
+        self.colormap_min_input.setFixedWidth(80)
+        self.colormap_max_input.setFixedWidth(80)
+        self.colormap_min_input.setPlaceholderText("auto")
+        self.colormap_max_input.setPlaceholderText("auto")
+
+        offset_meta_row = QHBoxLayout()
+        offset_meta_row.addWidget(self.apply_value_user_var_cb)
+        offset_meta_row.addStretch(1)
+        offset_meta_row.addWidget(self.colormap_min_label)
+        offset_meta_row.addSpacing(40)
+        offset_meta_row.addWidget(self.colormap_max_label)
+        offset_layout.addLayout(offset_meta_row)
         self.apply_values_btn = QPushButton("Apply Values")
         self.clear_values_btn = QPushButton("Clear Values")
         self.plot_marked_axes_btn = QPushButton("Plot X/Y(/Z)")
@@ -495,6 +510,8 @@ class TimeSeriesEditorQt(QMainWindow):
         apply_plot_row.addWidget(self.animate_marked_axes_btn)
         apply_plot_row.addWidget(self.colormap_label)
         apply_plot_row.addWidget(self.colormap_combo)
+        apply_plot_row.addWidget(self.colormap_min_input)
+        apply_plot_row.addWidget(self.colormap_max_input)
         offset_layout.addLayout(apply_plot_row)
         self.controls_layout.addWidget(offset_group)
 
@@ -1657,6 +1674,31 @@ class TimeSeriesEditorQt(QMainWindow):
         cmap = self._selected_colormap()
         return f"{cmap.capitalize()}256"
 
+    def _manual_colormap_limits(self) -> tuple[float | None, float | None]:
+        """Return optional user-provided (min, max) color limits."""
+        min_txt = self.colormap_min_input.text().strip() if hasattr(self, "colormap_min_input") else ""
+        max_txt = self.colormap_max_input.text().strip() if hasattr(self, "colormap_max_input") else ""
+        cmin = None
+        cmax = None
+        if min_txt:
+            try:
+                cmin = float(min_txt)
+            except ValueError:
+                QMessageBox.warning(self, "Invalid Color Min", f"Could not parse Color Min: {min_txt!r}")
+        if max_txt:
+            try:
+                cmax = float(max_txt)
+            except ValueError:
+                QMessageBox.warning(self, "Invalid Color Max", f"Could not parse Color Max: {max_txt!r}")
+        if cmin is not None and cmax is not None and cmax <= cmin:
+            QMessageBox.warning(
+                self,
+                "Invalid Color Limits",
+                "Color Max must be greater than Color Min.",
+            )
+            return None, None
+        return cmin, cmax
+
     def plot_marked_axes(self):
         """Scatter-plot variables marked as x/y/z in the variable input fields."""
         import os
@@ -1816,6 +1858,7 @@ class TimeSeriesEditorQt(QMainWindow):
         plotly_scale = self._plotly_colorscale_name()
         mpl_cmap = self._selected_colormap()
         bokeh_palette = self._bokeh_palette_name()
+        manual_cmin, manual_cmax = self._manual_colormap_limits()
         title = "3D scatter plot (x, y, z)" if use_3d else "2D scatter plot (x, y)"
         axis_labels = traces[0]
         if engine == "bokeh" and use_3d:
@@ -1861,6 +1904,10 @@ class TimeSeriesEditorQt(QMainWindow):
                 if len(all_c):
                     c_min = float(np.min(all_c))
                     c_max = float(np.max(all_c))
+                    if manual_cmin is not None:
+                        c_min = manual_cmin
+                    if manual_cmax is not None:
+                        c_max = manual_cmax
                     if abs(c_max - c_min) < 1e-12:
                         c_max = c_min + 1.0
                     mapper = LinearColorMapper(palette=bokeh_palette, low=c_min, high=c_max)
@@ -1932,7 +1979,9 @@ class TimeSeriesEditorQt(QMainWindow):
                         continue
                     if "c" in trace:
                         sc = ax.scatter(
-                            trace["x"], trace["y"], z_vals, c=trace["c"], cmap=mpl_cmap, s=12, label=trace["file_label"]
+                            trace["x"], trace["y"], z_vals,
+                            c=trace["c"], cmap=mpl_cmap, vmin=color_min, vmax=color_max,
+                            s=12, label=trace["file_label"]
                         )
                     else:
                         sc = ax.scatter(trace["x"], trace["y"], z_vals, s=10, label=trace["file_label"])
@@ -1942,7 +1991,9 @@ class TimeSeriesEditorQt(QMainWindow):
                 for trace in traces:
                     if "c" in trace:
                         sc = ax.scatter(
-                            trace["x"], trace["y"], c=trace["c"], cmap=mpl_cmap, s=18, alpha=0.8, label=trace["file_label"]
+                            trace["x"], trace["y"],
+                            c=trace["c"], cmap=mpl_cmap, vmin=color_min, vmax=color_max,
+                            s=18, alpha=0.8, label=trace["file_label"]
                         )
                     else:
                         sc = ax.scatter(trace["x"], trace["y"], s=14, alpha=0.8, label=trace["file_label"])
@@ -1970,6 +2021,7 @@ class TimeSeriesEditorQt(QMainWindow):
 
         fig = go.Figure()
         has_color = any("c" in trace for trace in traces)
+        manual_cmin, manual_cmax = self._manual_colormap_limits()
         color_min = None
         color_max = None
         if has_color:
@@ -1977,6 +2029,10 @@ class TimeSeriesEditorQt(QMainWindow):
             if len(all_c):
                 color_min = float(np.min(all_c))
                 color_max = float(np.max(all_c))
+                if manual_cmin is not None:
+                    color_min = manual_cmin
+                if manual_cmax is not None:
+                    color_max = manual_cmax
                 if abs(color_max - color_min) < 1e-12:
                     color_max = color_min + 1.0
         colorbar_drawn = False
@@ -2239,6 +2295,17 @@ class TimeSeriesEditorQt(QMainWindow):
 
             x_min, x_max = float(df["x"].min()), float(df["x"].max())
             y_min, y_max = float(df["y"].min()), float(df["y"].max())
+            color_min = None
+            color_max = None
+            if "color" in df.columns:
+                color_min = float(df["color"].min())
+                color_max = float(df["color"].max())
+                if manual_cmin is not None:
+                    color_min = manual_cmin
+                if manual_cmax is not None:
+                    color_max = manual_cmax
+                if abs(color_max - color_min) < 1e-12:
+                    color_max = color_min + 1.0
             if abs(x_max - x_min) < 1e-12:
                 x_min, x_max = x_min - 0.5, x_max + 0.5
             if abs(y_max - y_min) < 1e-12:
@@ -2253,7 +2320,7 @@ class TimeSeriesEditorQt(QMainWindow):
                 ax.set_xlim(x_min, x_max)
                 ax.set_ylim(y_min, y_max)
                 ax.set_zlim(z_min, z_max)
-                scat = ax.scatter([], [], [], s=18, cmap=mpl_cmap)
+                scat = ax.scatter([], [], [], s=18, cmap=mpl_cmap, vmin=color_min, vmax=color_max)
                 time_text = ax.text2D(0.02, 0.95, "", transform=ax.transAxes)
 
                 def _update(frame_idx):
@@ -2272,7 +2339,7 @@ class TimeSeriesEditorQt(QMainWindow):
                 fig, ax = plt.subplots(figsize=(10, 6))
                 ax.set_xlim(x_min, x_max)
                 ax.set_ylim(y_min, y_max)
-                scat = ax.scatter([], [], s=24, cmap=mpl_cmap)
+                scat = ax.scatter([], [], s=24, cmap=mpl_cmap, vmin=color_min, vmax=color_max)
                 time_text = ax.text(0.02, 0.95, "", transform=ax.transAxes)
 
                 def _update(frame_idx):
@@ -2339,6 +2406,10 @@ class TimeSeriesEditorQt(QMainWindow):
             if "color" in df.columns:
                 c_min = float(df["color"].min())
                 c_max = float(df["color"].max())
+                if manual_cmin is not None:
+                    c_min = manual_cmin
+                if manual_cmax is not None:
+                    c_max = manual_cmax
                 if abs(c_max - c_min) < 1e-12:
                     c_max = c_min + 1.0
                 p.circle(
@@ -2413,6 +2484,15 @@ class TimeSeriesEditorQt(QMainWindow):
         if "color" in df.columns:
             base_kwargs["color"] = "color"
             base_kwargs["color_continuous_scale"] = plotly_scale
+            color_min = float(df["color"].min())
+            color_max = float(df["color"].max())
+            if manual_cmin is not None:
+                color_min = manual_cmin
+            if manual_cmax is not None:
+                color_max = manual_cmax
+            if abs(color_max - color_min) < 1e-12:
+                color_max = color_min + 1.0
+            base_kwargs["range_color"] = [color_min, color_max]
         else:
             base_kwargs["color"] = "series"
 
