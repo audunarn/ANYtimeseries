@@ -1926,9 +1926,26 @@ class TimeSeriesEditorQt(QMainWindow):
         import tempfile
 
         fig = go.Figure()
+        has_color = any("c" in trace for trace in traces)
+        colorbar_drawn = False
         for trace in traces:
             label = trace["file_label"]
             if use_3d and "z" in trace:
+                marker_cfg = dict()
+                if "c" in trace:
+                    marker_cfg = dict(
+                        color=trace.get("c"),
+                        colorscale="Viridis",
+                        showscale=not colorbar_drawn,
+                        colorbar=dict(
+                            title=trace.get("c_var", "color"),
+                            x=1.02,
+                            xanchor="left",
+                            y=0.5,
+                            len=0.8,
+                        ),
+                    )
+                    colorbar_drawn = True
                 fig.add_trace(
                     go.Scatter3d(
                         x=trace["x"],
@@ -1936,12 +1953,7 @@ class TimeSeriesEditorQt(QMainWindow):
                         z=trace["z"],
                         mode="markers",
                         name=label,
-                        marker=dict(
-                            color=trace.get("c"),
-                            colorscale="Viridis",
-                            showscale=("c" in trace),
-                            colorbar=dict(title=trace.get("c_var", "color")),
-                        ),
+                        marker=marker_cfg or None,
                     )
                 )
             else:
@@ -1950,9 +1962,16 @@ class TimeSeriesEditorQt(QMainWindow):
                     marker.update(
                         color=trace["c"],
                         colorscale="Viridis",
-                        showscale=True,
-                        colorbar=dict(title=trace.get("c_var", "color")),
+                        showscale=not colorbar_drawn,
+                        colorbar=dict(
+                            title=trace.get("c_var", "color"),
+                            x=1.02,
+                            xanchor="left",
+                            y=0.5,
+                            len=0.8,
+                        ),
                     )
+                    colorbar_drawn = True
                 fig.add_trace(go.Scatter(x=trace["x"], y=trace["y"], mode="markers", name=label, marker=marker))
 
         layout_kwargs = {
@@ -1960,6 +1979,14 @@ class TimeSeriesEditorQt(QMainWindow):
             "xaxis_title": axis_labels["x_var"],
             "yaxis_title": axis_labels["y_var"],
             "template": "plotly_dark" if self.theme_switch.isChecked() else "plotly",
+            "margin": dict(r=260 if has_color else 180),
+            "legend": dict(
+                x=1.18 if has_color else 1.02,
+                xanchor="left",
+                y=1.0,
+                yanchor="top",
+                bgcolor="rgba(0,0,0,0)",
+            ),
         }
         if use_3d:
             layout_kwargs["scene"] = dict(
