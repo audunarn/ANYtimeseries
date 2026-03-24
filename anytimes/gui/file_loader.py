@@ -58,6 +58,8 @@ class FileLoader:
         self._last_diffraction_dir = None
         self._diffraction_cache = {}
         self.cache_orcaflex_buffers = True
+        self.orcaflex_time_windows = {}
+        self.orcaflex_global_time_window = None
 
     def preload_sim_models(self, filepaths):
         if OrcFxAPI is None:
@@ -135,6 +137,8 @@ class FileLoader:
 
     def open_orcaflex_picker(self, file_paths):
         """Qt version of the OrcaFlex variable picker."""
+        self.orcaflex_time_windows = {}
+        self.orcaflex_global_time_window = None
         errors = []
         for fp in file_paths:
             try:
@@ -142,10 +146,10 @@ class FileLoader:
             except Exception as exc:
                 errors.append((fp, exc))
         if errors:
-            raise RuntimeError(
-                "Models not preloaded: "
-                + ", ".join(os.path.basename(m) for m, _ in errors)
+            details = "\n".join(
+                f"{os.path.basename(path)}: {exc}" for path, exc in errors
             )
+            raise RuntimeError(f"Models not preloaded.\n{details}")
 
 
         dialog = QDialog(self.parent_gui)
@@ -182,6 +186,27 @@ class FileLoader:
         regex_cb = QCheckBox("Use as REGEX")
         wc_layout.addWidget(regex_cb)
         right_side.addLayout(wc_layout)
+
+        batch_has_frequency = any(
+            self._is_frequency_domain_model(self.loaded_sim_models[fp])
+            for fp in file_paths
+        )
+        default_start, default_stop = self._default_orcaflex_time_window(
+            [self.loaded_sim_models[fp] for fp in file_paths],
+            force_frequency_defaults=batch_has_frequency,
+        )
+
+        time_layout = QHBoxLayout()
+        time_layout.addWidget(QLabel("Time from:"))
+        time_from_entry = QLineEdit(f"{default_start:.3f}")
+        time_from_entry.setFixedWidth(100)
+        time_layout.addWidget(time_from_entry)
+        time_layout.addWidget(QLabel("to:"))
+        time_to_entry = QLineEdit(f"{default_stop:.3f}")
+        time_to_entry.setFixedWidth(100)
+        time_layout.addWidget(time_to_entry)
+        time_layout.addStretch()
+        right_side.addLayout(time_layout)
 
         # Default extras for each object type
         default_group = QGroupBox("Default Extra Input")
@@ -1051,6 +1076,27 @@ class FileLoader:
             else:
                 self._strip_rule = None
 
+            try:
+                global_start = float(time_from_entry.text().strip())
+                global_stop = float(time_to_entry.text().strip())
+            except ValueError:
+                QMessageBox.warning(
+                    dialog,
+                    "Invalid Time Range",
+                    "Time from/to must be numeric values.",
+                )
+                return
+
+            if global_stop <= global_start:
+                QMessageBox.warning(
+                    dialog,
+                    "Invalid Time Range",
+                    "Time 'to' must be greater than time 'from'.",
+                )
+                return
+
+            self.orcaflex_global_time_window = (global_start, global_stop)
+
             for fp, specs in apply_specs.items():
                 out_specs[fp] = list(specs)
 
@@ -1588,8 +1634,8 @@ class FileLoader:
             print("OrcFxAPI not available. Cannot preload .sim files.")
             return
         tsdb = TsDB()
-        time_spec = OrcFxAPI.SpecifiedPeriod(0, model.simulationTimeStatus.CurrentTime)
-        time = model["General"].TimeHistory("Time", time_spec)
+        time_spec = self._resolve_time_spec_for_model(model)
+        time = self._extract_model_time(model, time_spec)
         object_var_map = {obj.Name: obj for obj in model.objects}
         def _match_obj(name):
             obj = object_var_map.get(name)
@@ -1601,6 +1647,7 @@ class FileLoader:
                         break
             return obj
         resolved_specs = []
+        fallback_specs = []
         names = []
         redundant_subs = getattr(self, "orcaflex_redundant_subs", [])
         for spec in selection_specs:
@@ -1636,6 +1683,7 @@ class FileLoader:
                                 else f"{short_obj}:{short_var} (EndA)"
                             )
                             resolved_specs.append(spec_obj)
+                            fallback_specs.append((obj_name, var, end_enum))
                             names.append(label)
                         except Exception:
                             continue
@@ -1649,6 +1697,7 @@ class FileLoader:
                                 else f"{short_obj}:{short_var} (EndB)"
                             )
                             resolved_specs.append(spec_obj)
+                            fallback_specs.append((obj_name, var, end_enum))
                             names.append(label)
                         except Exception:
                             continue
@@ -1663,6 +1712,7 @@ class FileLoader:
                         try:
                             spec_obj = OrcFxAPI.TimeHistorySpecification(model[obj_name], var, end)
                             resolved_specs.append(spec_obj)
+                            fallback_specs.append((obj_name, var, end))
                             names.append(label)
                         except Exception:
                             continue
@@ -1676,6 +1726,7 @@ class FileLoader:
                             )
                             spec_obj = OrcFxAPI.TimeHistorySpecification(model[obj_name], var, extra)
                             resolved_specs.append(spec_obj)
+                            fallback_specs.append((obj_name, var, extra))
                             names.append(label)
                         except Exception:
                             continue
@@ -1690,6 +1741,7 @@ class FileLoader:
                             )
                             spec_obj = OrcFxAPI.TimeHistorySpecification(model[obj_name], var, extra)
                             resolved_specs.append(spec_obj)
+                            fallback_specs.append((obj_name, var, extra))
                             names.append(label)
                         except Exception:
                             continue
@@ -1704,6 +1756,7 @@ class FileLoader:
                             else f"{short_obj}:{short_var} (pos {end})"
                         )
                         resolved_specs.append(spec_obj)
+                        fallback_specs.append((obj_name, var, end))
                         names.append(label)
                     except Exception:
                         continue
@@ -1712,6 +1765,7 @@ class FileLoader:
                         spec_obj = OrcFxAPI.TimeHistorySpecification(model[obj_name], var)
                         label = f"{short_obj}:{short_var}"
                         resolved_specs.append(spec_obj)
+                        fallback_specs.append((obj_name, var, None))
                         names.append(label)
                     except Exception:
                         continue
@@ -1719,27 +1773,232 @@ class FileLoader:
                 continue
         if not resolved_specs:
             return tsdb
+        spectral_lookup = {}
+        if self._is_frequency_domain_model(model):
+            for fallback_spec, label in zip(fallback_specs, names):
+                try:
+                    obj_name, var_name, object_extra = fallback_spec
+                    obj_for_rao = model[obj_name]
+                    kwargs = {}
+                    if object_extra is not None:
+                        kwargs["objectExtra"] = object_extra
+                    rao = obj_for_rao.SpectralResponseRAO(var_name, **kwargs)
+                    omega = np.asarray(rao.X, dtype=float)
+                    rao_mag = np.asarray(rao.Y, dtype=float)
+                    if omega.size and omega.size == rao_mag.size:
+                        spectral_lookup[label] = {
+                            "freq_hz": omega / (2.0 * np.pi),
+                            "rao_amp": rao_mag,
+                        }
+                except Exception:
+                    continue
+
         try:
             results = OrcFxAPI.GetMultipleTimeHistories(resolved_specs, time_spec)
+            time, results = self._crop_orcaflex_series_to_window(model, time, results)
             for i, name in enumerate(names):
-                self._add_unique_timeseries(tsdb, name, time, results[:, i])
+                metadata = spectral_lookup.get(name)
+                self._add_unique_timeseries(tsdb, name, time, results[:, i], metadata=metadata)
             return tsdb
         except Exception as e:
+            if self._is_frequency_domain_model(model):
+                # OrcaFlex can reject bulk extraction for synthesised frequency-domain
+                # histories, while per-variable extraction still works.
+                fallback_error = self._load_orcaflex_time_histories_individually(
+                    model,
+                    tsdb,
+                    fallback_specs,
+                    names,
+                    time_spec,
+                    time,
+                    spectral_lookup,
+                )
+                if fallback_error is None:
+                    return tsdb
+                e = fallback_error
             QMessageBox.critical(self.parent_gui, "OrcaFlex Read Error", f"Could not read variables:\n{e}")
             return None
 
-    def _add_unique_timeseries(self, tsdb, base_label, time, data):
+    def _load_orcaflex_time_histories_individually(
+        self,
+        model,
+        tsdb,
+        fallback_specs,
+        names,
+        time_spec,
+        time,
+        spectral_lookup,
+    ):
+        """Read OrcaFlex time histories one-by-one for frequency-domain fallback.
+
+        Returns ``None`` if at least one variable is read successfully, otherwise
+        returns the latest exception instance.
+        """
+
+        last_error = None
+        loaded_any = False
+        for fallback_spec, name in zip(fallback_specs, names):
+            try:
+                obj_name, var_name, object_extra = fallback_spec
+                obj = model[obj_name]
+                if object_extra is None:
+                    data = obj.TimeHistory(var_name, time_spec)
+                else:
+                    data = obj.TimeHistory(var_name, time_spec, object_extra)
+                metadata = spectral_lookup.get(name)
+                resolved_time = self._resolve_time_array(time, data)
+                resolved_time, data = self._crop_orcaflex_series_to_window(model, resolved_time, data)
+                self._add_unique_timeseries(tsdb, name, resolved_time, data, metadata=metadata)
+                loaded_any = True
+            except Exception as ex:
+                last_error = ex
+
+        if loaded_any:
+            return None
+        return last_error
+
+    def _extract_model_time(self, model, time_spec):
+        """Extract time values for OrcaFlex variables with frequency-domain fallback."""
+
+        if self._is_frequency_domain_model(model):
+            sample_times = getattr(model, "SampleTimes", None)
+            if callable(sample_times):
+                try:
+                    return np.asarray(sample_times(time_spec), dtype=float)
+                except UnicodeDecodeError:
+                    # Certain frequency-domain .sim files can trigger locale
+                    # decode errors inside OrcFxAPI while retrieving sample
+                    # times. Fallback to General.TimeHistory in that case.
+                    pass
+
+        return model["General"].TimeHistory("Time", time_spec)
+
+    def _resolve_time_array(self, time, data):
+        """Return a 1D time array matching the data length."""
+
+        data_arr = np.asarray(data, dtype=float)
+        n_samples = data_arr.shape[0]
+        if n_samples == 0:
+            return np.asarray([], dtype=float)
+
+        if time is not None:
+            time_arr = np.asarray(time, dtype=float)
+            if time_arr.ndim == 1 and time_arr.shape[0] == n_samples:
+                return time_arr
+
+        return np.arange(n_samples, dtype=float)
+
+    def _crop_orcaflex_series_to_window(self, model, time, data):
+        """Trim time-domain OrcaFlex results to the requested extraction window."""
+
+        time_arr = np.asarray(time, dtype=float)
+        data_arr = np.asarray(data)
+        if time_arr.ndim != 1 or time_arr.size == 0:
+            return time_arr, data_arr
+
+        if self._is_frequency_domain_model(model):
+            return time_arr, data_arr
+
+        requested = self.orcaflex_time_windows.get(id(model))
+        if requested is None:
+            return time_arr, data_arr
+
+        start, stop = requested
+        tol = max(1e-9, np.finfo(float).eps * max(1.0, abs(start), abs(stop)) * 10.0)
+        mask = (time_arr >= start - tol) & (time_arr <= stop + tol)
+        if mask.all() or not mask.any():
+            return time_arr, data_arr
+
+        if data_arr.ndim == 1:
+            return time_arr[mask], data_arr[mask]
+        return time_arr[mask], data_arr[mask, ...]
+
+    def _add_unique_timeseries(self, tsdb, base_label, time, data, metadata=None):
         """Add ``TimeSeries`` to *tsdb* ensuring its name is unique."""
 
         label = base_label
         suffix = 1
         while True:
             try:
-                tsdb.add(TimeSeries(label, time, data))
+                series = TimeSeries(label, time, data)
+                if metadata:
+                    for key, value in metadata.items():
+                        setattr(series, key, value)
+                tsdb.add(series)
                 return label
             except KeyError:
                 suffix += 1
                 label = f"{base_label} ({suffix})"
+
+    def _is_frequency_domain_model(self, model):
+        """Detect frequency-domain OrcaFlex simulations from General settings."""
+
+        try:
+            general_obj = model["General"]
+        except Exception:
+            return False
+
+        method = getattr(general_obj, "DynamicsSolutionMethod", None)
+        if not isinstance(method, str):
+            return False
+
+        return method.strip().lower() == "frequency domain"
+
+    def _resolve_time_spec_for_model(self, model):
+        """Pick time window for OrcaFlex extraction using a shared batch range."""
+
+        import OrcFxAPI
+
+        model_id = id(model)
+        if model_id in self.orcaflex_time_windows:
+            start, stop = self.orcaflex_time_windows[model_id]
+            return OrcFxAPI.SpecifiedPeriod(start, stop)
+
+        model_start, model_stop = self._get_model_time_bounds(model)
+
+        if self.orcaflex_global_time_window is not None:
+            start, stop = self.orcaflex_global_time_window
+            start = float(start)
+            stop = float(stop)
+            if not self._is_frequency_domain_model(model):
+                start = max(start, model_start)
+                stop = min(stop, model_stop)
+                if stop <= start:
+                    start, stop = model_start, model_stop
+            self.orcaflex_time_windows[model_id] = (start, stop)
+            return OrcFxAPI.SpecifiedPeriod(start, stop)
+
+        if not self._is_frequency_domain_model(model):
+            spec = OrcFxAPI.SpecifiedPeriod(model_start, model_stop)
+            self.orcaflex_time_windows[model_id] = (model_start, model_stop)
+            return spec
+
+        self.orcaflex_time_windows[model_id] = (0.0, 10800.0)
+        return OrcFxAPI.SpecifiedPeriod(0.0, 10800.0)
+
+    def _get_model_time_bounds(self, model):
+        start = float(getattr(model, "simulationStartTime", 0.0))
+        stop = float(getattr(model, "simulationStopTime", start))
+        if stop <= start:
+            stop = float(getattr(model.simulationTimeStatus, "CurrentTime", start))
+        if stop <= start:
+            stop = start + 1.0
+        return start, stop
+
+    def _default_orcaflex_time_window(self, models, force_frequency_defaults=False):
+        if force_frequency_defaults:
+            return 0.0, 10800.0
+
+        starts = []
+        stops = []
+        for model in models:
+            start, stop = self._get_model_time_bounds(model)
+            starts.append(start)
+            stops.append(stop)
+
+        if not starts:
+            return 0.0, 1.0
+        return min(starts), max(stops)
 
     def _get_orcaflex_buffer(self, filepath):
         if filepath in self.orcaflex_sim_buffers:
@@ -1884,26 +2143,50 @@ class FileLoader:
                 skipped.add(name)
                 continue
 
-            spatial_dims = [dim for dim in data_array.dims if dim != time_coord.name]
-            for dim in spatial_dims:
-                size = data_array.sizes.get(dim, 0)
-                if size == 1:
-                    data_array = data_array.isel({dim: 0})
-                else:
-                    skipped.add(name)
-                    data_array = None
-                    break
-            if data_array is None:
-                continue
+            spatial_dims = [
+                dim
+                for dim in data_array.dims
+                if dim != time_coord.name and data_array.sizes.get(dim, 0) > 1
+            ]
 
-            values = np.asarray(data_array.values)
-            if values.ndim != 1 or values.shape[0] != time_values.size:
-                skipped.add(name)
-                continue
+            singleton_dims = [
+                dim
+                for dim in data_array.dims
+                if dim != time_coord.name and data_array.sizes.get(dim, 0) == 1
+            ]
+            for dim in singleton_dims:
+                data_array = data_array.isel({dim: 0})
 
-            try:
-                tsdb.add(TimeSeries(str(name), time_values, values.astype(float)))
-            except Exception:
+            iter_indices = [()] if not spatial_dims else np.ndindex(*[data_array.sizes[d] for d in spatial_dims])
+
+            added_any = False
+            for idx_tuple in iter_indices:
+                indexed = data_array
+                suffix_parts = []
+                for dim, idx in zip(spatial_dims, idx_tuple):
+                    indexed = indexed.isel({dim: idx})
+                    coord = ds.coords.get(dim)
+                    if coord is not None and coord.ndim == 1 and coord.size > idx:
+                        coord_value = np.asarray(coord.values[idx]).item()
+                    else:
+                        coord_value = idx
+                    suffix_parts.append(f"{dim}={coord_value}")
+
+                values = np.asarray(indexed.values)
+                if values.ndim != 1 or values.shape[0] != time_values.size:
+                    continue
+
+                ts_name = str(name)
+                if suffix_parts:
+                    ts_name = f"{ts_name} [{', '.join(suffix_parts)}]"
+
+                try:
+                    tsdb.add(TimeSeries(ts_name, time_values, values.astype(float)))
+                    added_any = True
+                except Exception:
+                    continue
+
+            if not added_any:
                 skipped.add(name)
 
         if len(tsdb.getm()) == 0:

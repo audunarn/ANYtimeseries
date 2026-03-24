@@ -90,6 +90,7 @@ Radio buttons select **None**, **Low-pass**, **High-pass**, **Band-pass** or **B
 ### Tools
 - **Open in AnyQATS** – launch the external viewer.
 - **Open Extreme Value Statistics Tool** – open the dedicated extreme value analysis window.
+- **Generate RAO from Selected Time Series** – estimate a frequency-domain RAO directly from selected time series. Use one series (time vs response, e.g. pitch angle) for single-series RAO with unit excitation, or pick different excitation/response series for transfer-function RAO; plots amplitude, phase and coherence (coherence shown for paired mode).
 - **Extract OrcaFlex Surface Pressures** – available once coordinates are supplied in the OrcaFlex selector; loads panel pressure series from diffraction models.
 
 ### Plot controls
@@ -173,4 +174,3 @@ Update the paths to match your environment.
 ## License
 
 Released under the MIT License. See [LICENSE](../LICENSE) for details.
-

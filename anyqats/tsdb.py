@@ -568,7 +568,7 @@ class TsDB(object):
                     tslist[i] = TimeSeries(name, timearr, arr, parent=parent)
 
             elif fext == '.csv':
-                data = read_csv_data(parent, ind=indices)
+                data = read_csv_data(parent, ind=names)
                 for i, name in enumerate(names):
                     tslist[i] = TimeSeries(name, data[0, :], data[i + 1, :], parent=parent)
 
@@ -1384,7 +1384,12 @@ class TsDB(object):
                 # Parent, i.e. source file
                 self.register_parent[key] = thefile
                 # Time series index on file, to speed up reading the time series, dummy for .mat files, +1 to skip time
-                ind = j + 1 if fext not in ('.h5', '.hdf5', '.mat') else None
+                if fext in ('.h5', '.hdf5', '.mat'):
+                    ind = None
+                elif fext == '.csv':
+                    ind = name
+                else:
+                    ind = j + 1
                 self.register_indices[key] = ind
                 # time series names in the order the associated time series where loaded
                 self.register_keys.append(key)

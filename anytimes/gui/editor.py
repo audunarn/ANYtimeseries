@@ -3,12 +3,15 @@ from __future__ import annotations
 
 import datetime
 import json
+import multiprocessing
 import os
 import re
 import subprocess
 import sys
 import traceback
 import warnings
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from contextlib import nullcontext
 from array import array
 from collections.abc import Callable, Sequence
 
@@ -16,8 +19,9 @@ import anyqats as qats
 import numpy as np
 import pandas as pd
 import scipy.io
+from tqdm.auto import tqdm
 from anyqats import TimeSeries, TsDB
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
 from matplotlib.figure import Figure
 from PySide6.QtCore import QEvent, QTimer, Qt, QUrl, Signal, Slot
 from PySide6.QtGui import (
@@ -68,10 +72,118 @@ from .file_loader import FileLoader
 from .layout_utils import apply_initial_size
 from .stats_dialog import StatsDialog
 from .evm_window import EVMWindow
+from .rao_dialog import RAODialog
 from ..fatigue import FatigueSeries
 from .fatigue_dialog import FatigueDialog
 from .sortable_table_widget_item import SortableTableWidgetItem
 from .variable_tab import VariableRowWidget, VariableTab
+
+
+_TRANSFORM_SPEC = None
+
+
+
+
+def _tqdm_progress(iterable, total, desc):
+    """Return a tqdm progress iterator when possible."""
+    if total <= 0:
+        return nullcontext(iterable)
+    return tqdm(iterable, total=total, desc=desc, leave=False)
+
+def _evaluate_calculator_task(file_idx, task):
+    """Evaluate one calculator expression for a single file payload."""
+    time_window = np.asarray(task["time_window"], dtype=float)
+    ctx = dict(task.get("shared_ctx") or {})
+    ctx.update(task.get("file_ctx") or {})
+    ctx["time"] = time_window
+    ctx.update({
+        "np": np,
+        "sin": np.sin,
+        "cos": np.cos,
+        "tan": np.tan,
+        "exp": np.exp,
+        "sqrt": np.sqrt,
+        "log": np.log,
+        "abs": np.abs,
+        "min": np.min,
+        "max": np.max,
+        "power": np.power,
+        "radians": np.radians,
+        "degrees": np.degrees,
+    })
+
+    exec(task["exec_expr"], ctx)
+    y = np.asarray(ctx[task["base_output"]], dtype=float)
+    if y.ndim == 0:
+        y = np.full_like(time_window, y, dtype=float)
+    if len(y) != len(time_window):
+        raise ValueError("Result length mismatch with time vector")
+    return file_idx, y
+
+
+def _init_transform_worker(transform_spec):
+    """Initialize transformation worker state for multiprocessing."""
+    global _TRANSFORM_SPEC
+    _TRANSFORM_SPEC = transform_spec
+
+
+def _rolling_mean(y_values, window):
+    """Return a trailing rolling mean with min_periods=1."""
+    y = np.asarray(y_values, dtype=float)
+    if window <= 1 or y.size <= 1:
+        return y.copy()
+    cumsum = np.cumsum(np.insert(y, 0, 0.0))
+    counts = np.minimum(np.arange(1, y.size + 1), window)
+    totals = cumsum[window:] - cumsum[:-window]
+    prefix = np.cumsum(y[: window - 1])
+    return np.concatenate((prefix / counts[: window - 1], totals / counts[window - 1 :]))
+
+
+def _apply_transform_spec(y_values, transform_spec):
+    """Apply a serializable quick-transformation specification."""
+    y = np.asarray(y_values, dtype=float)
+    kind = transform_spec["kind"]
+    if kind == "abs":
+        return np.abs(y)
+    if kind == "scale":
+        return y * float(transform_spec["factor"])
+    if kind == "offset":
+        return y + float(transform_spec["value"])
+    if kind == "radians":
+        return np.radians(y)
+    if kind == "degrees":
+        return np.degrees(y)
+    if kind == "rolling_mean":
+        return _rolling_mean(y, int(transform_spec["window"]))
+    if kind == "trig_scale":
+        return y * float(transform_spec["factor"])
+    if kind == "shift_min_to_zero":
+        lower = np.sort(y)[int(len(y) * 0.01)] if transform_spec.get("ignore_anomalies") and len(y) else np.min(y)
+        return y if lower >= 0 else y - lower
+    if kind == "shift_repeated_neg_min":
+        if y.size == 0:
+            return y
+        ymin = y.min()
+        if ymin >= 0:
+            return y
+        tol_abs = abs(ymin) * float(transform_spec["tol_pct"])
+        plate_cnt = np.count_nonzero(np.abs(y - ymin) <= tol_abs)
+        return y - ymin if plate_cnt >= int(transform_spec["min_count"]) else y
+    if kind == "shift_mean_to_zero":
+        if transform_spec.get("ignore_anomalies") and y.size:
+            p01, p99 = np.percentile(y, [1, 99])
+            mask = (y >= p01) & (y <= p99)
+            mean_value = np.mean(y[mask]) if np.any(mask) else np.mean(y)
+        else:
+            mean_value = np.mean(y)
+        return y - mean_value
+    raise ValueError(f"Unknown transformation kind: {kind}")
+
+
+def _evaluate_transform_payload(task_idx, y_values):
+    """Evaluate one quick transformation payload."""
+    return task_idx, _apply_transform_spec(y_values, _TRANSFORM_SPEC)
+
 from .utils import (
     MATH_FUNCTIONS,
     ORCAFLEX_VARIABLE_MAP,
@@ -106,6 +218,7 @@ class TimeSeriesEditorQt(QMainWindow):
         # non-matplotlib engines without reloading the entire UI.
         self._last_plot_call: tuple[Callable[..., None], tuple, dict] | None = None
         self._refreshing_plot = False
+        self._marker_input_auto_value = ""
 
         # =======================
         # DATA STRUCTURES
@@ -340,6 +453,16 @@ class TimeSeriesEditorQt(QMainWindow):
         row5.addWidget(self.shift_common_max_btn)
         transform_layout.addLayout(row5)
 
+        row6 = QHBoxLayout()
+        self.shift_x_start_zero_btn = QPushButton("Shift X Start → 0")
+        self.shift_x_start_zero_btn.setToolTip(
+            "Create a new series where the x-axis starts at zero by subtracting the initial x value."
+        )
+        row6.addWidget(self.shift_x_start_zero_btn)
+        row6.addStretch(1)
+        transform_layout.addLayout(row6)
+
+
         # Progress bar is shown by itself unless the plot is embedded
         self.controls_layout.addWidget(self.progress)
         # Row used when embedding the plot to move transformations next to the
@@ -438,8 +561,10 @@ class TimeSeriesEditorQt(QMainWindow):
         tools_layout = QHBoxLayout(self.tools_group)
         self.launch_qats_btn = QPushButton("Open in AnyQATS")
         self.evm_tool_btn = QPushButton("Open Extreme Value Statistics Tool")
+        self.rao_tool_btn = QPushButton("Generate RAO from Selected Time Series")
         tools_layout.addWidget(self.launch_qats_btn)
         tools_layout.addWidget(self.evm_tool_btn)
+        tools_layout.addWidget(self.rao_tool_btn)
         self.controls_layout.addWidget(self.tools_group)
 
         # ---- Plot controls ----
@@ -482,9 +607,11 @@ class TimeSeriesEditorQt(QMainWindow):
         self.plot_raw_cb.setChecked(True)
         self.plot_lowpass_cb = QCheckBox("Low-pass")
         self.plot_highpass_cb = QCheckBox("High-pass")
+        self.plot_datetime_x_cb = QCheckBox("Datetime x-axis (if possible)")
         plot_btn_row.addWidget(self.plot_raw_cb)
         plot_btn_row.addWidget(self.plot_lowpass_cb)
         plot_btn_row.addWidget(self.plot_highpass_cb)
+        plot_btn_row.addWidget(self.plot_datetime_x_cb)
         plot_btn_row.addWidget(QLabel("Engine:"))
         self.plot_engine_combo = QComboBox()
         self.plot_engine_combo.addItems(["plotly", "bokeh", "default"])
@@ -513,7 +640,7 @@ class TimeSeriesEditorQt(QMainWindow):
         yaxis_row.addWidget(self.yaxis_label)
         plot_layout.addLayout(yaxis_row)
 
-        # Rolling mean window
+        # Rolling mean window + x-axis marker
         rolling_row = QHBoxLayout()
         rolling_row.addWidget(QLabel("Rolling mean window:"))
         self.rolling_window = QSpinBox()
@@ -522,6 +649,9 @@ class TimeSeriesEditorQt(QMainWindow):
 
         self.rolling_window.setValue(1)
         rolling_row.addWidget(self.rolling_window)
+        rolling_row.addWidget(QLabel("X-axis marker:"))
+        self.x_axis_marker_input = QLineEdit()
+        rolling_row.addWidget(self.x_axis_marker_input)
         plot_layout.addLayout(rolling_row)
 
         self.controls_layout.addWidget(self.plot_group)
@@ -593,6 +723,7 @@ class TimeSeriesEditorQt(QMainWindow):
         self._temp_plot_file = None  # temporary HTML used for embedded plots
         # Placeholder for embedded Matplotlib canvas
         self._mpl_canvas = None
+        self._mpl_toolbar = None
         # plot_view is shown when the "Embed Plot" option is enabled
 
         self.controls_layout.addStretch(1)
@@ -656,8 +787,10 @@ class TimeSeriesEditorQt(QMainWindow):
         self.export_csv_btn.clicked.connect(self.export_selected_to_csv)
         self.shift_min_nz_btn.clicked.connect(self.shift_repeated_neg_min)
         self.shift_common_max_btn.clicked.connect(self.shift_common_max)
+        self.shift_x_start_zero_btn.clicked.connect(self.shift_x_start_to_zero)
         self.launch_qats_btn.clicked.connect(self.launch_qats)
         self.evm_tool_btn.clicked.connect(self.open_evm_tool)
+        self.rao_tool_btn.clicked.connect(self.open_rao_tool)
         self.reselect_orcaflex_btn.clicked.connect(self.reselect_orcaflex_variables)
         self.psd_btn.clicked.connect(lambda: self.plot_selected(mode="psd"))
         self.cycle_range_btn.clicked.connect(lambda: self.plot_selected(mode="cycle"))
@@ -668,12 +801,17 @@ class TimeSeriesEditorQt(QMainWindow):
         self.theme_switch.stateChanged.connect(self.toggle_dark_theme)
         self.embed_plot_cb.stateChanged.connect(self.toggle_embed_layout)
         self.plot_engine_combo.currentTextChanged.connect(self._on_engine_changed)
+        self.plot_datetime_x_cb.stateChanged.connect(self._refresh_marker_input_defaults)
+        self.time_start.textChanged.connect(self._refresh_marker_input_defaults)
+        self.time_end.textChanged.connect(self._refresh_marker_input_defaults)
 
         # ==== Populate variable tabs on startup ====
         self.refresh_variable_tabs()
+        self._refresh_marker_input_defaults()
         # Apply the light palette by default
-        self.apply_dark_palette()
-        self.theme_switch.setChecked(True)
+        self.apply_light_palette()
+        #self.apply_dark_palette()
+        #self.theme_switch.setChecked(True)
         self.toggle_embed_layout('')
         self.embed_plot_cb.setChecked(True)
 
@@ -869,37 +1007,157 @@ class TimeSeriesEditorQt(QMainWindow):
         # Keep typing focus in the calculator entry
         self.calc_entry.setFocus()
 
+    def _format_calculator_equation(self, expr: str, output_names: Sequence[str] | None = None) -> str:
+        """Return readable equation lines for the created calculator output(s)."""
+        lhs, sep, rhs = expr.partition("=")
+        if not sep:
+            return expr.strip()
+
+        lhs = lhs.strip()
+        rhs_lines = [line.strip() for line in rhs.splitlines() if line.strip()]
+        if not rhs_lines:
+            rhs_lines = [""]
+
+        names = list(output_names) if output_names else [lhs]
+        formatted = []
+        for name in names:
+            if len(rhs_lines) == 1:
+                formatted.append(f"{name} = {rhs_lines[0]}")
+            else:
+                formatted.append(f"{name} =\n    " + "\n    ".join(rhs_lines))
+        return "\n\n".join(formatted)
+
+    def _auto_calculator_output_name(self, expr: str) -> str:
+        """Create a compact unique user-variable name from a bare calculator expression."""
+        stem_src = expr
+        stem_src = re.sub(r"\bc_", "cc_", stem_src)
+        for old, new in (
+            ("**", " pow "),
+            ("+", " p "),
+            ("-", " m "),
+            ("*", " x "),
+            ("/", " d "),
+            ("%", " mod "),
+        ):
+            stem_src = stem_src.replace(old, new)
+
+        stem = _safe(stem_src)
+        for old, new in (
+            ("radians", "rad"),
+            ("degrees", "deg"),
+            ("common", "cc"),
+        ):
+            stem = re.sub(rf"(?<![A-Za-z0-9]){old}(?![A-Za-z0-9])", new, stem)
+
+        stem = re.sub(r"_+", "_", stem).strip("_") or "result"
+        stem = stem[:96].rstrip("_") or "result"
+        candidate = f"calc_{stem}"
+
+        existing = set(getattr(self, "user_variables", set()))
+        for tsdb in self.tsdbs:
+            existing.update(tsdb.getm())
+
+        if candidate not in existing:
+            return candidate
+
+        idx = 2
+        while f"{candidate}_{idx}" in existing:
+            idx += 1
+        return f"{candidate}_{idx}"
+
     def calculate_series(self):
         """Evaluate the Calculator expression and create new series."""
         import traceback
 
+        self.progress.setFormat("Calculating %v/%m files")
+        self.update_progressbar(0, max(len(self.tsdbs), 1))
+
         expr = self.calc_entry.toPlainText().strip()
         if not expr:
+            self.progress.reset()
+            self.progress.setFormat("%p%")
             QMessageBox.warning(self, "No Formula", "Please enter a formula.")
             return
 
         m_out = re.match(r"\s*([A-Za-z_]\w*)\s*=", expr)
-        if not m_out:
-            QMessageBox.critical(self, "No Assignment", "Write the formula like   result = <expression>")
-            return
-        base_output = m_out.group(1)
+        if m_out:
+            base_output = m_out.group(1)
+            exec_expr = expr
+            display_expr = expr
+        else:
+            base_output = self._auto_calculator_output_name(expr)
+            exec_expr = f"{base_output} = {expr}"
+            display_expr = exec_expr
 
-        t_window = None
+        file_windows = []
+        file_window_coords = []
+        file_window_dtg_refs = []
+
+        def _time_coordinates(ts):
+            """Return alignment coordinates for a series.
+
+            Uses absolute datetimes when available, otherwise falls back to
+            the native numeric time axis.
+            """
+            if ts.dtg_time is not None:
+                return np.array(ts.dtg_time, dtype="datetime64[us]")
+            return np.asarray(ts.t)
+
+        def _coord_to_numeric(coord):
+            coord = np.asarray(coord)
+            if np.issubdtype(coord.dtype, np.datetime64):
+                return coord.astype("datetime64[us]").astype(np.int64).astype(float)
+            return coord.astype(float)
+
+        def _align_to_window(ts, x_values, target_time, target_coord):
+            coord = _time_coordinates(ts)
+            idx = (coord >= target_coord[0]) & (coord <= target_coord[-1])
+            if not np.any(idx):
+                return np.full_like(target_time, np.nan, dtype=float)
+
+            coord_part = coord[idx]
+            x_part = np.asarray(x_values[idx], dtype=float)
+            if np.array_equal(coord_part, target_coord):
+                return x_part
+
+            overlap = (target_coord >= coord_part[0]) & (target_coord <= coord_part[-1])
+            if not np.any(overlap):
+                return np.full_like(target_time, np.nan, dtype=float)
+
+            full = np.full_like(target_time, np.nan, dtype=float)
+            target_numeric = _coord_to_numeric(target_coord[overlap])
+            source_numeric = _coord_to_numeric(coord_part)
+
+            if source_numeric.size == 1:
+                full[overlap] = x_part[0]
+            else:
+                full[overlap] = np.interp(target_numeric, source_numeric, x_part)
+            return full
+
         for tsdb in self.tsdbs:
+            file_t_window = None
+            file_t_window_coord = None
+            file_t_window_dtg_ref = None
             for ts in tsdb.getm().values():
                 mask = self.get_time_window(ts)
                 if mask is not None and np.any(mask):
-                    t_window = ts.t[mask]
+                    file_t_window = ts.t[mask]
+                    file_t_window_coord = _time_coordinates(ts)[mask]
+                    file_t_window_dtg_ref = ts.dtg_ref
                     break
-            if t_window is not None:
-                break
-        if t_window is None:
-            QMessageBox.critical(self, "No Time Window", "Could not infer a valid time window.")
-            return
+            if file_t_window is None:
+                self.progress.reset()
+                self.progress.setFormat("%p%")
+                QMessageBox.critical(self, "No Time Window", "Could not infer a valid time window for one or more files.")
+                return
+            file_windows.append(file_t_window)
+            file_window_coords.append(file_t_window_coord)
+            file_window_dtg_refs.append(file_t_window_dtg_ref)
 
-        common_tokens = {m.group(1) for m in re.finditer(r"\bc_([\w\- ]+)\b", expr)}
-        user_tokens = {m.group(1) for m in re.finditer(r"\bu_([\w\- ]+)", expr)}
-        explicit_file_tags = {int(m.group(1)) for m in re.finditer(r"\bf(\d+)_", expr)}
+        common_tokens = {m.group(1) for m in re.finditer(r"\bc_([\w\- ]+)\b", exec_expr)}
+        user_tokens = {m.group(1) for m in re.finditer(r"\bu_([\w\- ]+)", exec_expr)}
+        explicit_file_refs = list(re.finditer(r"\bf(\d+)_([A-Za-z_]\w*)\b", exec_expr))
+        explicit_file_tags = {int(m.group(1)) for m in explicit_file_refs}
         file_tags_used = explicit_file_tags or set(range(1, len(self.tsdbs) + 1))
 
         u_global = {u for u in user_tokens if not re.search(r"_f\d+$", u)}
@@ -908,178 +1166,215 @@ class TimeSeriesEditorQt(QMainWindow):
         known_user = getattr(self, "user_variables", set())
         missing = u_global - known_user
         if missing:
+            self.progress.reset()
+            self.progress.setFormat("%p%")
             QMessageBox.critical(self, "Unknown user variable", ", ".join(sorted(missing)))
             return
 
-        def align_all_files(name, name_by_file=None):
-            vecs = []
-            for i, tsdb in enumerate(self.tsdbs):
-                lookup = None
-                if name_by_file and i < len(name_by_file):
-                    lookup = name_by_file[i]
-                ts = tsdb.getm().get(lookup or name)
-                if ts is None and not name_by_file:
-                    alt = next(
-                        (key for key in tsdb.getm() if re.sub(r"^f\d+_", "", key) == name),
-                        None,
+        def _resolve_series(file_index, name, name_by_file=None):
+            tsdb = self.tsdbs[file_index]
+            lookup = None
+            if name_by_file and file_index < len(name_by_file):
+                lookup = name_by_file[file_index]
+            ts = tsdb.getm().get(lookup or name)
+            if ts is None and not name_by_file:
+                alt = next(
+                    (key for key in tsdb.getm() if re.sub(r"^f\d+_", "", key) == name),
+                    None,
+                )
+                if alt:
+                    ts = tsdb.getm().get(alt)
+                    lookup = alt
+            return ts, lookup or name
+
+        explicit_var_names: dict[int, set[str]] = {}
+        if explicit_file_refs:
+            db_safe_name_maps = []
+            for db in self.tsdbs:
+                safe_name_map = {}
+                for key in db.getm().keys():
+                    safe_name_map.setdefault(_safe(key), set()).add(key)
+                db_safe_name_maps.append(safe_name_map)
+
+            for match in explicit_file_refs:
+                src_idx = int(match.group(1)) - 1
+                if not (0 <= src_idx < len(self.tsdbs)):
+                    self.progress.reset()
+                    self.progress.setFormat("%p%")
+                    QMessageBox.critical(self, "Calculation Error", f"File #{match.group(1)} does not exist.")
+                    return
+                safe_var = match.group(2)
+                matches = db_safe_name_maps[src_idx].get(safe_var)
+                if not matches:
+                    self.progress.reset()
+                    self.progress.setFormat("%p%")
+                    QMessageBox.critical(
+                        self,
+                        "Calculation Error",
+                        f"Variable reference 'f{match.group(1)}_{safe_var}' was not found in {os.path.basename(self.file_paths[src_idx])}.",
                     )
-                    if alt:
-                        ts = tsdb.getm().get(alt)
-                        lookup = alt
+                    return
+                explicit_var_names.setdefault(src_idx, set()).update(matches)
+
+        filtered_series_cache = []
+        for db in self.tsdbs:
+            cache = {}
+            for key, ts in db.getm().items():
+                cache[key] = np.asarray(self.apply_filters(ts), dtype=float)
+            filtered_series_cache.append(cache)
+
+        calculator_tasks = []
+        current_file_idx = 0
+        for file_idx, tsdb in enumerate(self.tsdbs):
+            target_time = file_windows[file_idx]
+            target_coord = file_window_coords[file_idx]
+            shared_ctx = {}
+            for src_idx, db in enumerate(self.tsdbs):
+                tag = f"f{src_idx + 1}"
+                source_names = explicit_var_names.get(src_idx)
+                items = (
+                    ((name, db.getm()[name]) for name in source_names)
+                    if source_names is not None
+                    else db.getm().items()
+                )
+                for key, ts in items:
+                    x_part = _align_to_window(ts, filtered_series_cache[src_idx][key], target_time, target_coord)
+                    if np.all(np.isnan(x_part)):
+                        continue
+                    shared_ctx[f"{tag}_{_safe(key)}"] = x_part.astype(float)
+
+            file_ctx = {}
+            for k in common_tokens:
+                names = None
+                if self.common_lookup and k in self.common_lookup:
+                    names = self.common_lookup[k]
+                    if len(names) != len(self.tsdbs):
+                        names = None
+                ts, missing_name = _resolve_series(file_idx, k, name_by_file=names)
                 if ts is None:
-                    missing = lookup or name
-                    return None, f"'{missing}' not in {os.path.basename(self.file_paths[i])}"
-                idx = (ts.t >= t_window[0]) & (ts.t <= t_window[-1])
-                t_part, x_part = ts.t[idx], ts.x[idx]
-                if len(t_part) == 0:
-                    vecs.append(np.full_like(t_window, np.nan))
+                    self.progress.reset()
+                    self.progress.setFormat("%p%")
+                    QMessageBox.critical(self, "Common variable error", f"'{missing_name}' not in {os.path.basename(self.file_paths[file_idx])}")
+                    return
+                file_ctx[f"c_{_safe(k)}"] = _align_to_window(ts, ts.x, target_time, target_coord)
+
+            for k in u_global:
+                ts, missing_name = _resolve_series(file_idx, k)
+                if ts is None:
+                    self.progress.reset()
+                    self.progress.setFormat("%p%")
+                    QMessageBox.critical(self, "User variable error", f"'{missing_name}' not in {os.path.basename(self.file_paths[file_idx])}")
+                    return
+                file_ctx[f"u_{_safe(k)}"] = _align_to_window(ts, ts.x, target_time, target_coord)
+
+            for tok in u_perfile:
+                m = re.match(r"(.+)_f(\d+)$", tok)
+                if not m:
                     continue
-                if not np.array_equal(t_part, t_window):
-                    t_common = t_window[(t_window >= t_part[0]) & (t_window <= t_part[-1])]
-                    x_part = qats.TimeSeries(name, t_part, x_part).resample(t=t_common)
-                    full = np.full_like(t_window, np.nan)
-                    full[np.isin(t_window, t_common)] = x_part
-                    x_part = full
-                vecs.append(x_part.astype(float))
-            return vecs, None
+                src_idx = int(m.group(2)) - 1
+                if src_idx >= len(self.tsdbs):
+                    self.progress.reset()
+                    self.progress.setFormat("%p%")
+                    QMessageBox.critical(self, "User variable error", f"File #{m.group(2)} does not exist.")
+                    return
+                ts = self.tsdbs[src_idx].getm().get(tok)
+                if ts is None:
+                    self.progress.reset()
+                    self.progress.setFormat("%p%")
+                    QMessageBox.critical(self, "User variable error", f"Variable '{tok}' not found in {os.path.basename(self.file_paths[src_idx])}")
+                    return
+                file_ctx[f"u_{tok}"] = _align_to_window(ts, ts.x, target_time, target_coord)
 
-        aligned_common, aligned_u_global = {}, {}
-        for k in common_tokens:
-            names = None
-            if self.common_lookup and k in self.common_lookup:
-                names = self.common_lookup[k]
-                if len(names) != len(self.tsdbs):
-                    names = None
-            v, err = align_all_files(k, name_by_file=names)
-            if err:
-                QMessageBox.critical(self, "Common variable error", err)
-                return
-            aligned_common[k] = v
-        for k in u_global:
-            v, err = align_all_files(k)
-            if err:
-                QMessageBox.critical(self, "User variable error", err)
-                return
-            aligned_u_global[k] = v
+            calculator_tasks.append({
+                "time_window": target_time,
+                "dtg_ref": file_window_dtg_refs[file_idx],
+                "shared_ctx": shared_ctx,
+                "file_ctx": file_ctx,
+                "exec_expr": exec_expr,
+                "base_output": base_output,
+            })
 
-        aligned_u_perfile = {}
-        for tok in u_perfile:
-            m = re.match(r"(.+)_f(\d+)$", tok)
-            if not m:
-                continue
-            src_idx = int(m.group(2)) - 1
-            if src_idx >= len(self.tsdbs):
-                QMessageBox.critical(self, "User variable error", f"File #{m.group(2)} does not exist.")
-                return
-            ts = self.tsdbs[src_idx].getm().get(tok)
-            if ts is None:
-                QMessageBox.critical(self, "User variable error",
-                                     f"Variable '{tok}' not found in {os.path.basename(self.file_paths[src_idx])}")
-                return
-            idx = (ts.t >= t_window[0]) & (ts.t <= t_window[-1])
-            t_part, x_part = ts.t[idx], ts.x[idx]
-            if len(t_part) == 0:
-                vec = np.full_like(t_window, np.nan)
-            elif np.array_equal(t_part, t_window):
-                vec = x_part.astype(float)
+        evaluated_results = {}
+        completed = 0
+        use_multiprocessing = len(self.tsdbs) > 1
+
+        current_file_idx = 0
+        try:
+            if use_multiprocessing:
+                max_workers = min(len(self.tsdbs), max(1, multiprocessing.cpu_count()))
+                with ProcessPoolExecutor(max_workers=max_workers) as executor:
+                    futures = {
+                        executor.submit(_evaluate_calculator_task, file_idx, task): file_idx
+                        for file_idx, task in enumerate(calculator_tasks)
+                    }
+                    with _tqdm_progress(as_completed(futures), len(self.tsdbs), "Calculating") as progress_iter:
+                        for future in progress_iter:
+                            file_idx = futures[future]
+                            current_file_idx = file_idx
+                            evaluated_results[file_idx] = future.result()[1]
+                            completed += 1
+                            self.update_progressbar(completed, len(self.tsdbs))
             else:
-                t_common = t_window[(t_window >= t_part[0]) & (t_window <= t_part[-1])]
-                vec = qats.TimeSeries(tok, t_part, x_part).resample(t=t_common)
-                full = np.full_like(t_window, np.nan)
-                full[np.isin(t_window, t_common)] = vec
-                vec = full
-            aligned_u_perfile[tok] = vec.astype(float)
+                for file_idx, task in enumerate(calculator_tasks):
+                    current_file_idx = file_idx
+                    evaluated_results[file_idx] = _evaluate_calculator_task(file_idx, task)[1]
+                    completed += 1
+                    self.update_progressbar(completed, len(self.tsdbs))
+        except Exception as e:
+            self.progress.reset()
+            self.progress.setFormat("%p%")
+            QMessageBox.critical(
+                self,
+                "Calculation Error",
+                f"{os.path.basename(self.file_paths[current_file_idx])}:\n{e}\n\n{traceback.format_exc()}",
+            )
+            return
 
         create_common_output = len(explicit_file_tags) >= 2
-
         results = []
         for file_idx, tsdb in enumerate(self.tsdbs):
             f_no = file_idx + 1
-            ctx = {}
-            for i, db in enumerate(self.tsdbs):
-                tag = f"f{i + 1}"
-                for key, ts in db.getm().items():
-                    idx = (ts.t >= t_window[0]) & (ts.t <= t_window[-1])
-                    if not np.any(idx):
-                        continue
-                    t_part = ts.t[idx]
-                    x_part = self.apply_filters(ts)[idx]
-                    if not np.array_equal(t_part, t_window):
-                        t_common = t_window[(t_window >= t_part[0]) & (t_window <= t_part[-1])]
-                        x_part = qats.TimeSeries(key, t_part, x_part).resample(t=t_common)
-                        full = np.full_like(t_window, np.nan)
-                        full[np.isin(t_window, t_common)] = x_part
-                        x_part = full
-                    ctx[f"{tag}_{_safe(key)}"] = x_part.astype(float)
+            y = evaluated_results[file_idx]
+            must_write_here = (create_common_output and f_no == min(file_tags_used)) or (not create_common_output and f_no in file_tags_used)
+            if not must_write_here:
+                continue
 
-            for k, vecs in aligned_common.items():
-                ctx[f"c_{_safe(k)}"] = vecs[file_idx]
-            for k, vecs in aligned_u_global.items():
-                ctx[f"u_{_safe(k)}"] = vecs[file_idx]
-            for tok, vec in aligned_u_perfile.items():
-                ctx[f"u_{tok}"] = vec
+            filt_tag = self._filter_tag()
+            suffix = "" if create_common_output else f"_f{f_no}"
+            out_name = base_output
+            if filt_tag:
+                out_name += f"_{filt_tag}"
+            out_name += suffix
+            time_window = calculator_tasks[file_idx]["time_window"]
+            dtg_ref = calculator_tasks[file_idx]["dtg_ref"]
+            ts_new = qats.TimeSeries(out_name, time_window, y, dtg_ref=dtg_ref)
 
-            ctx["time"] = t_window
-            ctx.update({
-                "np": np,
-                "sin": np.sin,
-                "cos": np.cos,
-                "tan": np.tan,
-                "exp": np.exp,
-                "sqrt": np.sqrt,
-                "log": np.log,
-                "abs": np.abs,
-                "min": np.min,
-                "max": np.max,
-                "power": np.power,
-                "radians": np.radians,
-                "degrees": np.degrees,
-            })
+            tsdb.add(ts_new)
 
-            try:
-                exec(expr, ctx)
-                y = np.asarray(ctx[base_output], dtype=float)
-                if y.ndim == 0:
-                    y = np.full_like(t_window, y, dtype=float)
-                if len(y) != len(t_window):
-                    raise ValueError("Result length mismatch with time vector")
+            if create_common_output:
+                for other_db in self.tsdbs:
+                    if out_name not in other_db.getm():
+                        other_db.add(ts_new.copy())
 
-                must_write_here = (create_common_output and f_no == min(file_tags_used)) or (
-                            not create_common_output and f_no in file_tags_used)
-                if not must_write_here:
-                    continue
+            self.user_variables = getattr(self, "user_variables", set())
+            self.user_variables.add(out_name)
+            results.append((tsdb, ts_new))
 
-                filt_tag = self._filter_tag()
-                suffix = "" if create_common_output else f"_f{f_no}"
-                out_name = base_output
-                if filt_tag:
-                    out_name += f"_{filt_tag}"
-                out_name += suffix
-                ts_new = qats.TimeSeries(out_name, t_window, y)
-
-                tsdb.add(ts_new)
-
-                if create_common_output:
-                    for other_db in self.tsdbs:
-                        if out_name not in other_db.getm():
-                            other_db.add(ts_new.copy())
-
-                self.user_variables = getattr(self, "user_variables", set())
-                self.user_variables.add(out_name)
-                results.append((tsdb, ts_new))
-
-            except Exception as e:
-                QMessageBox.critical(self, "Calculation Error",
-                                     f"{os.path.basename(self.file_paths[file_idx])}:\n{e}\n\n{traceback.format_exc()}")
-                return
-
+        self.progress.setFormat("%p%")
         self.refresh_variable_tabs()
 
         if create_common_output:
             msg = base_output
+            output_names = [base_output]
         else:
-            msg = ", ".join(f"{base_output}_f{n}" for n in sorted(file_tags_used))
-        QMessageBox.information(self, "Success", f"New variable(s): {msg}")
+            output_names = [f"{base_output}_f{n}" for n in sorted(file_tags_used)]
+            msg = ", ".join(output_names)
+        equation_text = self._format_calculator_equation(display_expr, output_names=output_names)
+        QMessageBox.information(
+            self,
+            "Success",
+            f"New variable(s): {msg}\n\nEquation used:\n{equation_text}",
+        )
 
     def show_calc_help(self):
         """Display calculator usage help in a message box."""
@@ -1104,6 +1399,7 @@ class TimeSeriesEditorQt(QMainWindow):
             "📝  Examples",
             "     result = f1_AccX + f2_AccY",
             "     diff   = c_WAVE1 - u_MyVar_f1",
+            "     sin(radians(60)) + f1_AccX * 2",
             "",
             "The file number N corresponds to the indices shown in the",
             "'Loaded Files' list:",
@@ -1122,8 +1418,10 @@ class TimeSeriesEditorQt(QMainWindow):
                 "",
                 "💡  Tips",
                 "  •  Any valid Python / NumPy expression works (np.mean, np.std, …).",
-                "  •  Give the left-hand side any name you like – it becomes a new",
-                "     user variable (and appears under the 'User Variables' tab).",
+                "  •  You can give the left-hand side any name you like, or omit it",
+                "     and let the Calculator create an automatic name from the equation.",
+                "  •  Assigned or generated names become new user variables and appear",
+                "     under the 'User Variables' tab.",
                 "  •  Autocomplete suggests prefixes and math functions as you type.",
             ]
         )
@@ -1288,7 +1586,7 @@ class TimeSeriesEditorQt(QMainWindow):
                         data = ts.x * val_use
                     elif op_use == "/":
                         data = ts.x / val_use
-                    new_ts = TimeSeries(name, ts.t.copy(), data)
+                    new_ts = TimeSeries(name, ts.t.copy(), data, dtg_ref=ts.dtg_ref)
                     tsdb.add(new_ts)
                     self.user_variables.add(name)
                 else:
@@ -1320,7 +1618,7 @@ class TimeSeriesEditorQt(QMainWindow):
                 keys.extend(tab.selected_variables())
         return list(set(keys))
 
-    def _apply_transformation(self, func, suffix, announce=True):
+    def _apply_transformation(self, func, suffix, announce=True, transform_spec=None):
         """
         Apply *func* to every selected time-series and push the result back
         into the corresponding TsDB.
@@ -1335,6 +1633,7 @@ class TimeSeriesEditorQt(QMainWindow):
 
         self.rebuild_var_lookup()
         made = []
+        tasks = []
         fnames = [os.path.basename(p) for p in self.file_paths]
 
         def _has_file_prefix(key: str) -> bool:
@@ -1378,8 +1677,6 @@ class TimeSeriesEditorQt(QMainWindow):
                     y_src = self.apply_filters(ts)[mask]
                 # ----------------------------------------------------------------
 
-                y_new = func(y_src)
-
                 # ── unique name inside this file ─────────────────────────────
                 filt_tag = self._filter_tag()
                 base = f"{ts.name}_{suffix}"
@@ -1392,12 +1689,66 @@ class TimeSeriesEditorQt(QMainWindow):
                     new_name = f"{base}_{k}"
                     k += 1
 
-                tsdb.add(TimeSeries(new_name, t_win, y_new))
-                made.append(new_name)
+                tasks.append({
+                    "file_idx": f_idx - 1,
+                    "tsdb": tsdb,
+                    "new_name": new_name,
+                    "t_win": t_win,
+                    "dtg_ref": ts.dtg_ref,
+                    "y_src": np.asarray(y_src, dtype=float),
+                })
 
-                # mark global user-var
-                self.user_variables = getattr(self, "user_variables", set())
-                self.user_variables.add(new_name)
+        self.progress.setFormat("Transforming %v/%m series")
+        self.update_progressbar(0, max(len(tasks), 1))
+
+        use_multiprocessing = len(tasks) > 1 and transform_spec is not None
+        completed = 0
+        current_task = None
+        try:
+            if use_multiprocessing:
+                max_workers = min(len(tasks), max(1, multiprocessing.cpu_count()))
+                with ProcessPoolExecutor(
+                    max_workers=max_workers,
+                    initializer=_init_transform_worker,
+                    initargs=(transform_spec,),
+                ) as executor:
+                    futures = {
+                        executor.submit(_evaluate_transform_payload, idx, task["y_src"]): idx
+                        for idx, task in enumerate(tasks)
+                    }
+                    with _tqdm_progress(as_completed(futures), len(tasks), "Transforming") as progress_iter:
+                        for future in progress_iter:
+                            current_task = tasks[futures[future]]
+                            task_idx, y_new = future.result()
+                            task = tasks[task_idx]
+                            task["y_new"] = y_new
+                            completed += 1
+                            self.update_progressbar(completed, len(tasks))
+            else:
+                for idx, task in enumerate(tasks):
+                    current_task = task
+                    y_new = _apply_transform_spec(task["y_src"], transform_spec) if transform_spec is not None else func(task["y_src"])
+                    task["y_new"] = y_new
+                    completed += 1
+                    self.update_progressbar(completed, len(tasks))
+        except Exception as exc:
+            self.progress.reset()
+            self.progress.setFormat("%p%")
+            failing_name = current_task["new_name"] if current_task else suffix
+            QMessageBox.critical(
+                self,
+                "Transformation Error",
+                f"{failing_name}:\n{exc}\n\n{traceback.format_exc()}",
+            )
+            return
+
+        for task in tasks:
+            task["tsdb"].add(TimeSeries(task["new_name"], task["t_win"], task["y_new"], dtg_ref=task["dtg_ref"]))
+            made.append(task["new_name"])
+            self.user_variables = getattr(self, "user_variables", set())
+            self.user_variables.add(task["new_name"])
+
+        self.progress.setFormat("%p%")
 
         # ── GUI refresh & popup ──────────────────────────────────────────────
         if made:
@@ -1430,7 +1781,7 @@ class TimeSeriesEditorQt(QMainWindow):
         import numpy as np
         from PySide6.QtWidgets import QMessageBox
 
-        self._apply_transformation(lambda y: np.abs(y), "abs", True)
+        self._apply_transformation(lambda y: np.abs(y), "abs", True, transform_spec={"kind": "abs"})
 
     def rolling_average(self):
         """Apply rolling mean to all selected series."""
@@ -1444,7 +1795,7 @@ class TimeSeriesEditorQt(QMainWindow):
                 window = 1
 
         func = lambda y, w=window: pd.Series(y).rolling(window=w, min_periods=1).mean().to_numpy()
-        self._apply_transformation(func, "rollMean", True)
+        self._apply_transformation(func, "rollMean", True, transform_spec={"kind": "rolling_mean", "window": window})
 
     def reduce_selected_points(self):
         """Create reduced-resolution copies of selected series."""
@@ -1562,7 +1913,7 @@ class TimeSeriesEditorQt(QMainWindow):
                     new_name = f"{base}_{k}"
                     k += 1
 
-                tsdb.add(TimeSeries(new_name, t_new, y_new))
+                tsdb.add(TimeSeries(new_name, t_new, y_new, dtg_ref=ts.dtg_ref))
                 made.append(new_name)
                 self.user_variables = getattr(self, "user_variables", set())
                 self.user_variables.add(new_name)
@@ -1662,9 +2013,15 @@ class TimeSeriesEditorQt(QMainWindow):
             label = label.split(":", 1)[-1]
             return re_suffix.sub("", label)
 
+        merged_dtg_ref = None
+
         def _append_segment(ts, offset, last_dt, merged_segments, merged_time_parts):
+            nonlocal merged_dtg_ref
             if ts is None:
                 return offset, last_dt
+
+            if merged_dtg_ref is None and getattr(ts, "dtg_ref", None) is not None:
+                merged_dtg_ref = ts.dtg_ref
 
             data = self.apply_filters(ts)
             mask = self.get_time_window(ts)
@@ -1762,7 +2119,7 @@ class TimeSeriesEditorQt(QMainWindow):
                     name = f"{name_base}_{counter}"
                     counter += 1
 
-                merged_ts = TimeSeries(name, merged_t, merged_x)
+                merged_ts = TimeSeries(name, merged_t, merged_x, dtg_ref=merged_dtg_ref)
                 if self.tsdbs:
                     # The merged result should behave like a single user variable.
                     # Adding duplicates to every file leads to repeated plots and
@@ -1811,7 +2168,7 @@ class TimeSeriesEditorQt(QMainWindow):
                     name = f"{name_base}_{counter}"
                     counter += 1
 
-                tsdb.add(TimeSeries(name, merged_t, merged_x))
+                tsdb.add(TimeSeries(name, merged_t, merged_x, dtg_ref=merged_dtg_ref))
                 self.user_variables.add(name)
                 created.append(name)
 
@@ -1876,13 +2233,14 @@ class TimeSeriesEditorQt(QMainWindow):
         # ───────────────────────── COMMON-TAB BRANCH ──────────────────────────
         if common_pick:
             for f_idx, (tsdb, fp) in enumerate(zip(self.tsdbs, self.file_paths), 1):
-                values, t_ref = [], None
+                values, t_ref, t_ref_dtg = [], None, None
                 for k in sel_keys:
                     ts = tsdb.getm().get(k)
                     if ts is None:
                         continue
                     if t_ref is None:
                         t_ref = ts.t
+                        t_ref_dtg = ts.dtg_ref
                     elif not np.allclose(ts.t, t_ref):
                         QMessageBox.critical(
                             self,
@@ -1907,7 +2265,7 @@ class TimeSeriesEditorQt(QMainWindow):
                     name = f"{base}{suffix}_{n}"
                     n += 1
 
-                tsdb.add(TimeSeries(name, t_ref, y))
+                tsdb.add(TimeSeries(name, t_ref, y, dtg_ref=t_ref_dtg))
                 self.user_variables.add(name)
                 created.append(name)
 
@@ -1930,13 +2288,14 @@ class TimeSeriesEditorQt(QMainWindow):
                 if fname not in per_file:
                     continue
 
-                values, t_ref = [], None
+                values, t_ref, t_ref_dtg = [], None, None
                 for v in per_file[fname]:
                     ts = tsdb.getm().get(v)
                     if ts is None:
                         continue
                     if t_ref is None:
                         t_ref = ts.t
+                        t_ref_dtg = ts.dtg_ref
                     elif not np.allclose(ts.t, t_ref):
                         QMessageBox.critical(
                             self,
@@ -1960,7 +2319,7 @@ class TimeSeriesEditorQt(QMainWindow):
                     name = f"{base}{suffix}_{n}"
                     n += 1
 
-                tsdb.add(TimeSeries(name, t_ref, y))
+                tsdb.add(TimeSeries(name, t_ref, y, dtg_ref=t_ref_dtg))
                 self.user_variables.add(name)
                 created.append(name)
 
@@ -2012,7 +2371,7 @@ class TimeSeriesEditorQt(QMainWindow):
         self.user_variables = getattr(self, "user_variables", set())
 
         # ───────────────────────── helper ─────────────────────────────
-        def _store(tsdb, name_base, t_ref, vals):
+        def _store(tsdb, name_base, t_ref, vals, t_ref_dtg):
             """Add a new TimeSeries, ensuring uniqueness inside *tsdb*."""
             y = np.mean(np.vstack(vals), axis=0)
             new = name_base
@@ -2020,7 +2379,7 @@ class TimeSeriesEditorQt(QMainWindow):
             while new in tsdb.getm():
                 new = f"{name_base}_{n}"
                 n += 1
-            tsdb.add(TimeSeries(new, t_ref, y))
+            tsdb.add(TimeSeries(new, t_ref, y, dtg_ref=t_ref_dtg))
             self.user_variables.add(new)
             created.append(new)
 
@@ -2029,13 +2388,14 @@ class TimeSeriesEditorQt(QMainWindow):
             clean_keys = [_clean(k) for k in sel_keys]
 
             for f_idx, (tsdb, fp) in enumerate(zip(self.tsdbs, self.file_paths), 1):
-                vals, t_ref = [], None
+                vals, t_ref, t_ref_dtg = [], None, None
                 for k in sel_keys:
                     ts = tsdb.getm().get(k)
                     if ts is None:
                         continue
                     if t_ref is None:
                         t_ref = ts.t
+                        t_ref_dtg = ts.dtg_ref
                     elif not np.allclose(ts.t, t_ref):
                         QMessageBox.critical(
                             self,
@@ -2050,7 +2410,7 @@ class TimeSeriesEditorQt(QMainWindow):
 
                 suffix = f"_f{f_idx}" if multi_file else ""
                 namebase = f"mean({'+'.join(clean_keys)}){suffix}"
-                _store(tsdb, namebase, t_ref, vals)
+                _store(tsdb, namebase, t_ref, vals, t_ref_dtg)
 
         # ────────────────── PER-FILE-KEY BRANCH ───────────────────────
         else:
@@ -2072,13 +2432,14 @@ class TimeSeriesEditorQt(QMainWindow):
                 if not vars_here:
                     continue
 
-                vals, t_ref = [], None
+                vals, t_ref, t_ref_dtg = [], None, None
                 for v in vars_here:
                     ts = tsdb.getm().get(v)
                     if ts is None:
                         continue
                     if t_ref is None:
                         t_ref = ts.t
+                        t_ref_dtg = ts.dtg_ref
                     elif not np.allclose(ts.t, t_ref):
                         QMessageBox.critical(
                             self,
@@ -2093,7 +2454,7 @@ class TimeSeriesEditorQt(QMainWindow):
 
                 clean = [_clean(v) for v in vars_here]
                 namebase = f"mean({'+'.join(clean)})"  # ← no _fN here
-                _store(tsdb, namebase, t_ref, vals)
+                _store(tsdb, namebase, t_ref, vals, t_ref_dtg)
 
         # ───────────────────── GUI refresh ────────────────────────────
         if created:
@@ -2110,35 +2471,35 @@ class TimeSeriesEditorQt(QMainWindow):
             )
 
     def multiply_by_1000(self):
-        self._apply_transformation(lambda y: y * 1000, "×1000", True)
+        self._apply_transformation(lambda y: y * 1000, "×1000", True, transform_spec={"kind": "scale", "factor": 1000})
 
     def divide_by_1000(self):
-        self._apply_transformation(lambda y: y / 1000, "÷1000", True)
+        self._apply_transformation(lambda y: y / 1000, "÷1000", True, transform_spec={"kind": "scale", "factor": 1 / 1000})
 
     def multiply_by_10(self):
-        self._apply_transformation(lambda y: y * 10, "×10", True)
+        self._apply_transformation(lambda y: y * 10, "×10", True, transform_spec={"kind": "scale", "factor": 10})
 
     def divide_by_10(self):
-        self._apply_transformation(lambda y: y / 10, "÷10", True)
+        self._apply_transformation(lambda y: y / 10, "÷10", True, transform_spec={"kind": "scale", "factor": 0.1})
 
     def multiply_by_2(self):
-        self._apply_transformation(lambda y: y * 2, "×2", True)
+        self._apply_transformation(lambda y: y * 2, "×2", True, transform_spec={"kind": "scale", "factor": 2})
 
     def divide_by_2(self):
-        self._apply_transformation(lambda y: y / 2, "÷2", True)
+        self._apply_transformation(lambda y: y / 2, "÷2", True, transform_spec={"kind": "scale", "factor": 0.5})
 
     def multiply_by_neg1(self):
-        self._apply_transformation(lambda y: y * -1, "×-1", True)
+        self._apply_transformation(lambda y: y * -1, "×-1", True, transform_spec={"kind": "scale", "factor": -1})
 
     def to_radians(self):
         import numpy as np
 
-        self._apply_transformation(lambda y: np.radians(y), "rad", True)
+        self._apply_transformation(lambda y: np.radians(y), "rad", True, transform_spec={"kind": "radians"})
 
     def to_degrees(self):
         import numpy as np
 
-        self._apply_transformation(lambda y: np.degrees(y), "deg", True)
+        self._apply_transformation(lambda y: np.degrees(y), "deg", True, transform_spec={"kind": "degrees"})
 
     def apply_trig_from_degrees(self):
         import numpy as np
@@ -2162,7 +2523,7 @@ class TimeSeriesEditorQt(QMainWindow):
             return np.asarray(y, dtype=float) * factor
 
         suffix = f"*{func_name}({angle_deg:g})"
-        self._apply_transformation(_apply_trig, suffix, True)
+        self._apply_transformation(_apply_trig, suffix, True, transform_spec={"kind": "trig_scale", "factor": trig_value})
 
     def shift_min_to_zero(self):
         """Shift series so its minimum becomes zero **only** when that minimum is negative."""
@@ -2183,7 +2544,7 @@ class TimeSeriesEditorQt(QMainWindow):
             return y - lower
 
         # Create a new series with suffix “…_shift0”
-        self._apply_transformation(shift, "shift0", True)
+        self._apply_transformation(shift, "shift0", True, transform_spec={"kind": "shift_min_to_zero", "ignore_anomalies": self.ignore_anomalies_cb.isChecked()})
 
     def shift_repeated_neg_min(self):
         """
@@ -2244,7 +2605,7 @@ class TimeSeriesEditorQt(QMainWindow):
             return y  # leave unchanged
 
         # reuse the generic helper (takes care of naming, user_variables, refresh)
-        self._apply_transformation(_shift_if_plateau, "shiftNZ", True)
+        self._apply_transformation(_shift_if_plateau, "shiftNZ", True, transform_spec={"kind": "shift_repeated_neg_min", "tol_pct": tol_pct, "min_count": min_count})
 
     def shift_common_max(self):
         """
@@ -2344,7 +2705,10 @@ class TimeSeriesEditorQt(QMainWindow):
 
             # Call _apply_transformation (this will add one “_shiftCommon_fN” per file)
             self._apply_transformation(
-                lambda y: y + max_shift, "shiftCommon", print_it=False
+                lambda y: y + max_shift,
+                "shiftCommon",
+                announce=False,
+                transform_spec={"kind": "offset", "value": max_shift},
             )
         finally:
             # Restore the original check states
@@ -2381,7 +2745,96 @@ class TimeSeriesEditorQt(QMainWindow):
             return y - m
 
         # suffix “shiftMean0” keeps the style of “shift0”, “shiftNZ”, …
-        self._apply_transformation(_demean, "shiftMean0", True)
+        self._apply_transformation(_demean, "shiftMean0", True, transform_spec={"kind": "shift_mean_to_zero", "ignore_anomalies": self.ignore_anomalies_cb.isChecked()})
+
+    def shift_x_start_to_zero(self):
+        """Create copies where x starts at zero by subtracting the initial x value."""
+
+        self.rebuild_var_lookup()
+        created = []
+        skipped_datetime = []
+        fnames = [os.path.basename(p) for p in self.file_paths]
+
+        def _has_file_prefix(key: str) -> bool:
+            for name in fnames:
+                if key.startswith(f"{name}::") or key.startswith(f"{name}:"):
+                    return True
+            return False
+
+        for f_idx, (tsdb, path) in enumerate(zip(self.tsdbs, self.file_paths), start=1):
+            fname = os.path.basename(path)
+
+            for u_key, chk in self.var_checkboxes.items():
+                if not chk.isChecked():
+                    continue
+
+                if u_key.startswith(f"{fname}::"):
+                    varname = u_key.split("::", 1)[1]
+                elif u_key.startswith(f"{fname}:"):
+                    varname = u_key.split(":", 1)[1]
+                elif not _has_file_prefix(u_key):
+                    varname = u_key
+                else:
+                    continue
+
+                ts = tsdb.getm().get(varname)
+                if ts is None:
+                    continue
+
+                mask = self.get_time_window(ts)
+                if isinstance(mask, slice):
+                    t_win = np.asarray(ts.t[mask])
+                    y_win = self.apply_filters(ts)[mask]
+                else:
+                    if not mask.any():
+                        continue
+                    t_win = np.asarray(ts.t[mask])
+                    y_win = self.apply_filters(ts)[mask]
+
+                if t_win.size == 0:
+                    continue
+
+                if np.issubdtype(t_win.dtype, np.datetime64) or ts.dtg_ref is not None:
+                    skipped_datetime.append(ts.name)
+                    continue
+
+                t_new = np.asarray(t_win, dtype=float) - float(t_win[0])
+
+                filt_tag = self._filter_tag()
+                base = f"{ts.name}_x0"
+                if filt_tag:
+                    base += f"_{filt_tag}"
+                base += f"_f{f_idx}"
+                new_name = base
+                k = 1
+                while new_name in tsdb.getm():
+                    new_name = f"{base}_{k}"
+                    k += 1
+
+                tsdb.add(TimeSeries(new_name, t_new, y_win, dtg_ref=None))
+                created.append(new_name)
+                self.user_variables = getattr(self, "user_variables", set())
+                self.user_variables.add(new_name)
+
+        self._populate_variables(None)
+
+        if created:
+            msg = [f"Created {len(created)} x-shifted series."]
+            if skipped_datetime:
+                msg.append(f"Skipped {len(skipped_datetime)} datetime series (not applicable).")
+            QMessageBox.information(self, "X-axis shift complete", "\n".join(msg))
+        elif skipped_datetime:
+            QMessageBox.information(
+                self,
+                "No eligible series",
+                "Selected series use datetime x-axis; this operation only applies to numeric x values.",
+            )
+        else:
+            QMessageBox.warning(
+                self,
+                "Nothing new",
+                "No eligible selected series found to shift.",
+            )
 
     @Slot()
     def load_files(self):
@@ -2627,6 +3080,99 @@ class TimeSeriesEditorQt(QMainWindow):
                 if hasattr(last, "inputs"):
                     self.var_offsets[k] = last.inputs.get(k)
 
+        self._connect_marker_input_refresh()
+        self._refresh_marker_input_defaults()
+
+    def _connect_marker_input_refresh(self):
+        for cb in self.var_checkboxes.values():
+            if cb.property("_marker_refresh_connected"):
+                continue
+            cb.toggled.connect(self._refresh_marker_input_defaults)
+            cb.setProperty("_marker_refresh_connected", True)
+
+    def _selected_series_marker_context(self):
+        for selected_key, checkbox in self.var_checkboxes.items():
+            if not checkbox.isChecked():
+                continue
+            for file_idx, (tsdb, fp) in enumerate(zip(self.tsdbs, self.file_paths), start=1):
+                fname = os.path.basename(fp)
+                if selected_key.startswith(f"{fname}::"):
+                    var = selected_key.split("::", 1)[1]
+                elif selected_key.startswith(f"{fname}:"):
+                    var = selected_key.split(":", 1)[1]
+                elif selected_key in tsdb.getm():
+                    var = selected_key
+                else:
+                    continue
+
+                ts = tsdb.getm().get(var)
+                if ts is None:
+                    continue
+
+                mask = self.get_time_window(ts)
+                dtg_ref = getattr(ts, "dtg_ref", None)
+                if isinstance(mask, slice):
+                    t_window = ts.t[mask]
+                    x_window = ts.x[mask]
+                else:
+                    if not mask.any():
+                        continue
+                    t_window = ts.t[mask]
+                    x_window = ts.x[mask]
+                if len(t_window) == 0:
+                    continue
+
+                ts_window = TimeSeries(ts.name, t_window, x_window, dtg_ref=dtg_ref)
+                t_plot = self._time_values_for_plot(ts_window)
+                if len(t_plot) == 0:
+                    continue
+                return t_plot[0]
+        return None
+
+    def _format_marker_example(self, marker_start):
+        if marker_start is None:
+            if getattr(self, "plot_datetime_x_cb", None) and self.plot_datetime_x_cb.isChecked():
+                return "2024-01-01 00:00:00"
+            return "0.0"
+
+        if isinstance(marker_start, pd.Timestamp):
+            return marker_start.strftime("%Y-%m-%d %H:%M:%S")
+
+        if isinstance(marker_start, np.datetime64):
+            return pd.Timestamp(marker_start).strftime("%Y-%m-%d %H:%M:%S")
+
+        try:
+            numeric_value = float(marker_start)
+        except (TypeError, ValueError):
+            parsed_dt = pd.to_datetime(marker_start, errors="coerce")
+            if pd.notna(parsed_dt):
+                return parsed_dt.strftime("%Y-%m-%d %H:%M:%S")
+            return str(marker_start)
+
+        return f"{numeric_value:g}"
+
+    def _refresh_marker_input_defaults(self, *_args):
+        marker_input = getattr(self, "x_axis_marker_input", None)
+        if marker_input is None:
+            return
+
+        marker_start = self._selected_series_marker_context()
+        default_value = self._format_marker_example(marker_start)
+        if getattr(self, "plot_datetime_x_cb", None) and self.plot_datetime_x_cb.isChecked():
+            marker_input.setPlaceholderText(
+                f"Start: {default_value} (example format: YYYY-MM-DD HH:MM:SS)"
+            )
+        else:
+            marker_input.setPlaceholderText(f"Start: {default_value} (numeric x-axis value)")
+
+        current_value = marker_input.text().strip()
+        if not current_value or current_value == self._marker_input_auto_value:
+            marker_input.setText(default_value)
+            self._marker_input_auto_value = default_value
+        elif current_value == default_value:
+            self._marker_input_auto_value = default_value
+
+
     # ------------------------------------------------------------------
     # Compatibility helper -------------------------------------------------
     def _populate_variables(self, *_):
@@ -2867,6 +3413,7 @@ class TimeSeriesEditorQt(QMainWindow):
         mark_extrema = (
                 hasattr(self, "plot_extrema_cb") and self.plot_extrema_cb.isChecked()
         )
+        marker_x = self._marker_x_value()
 
         import numpy as np, anyqats as qats, os
         from PySide6.QtWidgets import QMessageBox
@@ -2937,14 +3484,16 @@ class TimeSeriesEditorQt(QMainWindow):
 
                 # 2) apply current time window
                 mask = self.get_time_window(ts)
+                dtg_ref = getattr(ts, "dtg_ref", None)
                 if isinstance(mask, slice):
-                    ts_win = TimeSeries(ts.name, ts.t[mask], ts.x[mask])
+                    ts_win = TimeSeries(ts.name, ts.t[mask], ts.x[mask], dtg_ref=dtg_ref)
                 else:
                     if not mask.any():
                         continue
-                    ts_win = TimeSeries(ts.name, ts.t[mask], ts.x[mask])
+                    ts_win = TimeSeries(ts.name, ts.t[mask], ts.x[mask], dtg_ref=dtg_ref)
 
                 # 3) optional pre-filtering for time-domain plot
+                t_plot = self._time_values_for_plot(ts_win)
                 if mode == "time":
                     dt = np.median(np.diff(ts.t))
                     raw_label = f"{fname_disp}: {var}"
@@ -2955,47 +3504,47 @@ class TimeSeriesEditorQt(QMainWindow):
                     curves = entry["curves"]
                     if want_raw:
                         tr = dict(
-                            t=ts_win.t,
+                            t=t_plot,
                             y=ts_win.x,
                             label=disp_label + " [raw]",
                             alpha=1.0,
                         )
                         traces.append(tr)
-                        curves.append(dict(t=ts_win.t, y=ts_win.x, label="Raw", alpha=1.0))
+                        curves.append(dict(t=t_plot, y=ts_win.x, label="Raw", alpha=1.0))
                     if want_lp:
                         fc = float(self.lowpass_cutoff.text() or 0)
                         if fc > 0:
                             y_lp = qats.signal.lowpass(ts_win.x, dt, fc)
                             tr = dict(
-                                t=ts_win.t,
+                                t=t_plot,
                                 y=y_lp,
                                 label=disp_label + f" [LP {fc} Hz]",
                                 alpha=1.0,
                             )
                             traces.append(tr)
                             curves.append(
-                                dict(t=ts_win.t, y=y_lp, label=f"LP {fc} Hz", alpha=1.0)
+                                dict(t=t_plot, y=y_lp, label=f"LP {fc} Hz", alpha=1.0)
                             )
                     if want_hp:
                         fc = float(self.highpass_cutoff.text() or 0)
                         if fc > 0:
                             y_hp = qats.signal.highpass(ts_win.x, dt, fc)
                             tr = dict(
-                                t=ts_win.t,
+                                t=t_plot,
                                 y=y_hp,
                                 label=disp_label + f" [HP {fc} Hz]",
                                 alpha=1.0,
                             )
                             traces.append(tr)
                             curves.append(
-                                dict(t=ts_win.t, y=y_hp, label=f"HP {fc} Hz", alpha=1.0)
+                                dict(t=t_plot, y=y_hp, label=f"HP {fc} Hz", alpha=1.0)
                             )
                     continue  # nothing else to do for time-domain loop
                 elif mode == "rolling":
                     y_roll = pd.Series(ts_win.x).rolling(window=roll_window, min_periods=1).mean().to_numpy()
                     traces.append(
                         dict(
-                            t=ts_win.t,
+                            t=t_plot,
                             y=y_roll,
                             label=self._trim_label(f"{fname_disp}: {var}", left, right),
                             alpha=1.0,
@@ -3060,6 +3609,11 @@ class TimeSeriesEditorQt(QMainWindow):
 
                 fig_per_file.setdefault(fname_disp, []).append(fig)
 
+        if mode in {"time", "rolling"}:
+            traces = self._apply_datetime_xaxis_to_traces(traces)
+            for entry in grid_traces.values():
+                entry["curves"] = self._apply_datetime_xaxis_to_traces(entry["curves"])
+
         # ======================================================================
         #  DISPLAY
         # ======================================================================
@@ -3108,7 +3662,7 @@ class TimeSeriesEditorQt(QMainWindow):
             if engine == "bokeh":
                 from bokeh.plotting import figure, show
                 from bokeh.layouts import gridplot
-                from bokeh.models import HoverTool, ColumnDataSource, Range1d
+                from bokeh.models import HoverTool, ColumnDataSource, Range1d, Span
                 from bokeh.palettes import Category10_10
                 from bokeh.io import curdoc
                 from bokeh.embed import file_html
@@ -3129,7 +3683,7 @@ class TimeSeriesEditorQt(QMainWindow):
                         width=450,
                         height=300,
                         title=lbl,
-                        x_axis_label="Time",
+                        x_axis_label=self._x_axis_label(),
                         y_axis_label=self.yaxis_label.text() or "Value",
                         tools="pan,wheel_zoom,box_zoom,reset,save",
                         sizing_mode="stretch_both",
@@ -3162,6 +3716,16 @@ class TimeSeriesEditorQt(QMainWindow):
                         min_idx = np.argmin(all_y)
                         p.circle([all_t[max_idx]], [all_y[max_idx]], size=6, color="red")
                         p.circle([all_t[min_idx]], [all_y[min_idx]], size=6, color="blue")
+                    if marker_x is not None:
+                        p.add_layout(
+                            Span(
+                                location=marker_x,
+                                dimension="height",
+                                line_color="orange",
+                                line_width=2,
+                                line_dash="dashed",
+                            )
+                        )
                     if same_axes:
                         p.x_range = Range1d(x_min, x_max)
                         p.y_range = Range1d(y_min, y_max)
@@ -3256,6 +3820,13 @@ class TimeSeriesEditorQt(QMainWindow):
                             col=c,
                         )
 
+                if marker_x is not None:
+                    fig.add_vline(
+                        x=marker_x,
+                        line_color="orange",
+                        line_width=2,
+                        line_dash="dash",
+                    )
                 if same_axes:
                     fig.update_xaxes(range=[x_min, x_max])
                     fig.update_yaxes(range=[y_min, y_max])
@@ -3276,7 +3847,12 @@ class TimeSeriesEditorQt(QMainWindow):
                             os.remove(self._temp_plot_file)
                         except Exception:
                             pass
-                    html = to_html(fig, include_plotlyjs=True, full_html=True)
+                    html = to_html(
+                        fig,
+                        include_plotlyjs=True,
+                        full_html=True,
+                        config={"displayModeBar": True},
+                    )
                     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".html")
                     with open(tmp.name, "w", encoding="utf-8") as fh:
                         fh.write(html)
@@ -3307,6 +3883,8 @@ class TimeSeriesEditorQt(QMainWindow):
                     min_idx = np.argmin(all_y)
                     ax.scatter(all_t[max_idx], all_y[max_idx], color="red", label="Max")
                     ax.scatter(all_t[min_idx], all_y[min_idx], color="blue", label="Min")
+                if marker_x is not None:
+                    ax.axvline(marker_x, color="orange", linestyle="--", linewidth=2, label="Marker")
                 ax.set_title(lbl)
                 ax.legend()
                 if same_axes:
@@ -3318,21 +3896,9 @@ class TimeSeriesEditorQt(QMainWindow):
             fig.tight_layout()
 
             if getattr(self, "embed_plot_cb", None) and self.embed_plot_cb.isChecked():
-                if self._mpl_canvas is not None:
-                    self.right_outer_layout.removeWidget(self._mpl_canvas)
-                    self._mpl_canvas.setParent(None)
-                from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
-
-                self._mpl_canvas = FigureCanvasQTAgg(fig)
-                self._mpl_canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-                self.right_outer_layout.addWidget(self._mpl_canvas)
-                self._mpl_canvas.show()
-                self.plot_view.hide()
+                self._show_embedded_mpl_figure(fig)
             else:
-                if self._mpl_canvas is not None:
-                    self.right_outer_layout.removeWidget(self._mpl_canvas)
-                    self._mpl_canvas.setParent(None)
-                    self._mpl_canvas = None
+                self._clear_mpl_embed()
                 self.plot_view.hide()
                 fig.show()
             return
@@ -3599,7 +4165,12 @@ class TimeSeriesEditorQt(QMainWindow):
                         os.remove(self._temp_plot_file)
                     except Exception:
                         pass
-                html = to_html(fig, include_plotlyjs=True, full_html=True)
+                html = to_html(
+                    fig,
+                    include_plotlyjs=True,
+                    full_html=True,
+                    config={"displayModeBar": True},
+                )
                 tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".html")
                 with open(tmp.name, "w", encoding="utf-8") as fh:
                     fh.write(html)
@@ -3628,6 +4199,7 @@ class TimeSeriesEditorQt(QMainWindow):
                  't', 'y', 'label', 'alpha', 'is_mean'
         """
         self._clear_last_plot_call()
+        marker_x = self._marker_x_value()
 
         engine = (
             self.plot_engine_combo.currentText()
@@ -3643,7 +4215,7 @@ class TimeSeriesEditorQt(QMainWindow):
         # ───────────────────────── 1.  Bokeh branch ──────────────────────────
         if engine == "bokeh":
             from bokeh.plotting import figure, show
-            from bokeh.models import Button, CustomJS, ColumnDataSource, HoverTool
+            from bokeh.models import Button, CustomJS, ColumnDataSource, HoverTool, Span
             from bokeh.layouts import column
             from bokeh.palettes import Category10_10
             from bokeh.embed import file_html
@@ -3660,7 +4232,7 @@ class TimeSeriesEditorQt(QMainWindow):
                 width=900,
                 height=450,
                 title=title,
-                x_axis_label="Time",
+                x_axis_label=self._x_axis_label(),
                 y_axis_label=y_label,
                 tools="pan,wheel_zoom,box_zoom,reset,save",
                 sizing_mode="stretch_both",
@@ -3703,6 +4275,16 @@ class TimeSeriesEditorQt(QMainWindow):
                 r_max = p.circle([all_t[max_idx]], [all_y[max_idx]], size=6, color="red", legend_label="Max")
                 r_min = p.circle([all_t[min_idx]], [all_y[min_idx]], size=6, color="blue", legend_label="Min")
                 renderers.extend([r_max, r_min])
+            if marker_x is not None:
+                p.add_layout(
+                    Span(
+                        location=marker_x,
+                        dimension="height",
+                        line_color="orange",
+                        line_width=2,
+                        line_dash="dashed",
+                    )
+                )
 
             p.legend.click_policy = "mute"
             p.add_layout(p.legend[0], "right")
@@ -3797,11 +4379,18 @@ class TimeSeriesEditorQt(QMainWindow):
                 )
             fig.update_layout(
                 title=title,
-                xaxis_title="Time",
+                xaxis_title=self._x_axis_label(),
                 yaxis_title=y_label,
                 showlegend=True,
                 template="plotly_dark" if self.theme_switch.isChecked() else "plotly",
             )
+            if marker_x is not None:
+                fig.add_vline(
+                    x=marker_x,
+                    line_color="orange",
+                    line_width=2,
+                    line_dash="dash",
+                )
             if self.theme_switch.isChecked():
                 fig.update_layout(
                     paper_bgcolor="#2b2b2b",
@@ -3817,7 +4406,12 @@ class TimeSeriesEditorQt(QMainWindow):
                         os.remove(self._temp_plot_file)
                     except Exception:
                         pass
-                html = to_html(fig, include_plotlyjs=True, full_html=True)
+                html = to_html(
+                    fig,
+                    include_plotlyjs=True,
+                    full_html=True,
+                    config={"displayModeBar": True},
+                )
                 tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".html")
                 with open(tmp.name, "w", encoding="utf-8") as fh:
                     fh.write(html)
@@ -3862,33 +4456,117 @@ class TimeSeriesEditorQt(QMainWindow):
             min_idx = np.argmin(all_y)
             ax.scatter(all_t[max_idx], all_y[max_idx], color="red", label="Max")
             ax.scatter(all_t[min_idx], all_y[min_idx], color="blue", label="Min")
+        if marker_x is not None:
+            ax.axvline(marker_x, color="orange", linestyle="--", linewidth=2, label="Marker")
 
         ax.set_title(title)
-        ax.set_xlabel("Time")
+        ax.set_xlabel(self._x_axis_label())
         ax.set_ylabel(y_label)
         ax.legend(loc="best")
         fig.tight_layout()
 
         if getattr(self, "embed_plot_cb", None) and self.embed_plot_cb.isChecked():
             # Use a native Matplotlib canvas instead of the HTML viewer
-            if self._mpl_canvas is not None:
-                self.right_outer_layout.removeWidget(self._mpl_canvas)
-                self._mpl_canvas.setParent(None)
-            from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
-
-            self._mpl_canvas = FigureCanvasQTAgg(fig)
-            self._mpl_canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-            self.right_outer_layout.addWidget(self._mpl_canvas)
-
-            self._mpl_canvas.show()
-            self.plot_view.hide()
+            self._show_embedded_mpl_figure(fig)
         else:
-            if self._mpl_canvas is not None:
-                self.right_outer_layout.removeWidget(self._mpl_canvas)
-                self._mpl_canvas.setParent(None)
-                self._mpl_canvas = None
+            self._clear_mpl_embed()
             self.plot_view.hide()
             plt.show()
+
+    def _time_values_for_plot(self, ts: TimeSeries):
+        """Return datetime values for plotting when enabled and available."""
+        if not (getattr(self, "plot_datetime_x_cb", None) and self.plot_datetime_x_cb.isChecked()):
+            return ts.t
+
+        dtg_vals = getattr(ts, "dtg_time", None)
+        if dtg_vals is not None:
+            arr = np.asarray(dtg_vals)
+            if arr.size:
+                converted = pd.to_datetime(arr, errors="coerce")
+                if converted.notna().any():
+                    return converted
+
+        return self._convert_to_datetime_if_possible(ts.t)
+
+    def _marker_x_value(self):
+        marker_input = getattr(self, "x_axis_marker_input", None)
+        if marker_input is None:
+            return None
+
+        raw_value = marker_input.text().strip()
+        if not raw_value:
+            return None
+
+        if getattr(self, "plot_datetime_x_cb", None) and self.plot_datetime_x_cb.isChecked():
+            parsed_dt = pd.to_datetime(raw_value, errors="coerce")
+            if pd.notna(parsed_dt):
+                return parsed_dt
+
+        try:
+            return float(raw_value)
+        except ValueError:
+            parsed_dt = pd.to_datetime(raw_value, errors="coerce")
+            if pd.notna(parsed_dt):
+                return parsed_dt
+
+        QMessageBox.warning(
+            self,
+            "Invalid x-axis marker",
+            "Enter a numeric x-axis location or a datetime value that pandas can parse.",
+        )
+        return None
+
+    def _x_axis_label(self) -> str:
+        if getattr(self, "plot_datetime_x_cb", None) and self.plot_datetime_x_cb.isChecked():
+            return "Datetime"
+        return "Time"
+
+    def _apply_datetime_xaxis_to_traces(self, traces):
+        if not (getattr(self, "plot_datetime_x_cb", None) and self.plot_datetime_x_cb.isChecked()):
+            return traces
+
+        converted = []
+        for trace in traces:
+            tr = dict(trace)
+            tr["t"] = self._convert_to_datetime_if_possible(trace.get("t", []))
+            converted.append(tr)
+        return converted
+
+    @staticmethod
+    def _convert_to_datetime_if_possible(time_values):
+        arr = np.asarray(time_values)
+        if arr.size == 0:
+            return time_values
+
+        if np.issubdtype(arr.dtype, np.datetime64):
+            return pd.to_datetime(arr)
+
+        if arr.dtype.kind in {"f", "i", "u"}:
+            finite = arr[np.isfinite(arr)] if arr.dtype.kind == "f" else arr
+            if finite.size == 0:
+                return time_values
+            magnitude = float(np.nanmedian(np.abs(finite.astype(float))))
+            unit = None
+            if 1e8 <= magnitude <= 1e11:
+                unit = "s"
+            elif 1e11 < magnitude <= 1e14:
+                unit = "ms"
+            elif 1e14 < magnitude <= 1e17:
+                unit = "us"
+            elif 1e17 < magnitude <= 1e20:
+                unit = "ns"
+            if unit is None:
+                return time_values
+
+            converted = pd.to_datetime(arr, unit=unit, errors="coerce")
+            if converted.notna().any():
+                return converted
+            return time_values
+
+        converted = pd.to_datetime(arr, errors="coerce")
+        if converted.notna().any():
+            return converted
+        return time_values
 
     def plot_mean(self):
         self.rebuild_var_lookup()
@@ -4336,10 +5014,16 @@ class TimeSeriesEditorQt(QMainWindow):
                 break
 
         if index is None:
-            if ":" in selected or "::" in selected:
-                QMessageBox.critical(self, "EVA Error", f"Could not locate the file for: {selected}")
-                return
-            index = 0
+            matches = [
+                (i, tsdb.getm().get(selected))
+                for i, tsdb in enumerate(self.tsdbs)
+                if selected in tsdb.getm()
+            ]
+            if matches:
+                index, ts = matches[0]
+                raw_key = ts.name
+            else:
+                index = 0
 
         if index >= len(self.tsdbs):
             QMessageBox.critical(self, "EVA Error", f"Could not locate the file for: {selected}")
@@ -4427,6 +5111,81 @@ class TimeSeriesEditorQt(QMainWindow):
             return
 
         dlg = FatigueDialog(series_entries, self)
+        dlg.exec()
+
+    def open_rao_tool(self) -> None:
+        """Launch the RAO dialog for selected time series."""
+
+        self.rebuild_var_lookup()
+        selected_keys = [k for k, cb in self.var_checkboxes.items() if cb.isChecked()]
+        if len(selected_keys) < 1:
+            QMessageBox.warning(
+                self,
+                "No variables selected",
+                "Please check at least one variable for RAO generation.",
+            )
+            return
+
+        series_data: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+        spectral_data: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+        for tsdb, fp in zip(self.tsdbs, self.file_paths):
+            fname = os.path.basename(fp)
+            tsdb_map = tsdb.getm()
+            for key in selected_keys:
+                if key in series_data:
+                    continue
+                if key.startswith(f"{fname}::"):
+                    var_name = key.split("::", 1)[1]
+                elif key.startswith(f"{fname}:"):
+                    var_name = key.split(":", 1)[1]
+                elif key in tsdb_map:
+                    var_name = key
+                else:
+                    continue
+
+                ts = tsdb_map.get(var_name)
+                if ts is None:
+                    continue
+
+                mask = self.get_time_window(ts)
+                if isinstance(mask, slice):
+                    t = np.asarray(ts.t[mask], dtype=float)
+                    y = np.asarray(self.apply_filters(ts)[mask], dtype=float)
+                else:
+                    if not mask.any():
+                        continue
+                    t = np.asarray(ts.t[mask], dtype=float)
+                    y = np.asarray(self.apply_filters(ts)[mask], dtype=float)
+
+                if t.size < 8:
+                    continue
+                if not np.all(np.isfinite(t)) or not np.all(np.isfinite(y)):
+                    continue
+
+                series_data[key] = (t, y)
+                freq_hz = getattr(ts, "freq_hz", None)
+                rao_amp = getattr(ts, "rao_amp", None)
+                if freq_hz is not None and rao_amp is not None:
+                    freq_hz_arr = np.asarray(freq_hz, dtype=float)
+                    rao_amp_arr = np.asarray(rao_amp, dtype=float)
+                    if freq_hz_arr.size and freq_hz_arr.size == rao_amp_arr.size:
+                        spectral_data[key] = (freq_hz_arr, rao_amp_arr)
+
+        if len(series_data) < 1:
+            QMessageBox.warning(
+                self,
+                "No usable data",
+                "Could not build valid series from the current selection/time window.",
+            )
+            return
+
+        labels = [k for k in selected_keys if k in series_data]
+        dlg = RAODialog(
+            labels=labels,
+            series_data=series_data,
+            spectral_data=spectral_data,
+            parent=self,
+        )
         dlg.exec()
 
     def apply_dark_palette(self):
@@ -4564,12 +5323,34 @@ class TimeSeriesEditorQt(QMainWindow):
         """Update layout when the plotting engine selection changes."""
         engine = text.lower()
         if engine != "default" and self._mpl_canvas is not None:
-            self.right_outer_layout.removeWidget(self._mpl_canvas)
-            self._mpl_canvas.setParent(None)
-            self._mpl_canvas = None
+            self._clear_mpl_embed()
         if self.embed_plot_cb.isChecked():
             # Refresh layout so the appropriate widget is shown
             self.toggle_embed_layout(True)
+
+    def _clear_mpl_embed(self):
+        """Remove any embedded Matplotlib canvas and toolbar."""
+        if self._mpl_toolbar is not None:
+            self.right_outer_layout.removeWidget(self._mpl_toolbar)
+            self._mpl_toolbar.setParent(None)
+            self._mpl_toolbar.deleteLater()
+            self._mpl_toolbar = None
+        if self._mpl_canvas is not None:
+            self.right_outer_layout.removeWidget(self._mpl_canvas)
+            self._mpl_canvas.setParent(None)
+            self._mpl_canvas = None
+
+    def _show_embedded_mpl_figure(self, fig):
+        """Render ``fig`` with a Qt Matplotlib toolbar when embedding plots."""
+        self._clear_mpl_embed()
+        self._mpl_canvas = FigureCanvasQTAgg(fig)
+        self._mpl_canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self._mpl_toolbar = NavigationToolbar2QT(self._mpl_canvas, self)
+        self.right_outer_layout.addWidget(self._mpl_toolbar)
+        self.right_outer_layout.addWidget(self._mpl_canvas)
+        self._mpl_toolbar.show()
+        self._mpl_canvas.show()
+        self.plot_view.hide()
 
     def toggle_embed_layout(self, state):
         """Re-arrange layout when the embed checkbox is toggled."""
@@ -4631,14 +5412,20 @@ class TimeSeriesEditorQt(QMainWindow):
 
             self.extra_layout.addItem(self.extra_stretch)
             if self.plot_engine_combo.currentText().lower() == "default" and self._mpl_canvas is not None:
+                if self._mpl_toolbar is not None:
+                    self._mpl_toolbar.show()
                 self._mpl_canvas.show()
                 self.plot_view.hide()
             else:
                 self.plot_view.show()
+                if self._mpl_toolbar is not None:
+                    self._mpl_toolbar.hide()
                 if self._mpl_canvas is not None:
                     self._mpl_canvas.hide()
         else:
             self.plot_view.hide()
+            if self._mpl_toolbar is not None:
+                self._mpl_toolbar.hide()
             if self._mpl_canvas is not None:
                 self._mpl_canvas.hide()
             if self.plot_view.parent() is self.extra_widget:
