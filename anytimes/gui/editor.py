@@ -481,9 +481,11 @@ class TimeSeriesEditorQt(QMainWindow):
         offset_layout.addWidget(self.apply_value_user_var_cb)
         self.apply_values_btn = QPushButton("Apply Values")
         self.plot_marked_axes_btn = QPushButton("Plot X/Y(/Z)")
+        self.animate_marked_axes_btn = QPushButton("Animate X/Y(/Z)")
         apply_plot_row = QHBoxLayout()
         apply_plot_row.addWidget(self.apply_values_btn)
         apply_plot_row.addWidget(self.plot_marked_axes_btn)
+        apply_plot_row.addWidget(self.animate_marked_axes_btn)
         offset_layout.addLayout(apply_plot_row)
         self.controls_layout.addWidget(offset_group)
 
@@ -769,6 +771,7 @@ class TimeSeriesEditorQt(QMainWindow):
         self.file_list.currentRowChanged.connect(self.highlight_file_tab)
         self.apply_values_btn.clicked.connect(self.apply_values)
         self.plot_marked_axes_btn.clicked.connect(self.plot_marked_axes)
+        self.animate_marked_axes_btn.clicked.connect(self.animate_marked_axes)
         self.mult_by_1000_btn.clicked.connect(self.multiply_by_1000)
         self.div_by_1000_btn.clicked.connect(self.divide_by_1000)
         self.mult_by_10_btn.clicked.connect(self.multiply_by_10)
@@ -1979,6 +1982,207 @@ class TimeSeriesEditorQt(QMainWindow):
             self.plot_view.load(QUrl.fromLocalFile(self._temp_plot_file))
             self.plot_view.show()
             self._remember_plot_call(self.plot_marked_axes)
+        else:
+            self.plot_view.hide()
+            fig.show(renderer="browser")
+
+    def animate_marked_axes(self):
+        """Animate scatter points over time for variables marked as x/y(/z)."""
+        import os
+        import tempfile
+        import plotly.express as px
+        from plotly.io import to_html
+
+        role_entries = {"x": [], "y": [], "z": [], "color": []}
+        for key, entry in self.var_offsets.items():
+            if entry is None:
+                continue
+            role = entry.text().strip().lower()
+            if role == "c":
+                role = "color"
+            if role in role_entries:
+                role_entries[role].append(key)
+
+        if not role_entries["x"] or not role_entries["y"]:
+            QMessageBox.warning(
+                self,
+                "Animate X/Y(/Z)",
+                'Mark one variable as "x" and one as "y" in the input fields.',
+            )
+            return
+
+        def _expand_key(series_key: str):
+            expanded = []
+            if "::" in series_key:
+                fname, var = series_key.split("::", 1)
+                for file_idx, fp in enumerate(self.file_paths):
+                    if os.path.basename(fp) == fname:
+                        expanded.append((file_idx, var))
+            elif ":" in series_key:
+                fname, var = series_key.split(":", 1)
+                for file_idx, fp in enumerate(self.file_paths):
+                    if os.path.basename(fp) == fname:
+                        expanded.append((file_idx, var))
+            else:
+                for file_idx, tsdb in enumerate(self.tsdbs):
+                    if series_key in tsdb.getm():
+                        expanded.append((file_idx, series_key))
+            return expanded
+
+        role_per_file: dict[int, dict[str, str]] = {}
+        conflicts = []
+        for role, keys in role_entries.items():
+            for key in keys:
+                for file_idx, var_name in _expand_key(key):
+                    bucket = role_per_file.setdefault(file_idx, {})
+                    if role in bucket and bucket[role] != var_name:
+                        conflicts.append(
+                            f'File {file_idx + 1}: multiple "{role}" variables '
+                            f'({bucket[role]}, {var_name})'
+                        )
+                    else:
+                        bucket[role] = var_name
+
+        if conflicts:
+            QMessageBox.warning(
+                self,
+                "Animate X/Y(/Z)",
+                "Resolve marked-axis conflicts before animating:\n\n" + "\n".join(conflicts),
+            )
+            return
+
+        rows = []
+        use_3d = False
+        for file_idx, roles in sorted(role_per_file.items()):
+            if "x" not in roles or "y" not in roles:
+                continue
+            tsdb = self.tsdbs[file_idx]
+            x_ts = tsdb.getm().get(roles["x"])
+            y_ts = tsdb.getm().get(roles["y"])
+            z_ts = tsdb.getm().get(roles["z"]) if "z" in roles else None
+            c_ts = tsdb.getm().get(roles["color"]) if "color" in roles else None
+            if x_ts is None or y_ts is None:
+                continue
+
+            x_vals = np.asarray(x_ts.x)
+            y_vals = np.asarray(y_ts.x)
+            min_len = min(len(x_vals), len(y_vals))
+            if z_ts is not None:
+                min_len = min(min_len, len(z_ts.x))
+            if c_ts is not None:
+                min_len = min(min_len, len(c_ts.x))
+            if min_len <= 0:
+                continue
+
+            t_vals = np.asarray(x_ts.t)[:min_len]
+            x_vals = x_vals[:min_len]
+            y_vals = y_vals[:min_len]
+            z_vals = np.asarray(z_ts.x)[:min_len] if z_ts is not None else None
+            c_vals = np.asarray(c_ts.x)[:min_len] if c_ts is not None else None
+            if z_vals is not None:
+                use_3d = True
+
+            ts_for_window = TimeSeries(
+                "__xy_anim_window__",
+                t_vals,
+                np.zeros(len(t_vals)),
+                dtg_ref=getattr(x_ts, "dtg_ref", None),
+            )
+            mask = self.get_time_window(ts_for_window)
+            if isinstance(mask, slice):
+                t_vals, x_vals, y_vals = t_vals[mask], x_vals[mask], y_vals[mask]
+                if z_vals is not None:
+                    z_vals = z_vals[mask]
+                if c_vals is not None:
+                    c_vals = c_vals[mask]
+            else:
+                mask_arr = np.asarray(mask)
+                if not mask_arr.any():
+                    continue
+                t_vals, x_vals, y_vals = t_vals[mask_arr], x_vals[mask_arr], y_vals[mask_arr]
+                if z_vals is not None:
+                    z_vals = z_vals[mask_arr]
+                if c_vals is not None:
+                    c_vals = c_vals[mask_arr]
+            if len(x_vals) == 0:
+                continue
+
+            time_labels = []
+            for t in t_vals:
+                if isinstance(t, (np.datetime64, pd.Timestamp)):
+                    time_labels.append(str(pd.Timestamp(t)))
+                else:
+                    time_labels.append(f"{float(t):.6g}")
+
+            data = {
+                "time": time_labels,
+                "x": x_vals,
+                "y": y_vals,
+                "series": [os.path.basename(self.file_paths[file_idx])] * len(x_vals),
+            }
+            if z_vals is not None:
+                data["z"] = z_vals
+            if c_vals is not None:
+                data["color"] = c_vals
+            rows.append(pd.DataFrame(data))
+
+        if not rows:
+            QMessageBox.warning(
+                self,
+                "Animate X/Y(/Z)",
+                "No matching file with marked x/y variables could be animated.",
+            )
+            return
+
+        df = pd.concat(rows, ignore_index=True)
+        base_kwargs = dict(
+            data_frame=df,
+            x="x",
+            y="y",
+            animation_frame="time",
+            animation_group="series",
+            hover_name="series",
+            title="Animated scatter plot from marked axes",
+            template="plotly_dark" if self.theme_switch.isChecked() else "plotly",
+        )
+        if "color" in df.columns:
+            base_kwargs["color"] = "color"
+            base_kwargs["color_continuous_scale"] = "Viridis"
+        else:
+            base_kwargs["color"] = "series"
+
+        if use_3d and "z" in df.columns:
+            fig = px.scatter_3d(**base_kwargs, z="z")
+        else:
+            fig = px.scatter(**base_kwargs)
+
+        fig.update_layout(
+            xaxis_title=role_per_file[next(iter(role_per_file))].get("x", "x"),
+            yaxis_title=role_per_file[next(iter(role_per_file))].get("y", "y"),
+        )
+        if use_3d and "z" in df.columns:
+            fig.update_layout(
+                scene=dict(
+                    xaxis_title=role_per_file[next(iter(role_per_file))].get("x", "x"),
+                    yaxis_title=role_per_file[next(iter(role_per_file))].get("y", "y"),
+                    zaxis_title=role_per_file[next(iter(role_per_file))].get("z", "z"),
+                )
+            )
+
+        if getattr(self, "embed_plot_cb", None) and self.embed_plot_cb.isChecked():
+            if self._temp_plot_file and os.path.exists(self._temp_plot_file):
+                try:
+                    os.remove(self._temp_plot_file)
+                except OSError:
+                    pass
+            html = to_html(fig, include_plotlyjs=True, full_html=True)
+            with tempfile.NamedTemporaryFile("w", delete=False, suffix=".html", encoding="utf-8") as tmp:
+                tmp.write(html)
+                tmp.flush()
+                self._temp_plot_file = tmp.name
+            self.plot_view.load(QUrl.fromLocalFile(self._temp_plot_file))
+            self.plot_view.show()
+            self._remember_plot_call(self.animate_marked_axes)
         else:
             self.plot_view.hide()
             fig.show(renderer="browser")
