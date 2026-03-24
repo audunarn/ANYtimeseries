@@ -3900,7 +3900,7 @@ class TimeSeriesEditorQt(QMainWindow):
             else:
                 self._clear_mpl_embed()
                 self.plot_view.hide()
-                fig.show()
+                self._show_mpl_figure_window(fig)
             return
         if mode in ("time", "rolling"):
             if not traces:
@@ -3955,7 +3955,7 @@ class TimeSeriesEditorQt(QMainWindow):
                         fig.canvas.manager.set_window_title("AnyTimeSeries plot")
                 except Exception:
                     pass
-                fig.show()
+                self._show_mpl_figure_window(fig)
 
     @staticmethod
     def _resample(t, y, dt, *, start=None, stop=None):
@@ -4471,7 +4471,7 @@ class TimeSeriesEditorQt(QMainWindow):
         else:
             self._clear_mpl_embed()
             self.plot_view.hide()
-            plt.show()
+            self._show_mpl_figure_window(fig)
 
     def _time_values_for_plot(self, ts: TimeSeries):
         """Return datetime values for plotting when enabled and available."""
@@ -5327,6 +5327,27 @@ class TimeSeriesEditorQt(QMainWindow):
         if self.embed_plot_cb.isChecked():
             # Refresh layout so the appropriate widget is shown
             self.toggle_embed_layout(True)
+
+    def _show_mpl_figure_window(self, fig):
+        """Show a Matplotlib figure in a desktop window when not embedding.
+
+        ``Figure.show()`` can raise for figures not managed by pyplot.
+        Prefer the canvas manager when available, then fall back to non-blocking
+        pyplot display.
+        """
+        try:
+            manager = getattr(fig.canvas, "manager", None)
+            if manager is not None and hasattr(manager, "show"):
+                manager.show()
+                return
+        except Exception:
+            pass
+
+        try:
+            plt.figure(fig.number)
+            plt.show(block=False)
+        except Exception:
+            pass
 
     def _clear_mpl_embed(self):
         """Remove any embedded Matplotlib canvas and toolbar."""
