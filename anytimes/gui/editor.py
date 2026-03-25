@@ -14,6 +14,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from contextlib import nullcontext
 from array import array
 from collections.abc import Callable, Sequence
+from matplotlib import pyplot as plt
 
 import anyqats as qats
 import numpy as np
@@ -200,8 +201,8 @@ class TimeSeriesEditorQt(QMainWindow):
         super().__init__()
         self.setWindowTitle("AnytimeSeries - time series editor (Qt/PySide6)")
 
-        self._min_left_panel = 320
-        self._min_right_panel = 360
+        self._min_left_panel = 240
+        self._min_right_panel = 280
         self._splitter_ratio = 0.52
 
         self._updating_splitter = False
@@ -264,10 +265,11 @@ class TimeSeriesEditorQt(QMainWindow):
         left_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         left_layout = QVBoxLayout(left_widget)
 
-        # Quick navigation buttons
-        btn_row = QHBoxLayout()
-        btn_row.setContentsMargins(0, 0, 0, 0)
-        btn_row.setSpacing(6)
+        # Quick navigation buttons (2 rows × 2 columns so text fits).
+        btn_grid = QGridLayout()
+        btn_grid.setContentsMargins(0, 0, 0, 0)
+        btn_grid.setHorizontalSpacing(6)
+        btn_grid.setVerticalSpacing(4)
         self.goto_common_btn = QPushButton("Go to Common")
         self.goto_user_btn = QPushButton("Go to User Variables")
         self.unselect_all_btn = QPushButton("Unselect All")
@@ -280,11 +282,11 @@ class TimeSeriesEditorQt(QMainWindow):
             self.select_pos_btn,
         )
 
-        for btn in nav_buttons:
+        for idx, btn in enumerate(nav_buttons):
             btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             btn.setMinimumHeight(28)
-            btn_row.addWidget(btn)
-        left_layout.addLayout(btn_row)
+            btn_grid.addWidget(btn, idx // 2, idx % 2)
+        left_layout.addLayout(btn_grid)
 
         # Tab widget for variables (common, per-file, user)
         self.tabs = QTabWidget()
@@ -299,13 +301,15 @@ class TimeSeriesEditorQt(QMainWindow):
         # -----------------------
         right_widget = QWidget()
         right_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        # Use a vertical layout so an optional embedded plot can span
-
-        # the full width below the control sections when embedded
-
         self.right_outer_layout = QVBoxLayout(right_widget)
-        self.top_row_layout = QHBoxLayout()
-        self.right_outer_layout.addLayout(self.top_row_layout)
+        self.right_splitter = QSplitter(Qt.Vertical)
+        self.right_splitter.setChildrenCollapsible(False)
+        self.right_splitter.setHandleWidth(6)
+        self.right_outer_layout.addWidget(self.right_splitter)
+
+        self.top_row_splitter = QSplitter(Qt.Horizontal)
+        self.top_row_splitter.setChildrenCollapsible(False)
+        self.top_row_splitter.setHandleWidth(6)
 
         self.controls_widget = QWidget()
         self.controls_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -451,16 +455,18 @@ class TimeSeriesEditorQt(QMainWindow):
         )
         row5.addWidget(self.shift_min_nz_btn)
         row5.addWidget(self.shift_common_max_btn)
-        transform_layout.addLayout(row5)
 
-        row6 = QHBoxLayout()
+
+        #row6 = QHBoxLayout()
         self.shift_x_start_zero_btn = QPushButton("Shift X Start → 0")
         self.shift_x_start_zero_btn.setToolTip(
             "Create a new series where the x-axis starts at zero by subtracting the initial x value."
         )
-        row6.addWidget(self.shift_x_start_zero_btn)
-        row6.addStretch(1)
-        transform_layout.addLayout(row6)
+        row5.addWidget(self.shift_x_start_zero_btn)
+        transform_layout.addLayout(row5)
+        #row6.addWidget(self.shift_x_start_zero_btn)
+        #row6.addStretch(1)
+        #transform_layout.addLayout(row6)
 
 
         # Progress bar is shown by itself unless the plot is embedded
@@ -473,25 +479,86 @@ class TimeSeriesEditorQt(QMainWindow):
         offset_group = QGroupBox("Apply operation from variable input fields")
         offset_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         offset_layout = QVBoxLayout(offset_group)
-        offset_examples = QLabel('Examples: add "+1 / 1" substract "-1" divide "/2" multiply "*2"')
+        offset_examples = QLabel('Examples: add "+1 / 1" substract "-1" divide "/2" multiply "*2"   '
+                                 'To plot 2D scatter input "x" and "y" in the fields. For 3D scatter also input "z".'
+                                 '  Use Animate button to plot single points over time.')
         offset_examples.setWordWrap(True)
         offset_layout.addWidget(offset_examples)
         self.apply_value_user_var_cb = QCheckBox("Create user variable instead of overwriting?")
-        offset_layout.addWidget(self.apply_value_user_var_cb)
+        self.colormap_min_label = QLabel("Color Min")
+        self.colormap_max_label = QLabel("Color Max")
+        self.colormap_min_input = QLineEdit()
+        self.colormap_max_input = QLineEdit()
+        self.colormap_min_input.setFixedWidth(80)
+        self.colormap_max_input.setFixedWidth(80)
+        self.colormap_min_input.setPlaceholderText("auto")
+        self.colormap_max_input.setPlaceholderText("auto")
+
+        offset_meta_row = QHBoxLayout()
+        offset_meta_row.addWidget(self.apply_value_user_var_cb)
+        offset_meta_row.addStretch(1)
+        offset_layout.addLayout(offset_meta_row)
         self.apply_values_btn = QPushButton("Apply Values")
-        offset_layout.addWidget(self.apply_values_btn)
+        self.clear_values_btn = QPushButton("Clear Values")
+        self.plot_marked_axes_btn = QPushButton("Plot X/Y(/Z)")
+        self.animate_marked_axes_btn = QPushButton("Animate X/Y(/Z)")
+        self.colormap_label = QLabel("Colormap:")
+        self.colormap_combo = QComboBox()
+        self.colormap_combo.addItems(["Viridis", "Plasma", "Inferno", "Magma", "Cividis", "Turbo", "hsv"])
+        self.colormap_combo.setCurrentText("Viridis")
+        self.clip_mode_combo = QComboBox()
+        self.clip_mode_combo.addItems(
+            [
+                "No clipping",
+                "Clipping outside",
+                "Clipping inside",
+                "Clipping above max",
+                "Clipping below min",
+            ]
+        )
+        self.clip_mode_combo.setCurrentText("No clipping")
+        self.clip_mode_combo.setToolTip(
+            "Clipping mode for plotting only. If Color Min/Max is blank, defaults "
+            "from current data are used."
+        )
+        colormap_layout = QVBoxLayout()
+        colormap_layout.setSpacing(2)
+        colormap_layout.addWidget(self.colormap_label)
+        colormap_layout.addWidget(self.colormap_combo)
+        colormap_min_layout = QVBoxLayout()
+        colormap_min_layout.setSpacing(2)
+        colormap_min_layout.addWidget(self.colormap_min_label)
+        colormap_min_layout.addWidget(self.colormap_min_input)
+        colormap_max_layout = QVBoxLayout()
+        colormap_max_layout.setSpacing(2)
+        colormap_max_layout.addWidget(self.colormap_max_label)
+        colormap_max_layout.addWidget(self.colormap_max_input)
+        apply_plot_row = QHBoxLayout()
+        apply_plot_row.addWidget(self.apply_values_btn)
+        apply_plot_row.addWidget(self.clear_values_btn)
+        apply_plot_row.addWidget(self.plot_marked_axes_btn)
+        apply_plot_row.addWidget(self.animate_marked_axes_btn)
+        apply_plot_row.addLayout(colormap_layout)
+        apply_plot_row.addLayout(colormap_min_layout)
+        apply_plot_row.addLayout(colormap_max_layout)
+        apply_plot_row.addWidget(self.clip_mode_combo)
+        offset_layout.addLayout(apply_plot_row)
         self.controls_layout.addWidget(offset_group)
 
         # ---- File list group ----
-        file_group = QGroupBox("Loaded Files")
-        file_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        file_list_layout = QVBoxLayout(file_group)
+        top_input_max_height = 220
+        top_input_group_max_height = 290
+        self.file_group = QGroupBox("Loaded Files")
+        self.file_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.file_group.setMaximumHeight(top_input_group_max_height)
+        file_list_layout = QVBoxLayout(self.file_group)
         self.file_list = QListWidget()
         self.file_list.setMinimumWidth(160)
+        self.file_list.setMaximumHeight(top_input_max_height)
         self.remove_file_btn = QPushButton("Remove File")
         file_list_layout.addWidget(self.file_list)
         file_list_layout.addWidget(self.remove_file_btn)
-        self.controls_layout.addWidget(file_group)
+        self.controls_layout.addWidget(self.file_group)
 
         # ---- Time window controls ----
         time_group = QGroupBox("Time Window (for Plot/Stats/Transform)")
@@ -577,21 +644,14 @@ class TimeSeriesEditorQt(QMainWindow):
         plot_btn_row = QHBoxLayout()
         self.plot_selected_btn = QPushButton("Plot Selected (one graph)")
         self.plot_side_by_side_btn = QPushButton("Plot Selected (side-by-side)")
-        grid_col = QVBoxLayout()
-        grid_col.addWidget(self.plot_side_by_side_btn)
         self.plot_same_axes_cb = QCheckBox("Same axes")
-        grid_col.addWidget(self.plot_same_axes_cb)
         self.plot_mean_btn = QPushButton("Plot Mean")
         self.plot_rolling_btn = QPushButton("Rolling Mean")
         self.animate_xyz_btn = QPushButton("Animate XYZ scatter (all points)")
 
-        selected_col = QVBoxLayout()
-        selected_col.addWidget(self.plot_selected_btn)
         self.plot_extrema_cb = QCheckBox("Mark max/min")
-        selected_col.addWidget(self.plot_extrema_cb)
-
-        plot_btn_row.addLayout(selected_col)
-        plot_btn_row.addLayout(grid_col)
+        plot_btn_row.addWidget(self.plot_selected_btn)
+        plot_btn_row.addWidget(self.plot_side_by_side_btn)
         plot_btn_row.addWidget(self.plot_mean_btn)
         plot_btn_row.addWidget(self.plot_rolling_btn)
         plot_btn_row.addWidget(self.animate_xyz_btn)
@@ -621,6 +681,8 @@ class TimeSeriesEditorQt(QMainWindow):
         plot_layout.addLayout(plot_btn_row)
         # Label trimming controls
         trim_row = QHBoxLayout()
+        trim_row.addWidget(self.plot_extrema_cb)
+        trim_row.addWidget(self.plot_same_axes_cb)
         trim_row.addWidget(QLabel("Trim label to keep:"))
         trim_row.addWidget(QLabel("Left:"))
         self.label_trim_left = QSpinBox()
@@ -659,11 +721,13 @@ class TimeSeriesEditorQt(QMainWindow):
 
         # ---- Calculator ----
         self.calc_group = QGroupBox("Calculator")
+        self.calc_group.setMaximumHeight(top_input_group_max_height)
         calc_layout = QVBoxLayout(self.calc_group)
         calc_layout.addWidget(QLabel(
             "Define a new variable (e.g., result_name = f1_var1 + f2_var2) where f1 and f2 refer to file IDs in the loaded list (c_ common var, u_ user var)."
         ))
         self.calc_entry = QTextEdit()
+        self.calc_entry.setMaximumHeight(top_input_max_height)
         calc_layout.addWidget(self.calc_entry)
         calc_btn_row = QHBoxLayout()
         self.calc_btn = QPushButton("Calculate")
@@ -693,17 +757,18 @@ class TimeSeriesEditorQt(QMainWindow):
         self.autocomplete_popup.installEventFilter(self)
 
         # ---- Analysis ----
-        self.analysis_group = QGroupBox("Analysis")
+        self.analysis_group = QGroupBox("Analysis for selected varables")
         self.analysis_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         analysis_layout = QVBoxLayout(self.analysis_group)
-        self.show_stats_btn = QPushButton("Show statistic for selected variables")
+        self.show_stats_btn = QPushButton("Statistics")
         self.show_stats_btn.clicked.connect(self.show_stats)
-        analysis_layout.addWidget(self.show_stats_btn)
+        #analysis_layout.addWidget(self.show_stats_btn)
         analysis_btn_row = QHBoxLayout()
         self.psd_btn = QPushButton("PSD")
         self.cycle_range_btn = QPushButton("Cycle Range")
         self.cycle_mean_btn = QPushButton("Range-Mean")
         self.cycle_mean3d_btn = QPushButton("Range-Mean 3-D")
+        analysis_btn_row.addWidget(self.show_stats_btn)
         analysis_btn_row.addWidget(self.psd_btn)
         analysis_btn_row.addWidget(self.cycle_range_btn)
         analysis_btn_row.addWidget(self.cycle_mean_btn)
@@ -729,12 +794,13 @@ class TimeSeriesEditorQt(QMainWindow):
         self.controls_layout.addStretch(1)
         self.extra_layout.addItem(self.extra_stretch)
 
-        self.top_row_layout.addWidget(self.controls_widget)
-        # extra_widget will be inserted when embed is enabled
-        # Plot view occupies full width below the top row
-        self.right_outer_layout.addWidget(self.plot_view)
-        self.right_outer_layout.setStretch(0, 0)
-        self.right_outer_layout.setStretch(1, 1)
+        self.top_row_splitter.addWidget(self.controls_widget)
+        # extra_widget is inserted in toggle_embed_layout when embed is enabled
+        self.right_splitter.addWidget(self.top_row_splitter)
+        self.right_splitter.addWidget(self.plot_view)
+        self.right_splitter.setStretchFactor(0, 4)
+        self.right_splitter.setStretchFactor(1, 3)
+        self.top_row_splitter.setStretchFactor(0, 5)
         self.plot_view.hide()
         self.main_splitter.addWidget(right_widget)
         self.main_splitter.setStretchFactor(0, 1)
@@ -763,6 +829,9 @@ class TimeSeriesEditorQt(QMainWindow):
         self.select_pos_btn.clicked.connect(self._select_all_by_list_pos)
         self.file_list.currentRowChanged.connect(self.highlight_file_tab)
         self.apply_values_btn.clicked.connect(self.apply_values)
+        self.clear_values_btn.clicked.connect(self.clear_all_variable_input_values)
+        self.plot_marked_axes_btn.clicked.connect(self.plot_marked_axes)
+        self.animate_marked_axes_btn.clicked.connect(self.animate_marked_axes)
         self.mult_by_1000_btn.clicked.connect(self.multiply_by_1000)
         self.div_by_1000_btn.clicked.connect(self.divide_by_1000)
         self.mult_by_10_btn.clicked.connect(self.multiply_by_10)
@@ -830,6 +899,7 @@ class TimeSeriesEditorQt(QMainWindow):
 
         self._apply_splitter_ratio()
         QTimer.singleShot(0, self._apply_splitter_ratio)
+        QTimer.singleShot(0, self._apply_secondary_splitters)
 
     def _apply_splitter_ratio(self) -> None:
         """Keep the main splitter proportions responsive when resizing."""
@@ -868,9 +938,47 @@ class TimeSeriesEditorQt(QMainWindow):
         ratio = sizes[0] / total
         self._splitter_ratio = max(0.15, min(0.85, ratio))
 
+    def _apply_secondary_splitters(self) -> None:
+        """Set startup sizes for nested splitters used in the right panel."""
+        if hasattr(self, "right_splitter"):
+            self.right_splitter.setSizes([520, 280])
+        if hasattr(self, "top_row_splitter"):
+            self.top_row_splitter.setSizes([920, 440])
+        self._fit_embedded_plot_height()
+
+    def _fit_embedded_plot_height(self) -> None:
+        """Keep the embedded plot directly below controls when resizing.
+
+        Without this adjustment, maximizing the window can leave extra blank
+        space between the bottom of the control groups and the embedded plot.
+        """
+        if not (
+            hasattr(self, "right_splitter")
+            and hasattr(self, "top_row_splitter")
+            and hasattr(self, "embed_plot_cb")
+            and self.embed_plot_cb.isChecked()
+        ):
+            return
+
+        total_height = self.right_splitter.size().height()
+        if total_height <= 1:
+            return
+
+        controls_height = max(
+            self.top_row_splitter.minimumSizeHint().height(),
+            self.top_row_splitter.sizeHint().height(),
+        )
+        plot_min_height = max(1, self.plot_view.minimumHeight())
+
+        max_controls_height = max(1, total_height - plot_min_height)
+        controls_height = max(1, min(controls_height, max_controls_height))
+        plot_height = max(1, total_height - controls_height)
+        self.right_splitter.setSizes([controls_height, plot_height])
+
     def resizeEvent(self, event):  # type: ignore[override]
         super().resizeEvent(event)
         self._apply_splitter_ratio()
+        self._fit_embedded_plot_height()
 
     def eventFilter(self, obj, event):
 
@@ -1606,6 +1714,983 @@ class TimeSeriesEditorQt(QMainWindow):
             summary.append("\nConflicts (skipped):")
             summary.extend(f"  • {c}" for c in conflicts)
         QMessageBox.information(self, "Apply Values", "\n".join(summary))
+
+    def clear_all_variable_input_values(self):
+        """Clear all variable input fields across common, file, and user tabs."""
+        cleared = 0
+        for entry in self.var_offsets.values():
+            if entry is None:
+                continue
+            if entry.text():
+                cleared += 1
+            entry.clear()
+        QMessageBox.information(
+            self,
+            "Clear Values",
+            f"Cleared {cleared} variable input field{'s' if cleared != 1 else ''}.",
+        )
+
+    def _selected_colormap(self) -> str:
+        """Return the selected colormap name in lowercase."""
+        if hasattr(self, "colormap_combo"):
+            return self.colormap_combo.currentText().strip().lower() or "viridis"
+        return "viridis"
+
+    def _plotly_colorscale_name(self) -> str:
+        """Map selected colormap to Plotly colorscale naming."""
+        cmap = self._selected_colormap()
+        return cmap.capitalize()
+
+    def _bokeh_palette_name(self) -> str:
+        """Map selected colormap to Bokeh 256-color palette naming."""
+        cmap = self._selected_colormap()
+        return f"{cmap.capitalize()}256"
+
+    def _manual_colormap_limits(self) -> tuple[float | None, float | None]:
+        """Return optional user-provided (min, max) color limits."""
+        min_txt = self.colormap_min_input.text().strip() if hasattr(self, "colormap_min_input") else ""
+        max_txt = self.colormap_max_input.text().strip() if hasattr(self, "colormap_max_input") else ""
+        cmin = None
+        cmax = None
+        if min_txt:
+            try:
+                cmin = float(min_txt)
+            except ValueError:
+                QMessageBox.warning(self, "Invalid Color Min", f"Could not parse Color Min: {min_txt!r}")
+        if max_txt:
+            try:
+                cmax = float(max_txt)
+            except ValueError:
+                QMessageBox.warning(self, "Invalid Color Max", f"Could not parse Color Max: {max_txt!r}")
+        if cmin is not None and cmax is not None and cmax <= cmin:
+            QMessageBox.warning(
+                self,
+                "Invalid Color Limits",
+                "Color Max must be greater than Color Min.",
+            )
+            return None, None
+        return cmin, cmax
+
+    @staticmethod
+    def _resolve_colormap_limits(
+        values: np.ndarray,
+        manual_cmin: float | None,
+        manual_cmax: float | None,
+    ) -> tuple[float, float]:
+        """Resolve colormap min/max using user input where provided."""
+        resolved_min = float(np.min(values))
+        resolved_max = float(np.max(values))
+        if manual_cmin is not None:
+            resolved_min = manual_cmin
+        if manual_cmax is not None:
+            resolved_max = manual_cmax
+        if abs(resolved_max - resolved_min) < 1e-12:
+            resolved_max = resolved_min + 1.0
+        return resolved_min, resolved_max
+
+    def _color_clip_mask(self, color_values: np.ndarray, cmin: float, cmax: float) -> np.ndarray:
+        """Return keep-mask according to the selected clipping mode."""
+        mode = (
+            self.clip_mode_combo.currentText().strip().lower()
+            if hasattr(self, "clip_mode_combo")
+            else "no clipping"
+        )
+        if mode == "clipping outside":
+            return (color_values >= cmin) & (color_values <= cmax)
+        if mode == "clipping inside":
+            return (color_values < cmin) | (color_values > cmax)
+        if mode == "clipping above max":
+            return color_values <= cmax
+        if mode == "clipping below min":
+            return color_values >= cmin
+        return np.ones(len(color_values), dtype=bool)
+
+    def plot_marked_axes(self):
+        """Scatter-plot variables marked as x/y/z in the variable input fields."""
+        import os
+
+        left = self.label_trim_left.value() if hasattr(self, "label_trim_left") else 10
+        right = self.label_trim_right.value() if hasattr(self, "label_trim_right") else 60
+        def _disp(label: str) -> str:
+            return self._trim_label(str(label), left, right)
+
+        self._clear_last_plot_call()
+        role_entries = {"x": [], "y": [], "z": [], "color": []}
+        for key, entry in self.var_offsets.items():
+            if entry is None:
+                continue
+            role = entry.text().strip().lower()
+            if role == "c":
+                role = "color"
+            if role in role_entries:
+                role_entries[role].append(key)
+
+        if not role_entries["x"] or not role_entries["y"]:
+            QMessageBox.warning(
+                self,
+                "Plot X/Y(/Z)",
+                'Mark one variable as "x" and one as "y" in the input fields.',
+            )
+            return
+
+        def _expand_key(series_key: str):
+            expanded = []
+            if "::" in series_key:
+                fname, var = series_key.split("::", 1)
+                for file_idx, fp in enumerate(self.file_paths):
+                    if os.path.basename(fp) == fname:
+                        expanded.append((file_idx, var))
+            elif ":" in series_key:
+                fname, var = series_key.split(":", 1)
+                for file_idx, fp in enumerate(self.file_paths):
+                    if os.path.basename(fp) == fname:
+                        expanded.append((file_idx, var))
+            else:
+                for file_idx, tsdb in enumerate(self.tsdbs):
+                    if series_key in tsdb.getm():
+                        expanded.append((file_idx, series_key))
+            return expanded
+
+        role_per_file: dict[int, dict[str, str]] = {}
+        conflicts = []
+        for role, keys in role_entries.items():
+            for key in keys:
+                for file_idx, var_name in _expand_key(key):
+                    bucket = role_per_file.setdefault(file_idx, {})
+                    if role in bucket and bucket[role] != var_name:
+                        conflicts.append(
+                            f'File {file_idx + 1}: multiple "{role}" variables '
+                            f'({bucket[role]}, {var_name})'
+                        )
+                    else:
+                        bucket[role] = var_name
+
+        if conflicts:
+            QMessageBox.warning(
+                self,
+                "Plot X/Y(/Z)",
+                "Resolve marked-axis conflicts before plotting:\n\n" + "\n".join(conflicts),
+            )
+            return
+
+        traces = []
+        use_3d = False
+        for file_idx, roles in sorted(role_per_file.items()):
+            if "x" not in roles or "y" not in roles:
+                continue
+
+            tsdb = self.tsdbs[file_idx]
+            x_ts = tsdb.getm().get(roles["x"])
+            y_ts = tsdb.getm().get(roles["y"])
+            z_ts = tsdb.getm().get(roles["z"]) if "z" in roles else None
+            c_ts = tsdb.getm().get(roles["color"]) if "color" in roles else None
+            if x_ts is None or y_ts is None:
+                continue
+
+            x_vals = np.asarray(x_ts.x)
+            y_vals = np.asarray(y_ts.x)
+            min_len = min(len(x_vals), len(y_vals))
+            if c_ts is not None:
+                min_len = min(min_len, len(c_ts.x))
+            if min_len <= 0:
+                continue
+            x_vals = x_vals[:min_len]
+            y_vals = y_vals[:min_len]
+            t_vals = np.asarray(x_ts.t)[:min_len]
+
+            trace = {
+                "file_label": _disp(f"F{file_idx + 1}: {os.path.basename(self.file_paths[file_idx])}"),
+                "x_var": _disp(roles["x"]),
+                "y_var": _disp(roles["y"]),
+                "t": t_vals,
+                "x": x_vals,
+                "y": y_vals,
+            }
+            if c_ts is not None:
+                trace["c"] = np.asarray(c_ts.x)[:min_len]
+                trace["c_var"] = _disp(roles["color"])
+            if z_ts is not None:
+                z_vals = np.asarray(z_ts.x)
+                min_len = min(min_len, len(z_vals))
+                if min_len <= 0:
+                    continue
+                trace["t"] = trace["t"][:min_len]
+                trace["x"] = trace["x"][:min_len]
+                trace["y"] = trace["y"][:min_len]
+                if "c" in trace:
+                    trace["c"] = trace["c"][:min_len]
+                trace["z"] = z_vals[:min_len]
+                trace["z_var"] = _disp(roles["z"])
+                use_3d = True
+
+            # Respect the active time window (if any start/end input is given).
+            ts_for_window = TimeSeries(
+                "__xy_plot_window__",
+                trace["t"],
+                np.zeros(len(trace["t"])),
+                dtg_ref=getattr(x_ts, "dtg_ref", None),
+            )
+            mask = self.get_time_window(ts_for_window)
+            if isinstance(mask, slice):
+                trace["t"] = trace["t"][mask]
+                trace["x"] = trace["x"][mask]
+                trace["y"] = trace["y"][mask]
+                if "c" in trace:
+                    trace["c"] = trace["c"][mask]
+                if "z" in trace:
+                    trace["z"] = trace["z"][mask]
+            else:
+                if not np.asarray(mask).any():
+                    continue
+                trace["t"] = trace["t"][mask]
+                trace["x"] = trace["x"][mask]
+                trace["y"] = trace["y"][mask]
+                if "c" in trace:
+                    trace["c"] = trace["c"][mask]
+                if "z" in trace:
+                    trace["z"] = trace["z"][mask]
+            if len(trace["x"]) == 0:
+                continue
+            traces.append(trace)
+
+        if not traces:
+            QMessageBox.warning(
+                self,
+                "Plot X/Y(/Z)",
+                "No matching file with marked x/y variables could be plotted.",
+            )
+            return
+
+        engine = (
+            self.plot_engine_combo.currentText()
+            if hasattr(self, "plot_engine_combo")
+            else "plotly"
+        ).lower()
+        plotly_scale = self._plotly_colorscale_name()
+        mpl_cmap = self._selected_colormap()
+        bokeh_palette = self._bokeh_palette_name()
+        manual_cmin, manual_cmax = self._manual_colormap_limits()
+        has_color = any("c" in trace for trace in traces)
+        color_min = None
+        color_max = None
+        if has_color:
+            all_c = np.concatenate([np.asarray(trace["c"]) for trace in traces if "c" in trace])
+            if len(all_c):
+                color_min, color_max = self._resolve_colormap_limits(all_c, manual_cmin, manual_cmax)
+                if self.clip_mode_combo.currentText() != "No clipping":
+                    clipped_traces = []
+                    for trace in traces:
+                        if "c" not in trace:
+                            clipped_traces.append(trace)
+                            continue
+                        clip_mask = self._color_clip_mask(np.asarray(trace["c"]), color_min, color_max)
+                        if not np.any(clip_mask):
+                            continue
+                        clipped_trace = dict(trace)
+                        clipped_trace["t"] = trace["t"][clip_mask]
+                        clipped_trace["x"] = trace["x"][clip_mask]
+                        clipped_trace["y"] = trace["y"][clip_mask]
+                        clipped_trace["c"] = trace["c"][clip_mask]
+                        if "z" in trace:
+                            clipped_trace["z"] = trace["z"][clip_mask]
+                        clipped_traces.append(clipped_trace)
+                    traces = [trace for trace in clipped_traces if len(trace["x"]) > 0]
+                    if not traces:
+                        QMessageBox.warning(
+                            self,
+                            "Plot X/Y(/Z)",
+                            "No points remain after clipping with Color Min/Max.",
+                        )
+                        return
+        title = "3D scatter plot (x, y, z)" if use_3d else "2D scatter plot (x, y)"
+        axis_labels = traces[0]
+        if engine == "bokeh" and use_3d:
+            QMessageBox.information(
+                self,
+                "Plot X/Y(/Z)",
+                "Bokeh does not support native 3D scatter here. Falling back to Matplotlib for 3D.",
+            )
+            engine = "default"
+
+        if engine == "bokeh":
+            from bokeh.embed import file_html
+            from bokeh.models import ColumnDataSource, HoverTool, LinearColorMapper, ColorBar
+            from bokeh.palettes import Category10_10
+            from bokeh.plotting import figure, show
+            from bokeh.resources import INLINE
+            from bokeh.transform import linear_cmap
+            import itertools
+            import tempfile
+
+            fig = figure(
+                width=900,
+                height=450,
+                title=title,
+                x_axis_label=axis_labels["x_var"],
+                y_axis_label=axis_labels["y_var"],
+                tools="pan,wheel_zoom,box_zoom,reset,save",
+                sizing_mode="stretch_both",
+            )
+            if self.theme_switch.isChecked():
+                fig.background_fill_color = "#2b2b2b"
+                fig.border_fill_color = "#2b2b2b"
+            has_color = any("c" in tr for tr in traces)
+            if has_color:
+                hover_tips = [("Series", "@label"), ("x", "@x"), ("y", "@y"), ("color", "@c")]
+            else:
+                hover_tips = [("Series", "@label"), ("x", "@x"), ("y", "@y")]
+            fig.add_tools(HoverTool(tooltips=hover_tips))
+
+            mapper = None
+            if has_color:
+                all_c = np.concatenate([np.asarray(tr["c"]) for tr in traces if "c" in tr])
+                if len(all_c):
+                    c_min = float(np.min(all_c))
+                    c_max = float(np.max(all_c))
+                    if manual_cmin is not None:
+                        c_min = manual_cmin
+                    if manual_cmax is not None:
+                        c_max = manual_cmax
+                    if abs(c_max - c_min) < 1e-12:
+                        c_max = c_min + 1.0
+                    mapper = LinearColorMapper(palette=bokeh_palette, low=c_min, high=c_max)
+                    fig.add_layout(ColorBar(color_mapper=mapper, title=traces[0].get("c_var", "color")), "right")
+
+            color_cycle = itertools.cycle(Category10_10)
+            for trace in traces:
+                color = next(color_cycle)
+                data = dict(
+                    x=trace["x"],
+                    y=trace["y"],
+                    label=[trace["file_label"]] * len(trace["x"]),
+                )
+                if "c" in trace:
+                    data["c"] = trace["c"]
+                src = ColumnDataSource(data=data)
+                if mapper is not None and "c" in trace:
+                    fig.circle(
+                        x="x",
+                        y="y",
+                        source=src,
+                        size=5,
+                        alpha=0.8,
+                            color=linear_cmap("c", bokeh_palette, mapper.low, mapper.high),
+                        legend_label=trace["file_label"],
+                        muted_alpha=0.1,
+                    )
+                else:
+                    fig.circle(
+                        x="x",
+                        y="y",
+                        source=src,
+                        size=5,
+                        alpha=0.8,
+                        color=color,
+                        legend_label=trace["file_label"],
+                        muted_alpha=0.1,
+                    )
+            fig.legend.click_policy = "mute"
+
+            if getattr(self, "embed_plot_cb", None) and self.embed_plot_cb.isChecked():
+                if self._temp_plot_file and os.path.exists(self._temp_plot_file):
+                    try:
+                        os.remove(self._temp_plot_file)
+                    except OSError:
+                        pass
+                html = file_html(fig, INLINE, title)
+                with tempfile.NamedTemporaryFile("w", delete=False, suffix=".html", encoding="utf-8") as tmp:
+                    tmp.write(html)
+                    tmp.flush()
+                    self._temp_plot_file = tmp.name
+                self.plot_view.load(QUrl.fromLocalFile(self._temp_plot_file))
+                self.plot_view.show()
+                self._remember_plot_call(self.plot_marked_axes)
+            else:
+                self.plot_view.hide()
+                show(fig)
+            return
+
+        if engine == "default":
+            import matplotlib.pyplot as plt
+
+            if use_3d:
+                fig = plt.figure(figsize=(10, 6))
+                ax = fig.add_subplot(111, projection="3d")
+                for trace in traces:
+                    z_vals = trace.get("z")
+                    if z_vals is None:
+                        continue
+                    if "c" in trace:
+                        sc = ax.scatter(
+                            trace["x"], trace["y"], z_vals,
+                            c=trace["c"], cmap=mpl_cmap, vmin=color_min, vmax=color_max,
+                            s=12, label=trace["file_label"]
+                        )
+                    else:
+                        sc = ax.scatter(trace["x"], trace["y"], z_vals, s=10, label=trace["file_label"])
+                ax.set_zlabel(axis_labels.get("z_var", "z"))
+            else:
+                fig, ax = plt.subplots(figsize=(10, 6))
+                for trace in traces:
+                    if "c" in trace:
+                        sc = ax.scatter(
+                            trace["x"], trace["y"],
+                            c=trace["c"], cmap=mpl_cmap, vmin=color_min, vmax=color_max,
+                            s=18, alpha=0.8, label=trace["file_label"]
+                        )
+                    else:
+                        sc = ax.scatter(trace["x"], trace["y"], s=14, alpha=0.8, label=trace["file_label"])
+            ax.set_title(title)
+            ax.set_xlabel(axis_labels["x_var"])
+            ax.set_ylabel(axis_labels["y_var"])
+            if any("c" in tr for tr in traces):
+                fig.colorbar(sc, ax=ax, label=axis_labels.get("c_var", "color"))
+            ax.legend(loc="best")
+            ax.grid(True, alpha=0.25)
+            fig.tight_layout()
+
+            if getattr(self, "embed_plot_cb", None) and self.embed_plot_cb.isChecked():
+                self._show_embedded_mpl_figure(fig)
+                self._remember_plot_call(self.plot_marked_axes)
+            else:
+                self.plot_view.hide()
+                fig.show()
+            return
+
+        # Plotly branch (default for non-"default"/non-"bokeh" engines)
+        import plotly.graph_objects as go
+        from plotly.io import to_html
+        import tempfile
+
+        fig = go.Figure()
+        has_color = any("c" in trace for trace in traces)
+        colorbar_drawn = False
+        for trace in traces:
+            label = trace["file_label"]
+            if use_3d and "z" in trace:
+                marker_cfg = dict()
+                if "c" in trace:
+                    marker_cfg = dict(
+                        color=trace.get("c"),
+                        colorscale=plotly_scale,
+                        cmin=color_min,
+                        cmax=color_max,
+                        showscale=not colorbar_drawn,
+                        colorbar=dict(
+                            title=trace.get("c_var", "color"),
+                            x=1.02,
+                            xanchor="left",
+                            y=0.5,
+                            len=0.8,
+                        ),
+                    )
+                    colorbar_drawn = True
+                fig.add_trace(
+                    go.Scatter3d(
+                        x=trace["x"],
+                        y=trace["y"],
+                        z=trace["z"],
+                        mode="markers",
+                        name=label,
+                        marker=marker_cfg or None,
+                    )
+                )
+            else:
+                marker = dict(size=7)
+                if "c" in trace:
+                    marker.update(
+                        color=trace["c"],
+                        colorscale=plotly_scale,
+                        cmin=color_min,
+                        cmax=color_max,
+                        showscale=not colorbar_drawn,
+                        colorbar=dict(
+                            title=trace.get("c_var", "color"),
+                            x=1.02,
+                            xanchor="left",
+                            y=0.5,
+                            len=0.8,
+                        ),
+                    )
+                    colorbar_drawn = True
+                fig.add_trace(go.Scatter(x=trace["x"], y=trace["y"], mode="markers", name=label, marker=marker))
+
+        layout_kwargs = {
+            "title": title,
+            "xaxis_title": axis_labels["x_var"],
+            "yaxis_title": axis_labels["y_var"],
+            "template": "plotly_dark" if self.theme_switch.isChecked() else "plotly",
+            "margin": dict(r=260 if has_color else 180),
+            "legend": dict(
+                x=1.18 if has_color else 1.02,
+                xanchor="left",
+                y=1.0,
+                yanchor="top",
+                bgcolor="rgba(0,0,0,0)",
+            ),
+        }
+        if use_3d:
+            layout_kwargs["scene"] = dict(
+                xaxis_title=axis_labels["x_var"],
+                yaxis_title=axis_labels["y_var"],
+                zaxis_title=axis_labels.get("z_var", "z"),
+            )
+        fig.update_layout(**layout_kwargs)
+
+        if getattr(self, "embed_plot_cb", None) and self.embed_plot_cb.isChecked():
+            if self._temp_plot_file and os.path.exists(self._temp_plot_file):
+                try:
+                    os.remove(self._temp_plot_file)
+                except OSError:
+                    pass
+            html = to_html(fig, include_plotlyjs=True, full_html=True)
+            with tempfile.NamedTemporaryFile("w", delete=False, suffix=".html", encoding="utf-8") as tmp:
+                tmp.write(html)
+                tmp.flush()
+                self._temp_plot_file = tmp.name
+            self.plot_view.load(QUrl.fromLocalFile(self._temp_plot_file))
+            self.plot_view.show()
+            self._remember_plot_call(self.plot_marked_axes)
+        else:
+            self.plot_view.hide()
+            fig.show(renderer="browser")
+
+    def animate_marked_axes(self):
+        """Animate scatter points over time for variables marked as x/y(/z)."""
+        import os
+        import tempfile
+        import plotly.express as px
+        from plotly.io import to_html
+
+        left = self.label_trim_left.value() if hasattr(self, "label_trim_left") else 10
+        right = self.label_trim_right.value() if hasattr(self, "label_trim_right") else 60
+        def _disp(label: str) -> str:
+            return self._trim_label(str(label), left, right)
+
+        role_entries = {"x": [], "y": [], "z": [], "color": []}
+        for key, entry in self.var_offsets.items():
+            if entry is None:
+                continue
+            role = entry.text().strip().lower()
+            if role == "c":
+                role = "color"
+            if role in role_entries:
+                role_entries[role].append(key)
+
+        if not role_entries["x"] or not role_entries["y"]:
+            QMessageBox.warning(
+                self,
+                "Animate X/Y(/Z)",
+                'Mark one variable as "x" and one as "y" in the input fields.',
+            )
+            return
+
+        def _expand_key(series_key: str):
+            expanded = []
+            if "::" in series_key:
+                fname, var = series_key.split("::", 1)
+                for file_idx, fp in enumerate(self.file_paths):
+                    if os.path.basename(fp) == fname:
+                        expanded.append((file_idx, var))
+            elif ":" in series_key:
+                fname, var = series_key.split(":", 1)
+                for file_idx, fp in enumerate(self.file_paths):
+                    if os.path.basename(fp) == fname:
+                        expanded.append((file_idx, var))
+            else:
+                for file_idx, tsdb in enumerate(self.tsdbs):
+                    if series_key in tsdb.getm():
+                        expanded.append((file_idx, series_key))
+            return expanded
+
+        role_per_file: dict[int, dict[str, str]] = {}
+        conflicts = []
+        for role, keys in role_entries.items():
+            for key in keys:
+                for file_idx, var_name in _expand_key(key):
+                    bucket = role_per_file.setdefault(file_idx, {})
+                    if role in bucket and bucket[role] != var_name:
+                        conflicts.append(
+                            f'File {file_idx + 1}: multiple "{role}" variables '
+                            f'({bucket[role]}, {var_name})'
+                        )
+                    else:
+                        bucket[role] = var_name
+
+        if conflicts:
+            QMessageBox.warning(
+                self,
+                "Animate X/Y(/Z)",
+                "Resolve marked-axis conflicts before animating:\n\n" + "\n".join(conflicts),
+            )
+            return
+
+        rows = []
+        use_3d = False
+        for file_idx, roles in sorted(role_per_file.items()):
+            if "x" not in roles or "y" not in roles:
+                continue
+            tsdb = self.tsdbs[file_idx]
+            x_ts = tsdb.getm().get(roles["x"])
+            y_ts = tsdb.getm().get(roles["y"])
+            z_ts = tsdb.getm().get(roles["z"]) if "z" in roles else None
+            c_ts = tsdb.getm().get(roles["color"]) if "color" in roles else None
+            if x_ts is None or y_ts is None:
+                continue
+
+            x_vals = np.asarray(x_ts.x)
+            y_vals = np.asarray(y_ts.x)
+            min_len = min(len(x_vals), len(y_vals))
+            if z_ts is not None:
+                min_len = min(min_len, len(z_ts.x))
+            if c_ts is not None:
+                min_len = min(min_len, len(c_ts.x))
+            if min_len <= 0:
+                continue
+
+            t_vals = np.asarray(x_ts.t)[:min_len]
+            x_vals = x_vals[:min_len]
+            y_vals = y_vals[:min_len]
+            z_vals = np.asarray(z_ts.x)[:min_len] if z_ts is not None else None
+            c_vals = np.asarray(c_ts.x)[:min_len] if c_ts is not None else None
+            if z_vals is not None:
+                use_3d = True
+
+            ts_for_window = TimeSeries(
+                "__xy_anim_window__",
+                t_vals,
+                np.zeros(len(t_vals)),
+                dtg_ref=getattr(x_ts, "dtg_ref", None),
+            )
+            mask = self.get_time_window(ts_for_window)
+            if isinstance(mask, slice):
+                t_vals, x_vals, y_vals = t_vals[mask], x_vals[mask], y_vals[mask]
+                if z_vals is not None:
+                    z_vals = z_vals[mask]
+                if c_vals is not None:
+                    c_vals = c_vals[mask]
+            else:
+                mask_arr = np.asarray(mask)
+                if not mask_arr.any():
+                    continue
+                t_vals, x_vals, y_vals = t_vals[mask_arr], x_vals[mask_arr], y_vals[mask_arr]
+                if z_vals is not None:
+                    z_vals = z_vals[mask_arr]
+                if c_vals is not None:
+                    c_vals = c_vals[mask_arr]
+            if len(x_vals) == 0:
+                continue
+
+            time_labels = []
+            for t in t_vals:
+                if isinstance(t, (np.datetime64, pd.Timestamp)):
+                    time_labels.append(str(pd.Timestamp(t)))
+                else:
+                    time_labels.append(f"{float(t):.6g}")
+
+            data = {
+                "time": time_labels,
+                "x": x_vals,
+                "y": y_vals,
+                "series": [_disp(f"F{file_idx + 1}: {os.path.basename(self.file_paths[file_idx])}")] * len(x_vals),
+            }
+            if z_vals is not None:
+                data["z"] = z_vals
+            if c_vals is not None:
+                data["color"] = c_vals
+            rows.append(pd.DataFrame(data))
+
+        if not rows:
+            QMessageBox.warning(
+                self,
+                "Animate X/Y(/Z)",
+                "No matching file with marked x/y variables could be animated.",
+            )
+            return
+
+        df = pd.concat(rows, ignore_index=True)
+        engine = (
+            self.plot_engine_combo.currentText()
+            if hasattr(self, "plot_engine_combo")
+            else "plotly"
+        ).lower()
+        plotly_scale = self._plotly_colorscale_name()
+        mpl_cmap = self._selected_colormap()
+        bokeh_palette = self._bokeh_palette_name()
+        manual_cmin, manual_cmax = self._manual_colormap_limits()
+        axis_role_map = role_per_file[next(iter(role_per_file))]
+        x_label = _disp(axis_role_map.get("x", "x"))
+        y_label = _disp(axis_role_map.get("y", "y"))
+        z_label = _disp(axis_role_map.get("z", "z"))
+
+        if engine == "default":
+            import matplotlib.pyplot as plt
+            from matplotlib.animation import FuncAnimation
+
+            frame_times = list(dict.fromkeys(df["time"].tolist()))
+            if not frame_times:
+                QMessageBox.warning(self, "Animate X/Y(/Z)", "No animation frames available.")
+                return
+
+            x_min, x_max = float(df["x"].min()), float(df["x"].max())
+            y_min, y_max = float(df["y"].min()), float(df["y"].max())
+            color_min = None
+            color_max = None
+            if "color" in df.columns:
+                all_colors = np.asarray(df["color"])
+                color_min, color_max = self._resolve_colormap_limits(all_colors, manual_cmin, manual_cmax)
+                if self.clip_mode_combo.currentText() != "No clipping":
+                    clip_mask = self._color_clip_mask(np.asarray(df["color"]), color_min, color_max)
+                    df = df[clip_mask].copy()
+                    if df.empty:
+                        QMessageBox.warning(
+                            self,
+                            "Animate X/Y(/Z)",
+                            "No points remain after clipping with Color Min/Max.",
+                        )
+                        return
+            if abs(x_max - x_min) < 1e-12:
+                x_min, x_max = x_min - 0.5, x_max + 0.5
+            if abs(y_max - y_min) < 1e-12:
+                y_min, y_max = y_min - 0.5, y_max + 0.5
+
+            if use_3d and "z" in df.columns:
+                fig = plt.figure(figsize=(10, 6))
+                ax = fig.add_subplot(111, projection="3d")
+                z_min, z_max = float(df["z"].min()), float(df["z"].max())
+                if abs(z_max - z_min) < 1e-12:
+                    z_min, z_max = z_min - 0.5, z_max + 0.5
+                ax.set_xlim(x_min, x_max)
+                ax.set_ylim(y_min, y_max)
+                ax.set_zlim(z_min, z_max)
+                scat = ax.scatter([], [], [], s=18, cmap=mpl_cmap, vmin=color_min, vmax=color_max)
+                time_text = ax.text2D(0.02, 0.95, "", transform=ax.transAxes)
+
+                def _update(frame_idx):
+                    dff = df[df["time"] == frame_times[frame_idx]]
+                    if "color" in dff.columns:
+                        scat._A = np.asarray(dff["color"])
+                        scat.set_array(np.asarray(dff["color"]))
+                    scat._offsets3d = (
+                        np.asarray(dff["x"]),
+                        np.asarray(dff["y"]),
+                        np.asarray(dff["z"]),
+                    )
+                    time_text.set_text(f"time: {frame_times[frame_idx]}")
+                    return scat, time_text
+            else:
+                fig, ax = plt.subplots(figsize=(10, 6))
+                ax.set_xlim(x_min, x_max)
+                ax.set_ylim(y_min, y_max)
+                scat = ax.scatter([], [], s=24, cmap=mpl_cmap, vmin=color_min, vmax=color_max)
+                time_text = ax.text(0.02, 0.95, "", transform=ax.transAxes)
+
+                def _update(frame_idx):
+                    dff = df[df["time"] == frame_times[frame_idx]]
+                    xy = np.column_stack((np.asarray(dff["x"]), np.asarray(dff["y"])))
+                    scat.set_offsets(xy)
+                    if "color" in dff.columns:
+                        scat.set_array(np.asarray(dff["color"]))
+                    time_text.set_text(f"time: {frame_times[frame_idx]}")
+                    return scat, time_text
+
+            ax.set_title("Animated scatter plot from marked axes")
+            ax.set_xlabel(x_label)
+            ax.set_ylabel(y_label)
+            if use_3d and "z" in df.columns:
+                ax.set_zlabel(z_label)
+            ax.grid(True, alpha=0.25)
+            if "color" in df.columns:
+                fig.colorbar(scat, ax=ax, label="color")
+            ani = FuncAnimation(fig, _update, frames=len(frame_times), interval=120, blit=False, repeat=True)
+            # Keep a reference to avoid garbage collection.
+            self._marked_axes_animation = ani
+            self.plot_view.hide()
+            fig.show()
+            return
+
+        if engine == "bokeh":
+            from bokeh.layouts import column
+            from bokeh.models import ColumnDataSource, CustomJS, HoverTool, Slider
+            from bokeh.plotting import figure, show
+            from bokeh.embed import file_html
+            from bokeh.resources import INLINE
+            from bokeh.transform import linear_cmap
+            import tempfile
+
+            frame_times = list(dict.fromkeys(df["time"].tolist()))
+            if not frame_times:
+                QMessageBox.warning(self, "Animate X/Y(/Z)", "No animation frames available.")
+                return
+
+            first = df[df["time"] == frame_times[0]]
+            src = ColumnDataSource(
+                data=dict(
+                    x=np.asarray(first["x"]),
+                    y=np.asarray(first["y"]),
+                    c=np.asarray(first["color"]) if "color" in first.columns else np.zeros(len(first)),
+                    series=np.asarray(first["series"]),
+                )
+            )
+
+            p = figure(
+                width=900,
+                height=450,
+                title="Animated scatter plot from marked axes",
+                x_axis_label=x_label,
+                y_axis_label=y_label,
+                tools="pan,wheel_zoom,box_zoom,reset,save",
+                sizing_mode="stretch_both",
+            )
+            if self.theme_switch.isChecked():
+                p.background_fill_color = "#2b2b2b"
+                p.border_fill_color = "#2b2b2b"
+            p.add_tools(HoverTool(tooltips=[("Series", "@series"), ("x", "@x"), ("y", "@y"), ("c", "@c")]))
+            if "color" in df.columns:
+                c_min = float(df["color"].min())
+                c_max = float(df["color"].max())
+                if manual_cmin is not None:
+                    c_min = manual_cmin
+                if manual_cmax is not None:
+                    c_max = manual_cmax
+                if abs(c_max - c_min) < 1e-12:
+                    c_max = c_min + 1.0
+                p.circle(
+                    "x",
+                    "y",
+                    source=src,
+                    size=7,
+                    alpha=0.85,
+                    color=linear_cmap("c", bokeh_palette, c_min, c_max),
+                )
+            else:
+                p.circle("x", "y", source=src, size=7, alpha=0.85)
+
+            slider = Slider(start=0, end=len(frame_times) - 1, value=0, step=1, title="Frame")
+            full_data = dict(
+                time=df["time"].tolist(),
+                x=df["x"].tolist(),
+                y=df["y"].tolist(),
+                c=df["color"].tolist() if "color" in df.columns else [0.0] * len(df),
+                series=df["series"].tolist(),
+            )
+            slider.js_on_change(
+                "value",
+                CustomJS(
+                    args=dict(src=src, all_data=full_data, frames=frame_times),
+                    code="""
+                    const target = frames[cb_obj.value];
+                    const x = [], y = [], c = [], s = [];
+                    for (let i = 0; i < all_data.time.length; i++) {
+                        if (all_data.time[i] === target) {
+                            x.push(all_data.x[i]);
+                            y.push(all_data.y[i]);
+                            c.push(all_data.c[i]);
+                            s.push(all_data.series[i]);
+                        }
+                    }
+                    src.data = {x:x, y:y, c:c, series:s};
+                    src.change.emit();
+                """,
+                ),
+            )
+            layout = column(slider, p, sizing_mode="stretch_both")
+            if getattr(self, "embed_plot_cb", None) and self.embed_plot_cb.isChecked():
+                if self._temp_plot_file and os.path.exists(self._temp_plot_file):
+                    try:
+                        os.remove(self._temp_plot_file)
+                    except OSError:
+                        pass
+                html = file_html(layout, INLINE, "Animated scatter plot from marked axes")
+                with tempfile.NamedTemporaryFile("w", delete=False, suffix=".html", encoding="utf-8") as tmp:
+                    tmp.write(html)
+                    tmp.flush()
+                    self._temp_plot_file = tmp.name
+                self.plot_view.load(QUrl.fromLocalFile(self._temp_plot_file))
+                self.plot_view.show()
+                self._remember_plot_call(self.animate_marked_axes)
+            else:
+                self.plot_view.hide()
+                show(layout)
+            return
+
+        base_kwargs = dict(
+            data_frame=df,
+            x="x",
+            y="y",
+            animation_frame="time",
+            animation_group="series",
+            hover_name="series",
+            title="Animated scatter plot from marked axes",
+            template="plotly_dark" if self.theme_switch.isChecked() else "plotly",
+        )
+        if "color" in df.columns:
+            base_kwargs["color"] = "color"
+            base_kwargs["color_continuous_scale"] = plotly_scale
+            color_min = float(df["color"].min())
+            color_max = float(df["color"].max())
+            if manual_cmin is not None:
+                color_min = manual_cmin
+            if manual_cmax is not None:
+                color_max = manual_cmax
+            if abs(color_max - color_min) < 1e-12:
+                color_max = color_min + 1.0
+            base_kwargs["range_color"] = [color_min, color_max]
+        else:
+            base_kwargs["color"] = "series"
+
+        if use_3d and "z" in df.columns:
+            fig = px.scatter_3d(**base_kwargs, z="z")
+        else:
+            fig = px.scatter(**base_kwargs)
+
+        # Keep axis limits fixed for all animation frames.
+        x_min, x_max = float(df["x"].min()), float(df["x"].max())
+        y_min, y_max = float(df["y"].min()), float(df["y"].max())
+        if abs(x_max - x_min) < 1e-12:
+            x_min, x_max = x_min - 0.5, x_max + 0.5
+        if abs(y_max - y_min) < 1e-12:
+            y_min, y_max = y_min - 0.5, y_max + 0.5
+
+        fig.update_layout(
+            xaxis_title=x_label,
+            yaxis_title=y_label,
+        )
+        fig.update_xaxes(range=[x_min, x_max])
+        fig.update_yaxes(range=[y_min, y_max])
+        if use_3d and "z" in df.columns:
+            z_min, z_max = float(df["z"].min()), float(df["z"].max())
+            if abs(z_max - z_min) < 1e-12:
+                z_min, z_max = z_min - 0.5, z_max + 0.5
+            fig.update_layout(
+                scene=dict(
+                    xaxis_title=x_label,
+                    yaxis_title=y_label,
+                    zaxis_title=z_label,
+                    xaxis=dict(range=[x_min, x_max], autorange=False),
+                    yaxis=dict(range=[y_min, y_max], autorange=False),
+                    zaxis=dict(range=[z_min, z_max], autorange=False),
+                    aspectmode="data",
+                )
+            )
+
+        if getattr(self, "embed_plot_cb", None) and self.embed_plot_cb.isChecked():
+            if self._temp_plot_file and os.path.exists(self._temp_plot_file):
+                try:
+                    os.remove(self._temp_plot_file)
+                except OSError:
+                    pass
+            html = to_html(fig, include_plotlyjs=True, full_html=True)
+            with tempfile.NamedTemporaryFile("w", delete=False, suffix=".html", encoding="utf-8") as tmp:
+                tmp.write(html)
+                tmp.flush()
+                self._temp_plot_file = tmp.name
+            self.plot_view.load(QUrl.fromLocalFile(self._temp_plot_file))
+            self.plot_view.show()
+            self._remember_plot_call(self.animate_marked_axes)
+        else:
+            self.plot_view.hide()
+            fig.show(renderer="browser")
 
     def get_selected_keys(self):
         """Return all checked variables from all VariableTabs except User Variables."""
@@ -3900,7 +4985,7 @@ class TimeSeriesEditorQt(QMainWindow):
             else:
                 self._clear_mpl_embed()
                 self.plot_view.hide()
-                fig.show()
+                self._show_mpl_figure_window(fig)
             return
         if mode in ("time", "rolling"):
             if not traces:
@@ -3955,7 +5040,7 @@ class TimeSeriesEditorQt(QMainWindow):
                         fig.canvas.manager.set_window_title("AnyTimeSeries plot")
                 except Exception:
                     pass
-                fig.show()
+                self._show_mpl_figure_window(fig)
 
     @staticmethod
     def _resample(t, y, dt, *, start=None, stop=None):
@@ -4471,7 +5556,7 @@ class TimeSeriesEditorQt(QMainWindow):
         else:
             self._clear_mpl_embed()
             self.plot_view.hide()
-            plt.show()
+            self._show_mpl_figure_window(fig)
 
     def _time_values_for_plot(self, ts: TimeSeries):
         """Return datetime values for plotting when enabled and available."""
@@ -5328,6 +6413,27 @@ class TimeSeriesEditorQt(QMainWindow):
             # Refresh layout so the appropriate widget is shown
             self.toggle_embed_layout(True)
 
+    def _show_mpl_figure_window(self, fig):
+        """Show a Matplotlib figure in a desktop window when not embedding.
+
+        ``Figure.show()`` can raise for figures not managed by pyplot.
+        Prefer the canvas manager when available, then fall back to non-blocking
+        pyplot display.
+        """
+        try:
+            manager = getattr(fig.canvas, "manager", None)
+            if manager is not None and hasattr(manager, "show"):
+                manager.show()
+                return
+        except Exception:
+            pass
+
+        try:
+            plt.figure(fig.number)
+            plt.show(block=False)
+        except Exception:
+            pass
+
     def _clear_mpl_embed(self):
         """Remove any embedded Matplotlib canvas and toolbar."""
         if self._mpl_toolbar is not None:
@@ -5366,7 +6472,9 @@ class TimeSeriesEditorQt(QMainWindow):
 
         if checked:
             if self.extra_widget.parent() is None:
-                self.top_row_layout.addWidget(self.extra_widget)
+                self.top_row_splitter.addWidget(self.extra_widget)
+                self.top_row_splitter.setStretchFactor(1, 3)
+                self._apply_secondary_splitters()
 
             if self.progress.parent() is self.controls_widget:
                 self.controls_layout.removeWidget(self.progress)
@@ -5422,17 +6530,15 @@ class TimeSeriesEditorQt(QMainWindow):
                     self._mpl_toolbar.hide()
                 if self._mpl_canvas is not None:
                     self._mpl_canvas.hide()
+            self._apply_secondary_splitters()
         else:
             self.plot_view.hide()
             if self._mpl_toolbar is not None:
                 self._mpl_toolbar.hide()
             if self._mpl_canvas is not None:
                 self._mpl_canvas.hide()
-            if self.plot_view.parent() is self.extra_widget:
-                self.extra_layout.removeWidget(self.plot_view)
-                self.right_outer_layout.addWidget(self.plot_view)
             if self.extra_widget.parent() is not None:
-                self.top_row_layout.removeWidget(self.extra_widget)
+                self.top_row_splitter.widget(1).setParent(None)
                 self.extra_widget.setParent(None)
 
             if self.extra_layout.indexOf(self.progress_transform_row) != -1:
