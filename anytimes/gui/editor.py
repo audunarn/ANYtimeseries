@@ -497,9 +497,6 @@ class TimeSeriesEditorQt(QMainWindow):
         offset_meta_row = QHBoxLayout()
         offset_meta_row.addWidget(self.apply_value_user_var_cb)
         offset_meta_row.addStretch(1)
-        offset_meta_row.addWidget(self.colormap_min_label)
-        offset_meta_row.addSpacing(40)
-        offset_meta_row.addWidget(self.colormap_max_label)
         offset_layout.addLayout(offset_meta_row)
         self.apply_values_btn = QPushButton("Apply Values")
         self.clear_values_btn = QPushButton("Clear Values")
@@ -509,15 +506,42 @@ class TimeSeriesEditorQt(QMainWindow):
         self.colormap_combo = QComboBox()
         self.colormap_combo.addItems(["Viridis", "Plasma", "Inferno", "Magma", "Cividis", "Turbo", "hsv"])
         self.colormap_combo.setCurrentText("Viridis")
+        self.clip_mode_combo = QComboBox()
+        self.clip_mode_combo.addItems(
+            [
+                "No clipping",
+                "Clipping outside",
+                "Clipping inside",
+                "Clipping above max",
+                "Clipping below min",
+            ]
+        )
+        self.clip_mode_combo.setCurrentText("No clipping")
+        self.clip_mode_combo.setToolTip(
+            "Clipping mode for plotting only. If Color Min/Max is blank, defaults "
+            "from current data are used."
+        )
+        colormap_layout = QVBoxLayout()
+        colormap_layout.setSpacing(2)
+        colormap_layout.addWidget(self.colormap_label)
+        colormap_layout.addWidget(self.colormap_combo)
+        colormap_min_layout = QVBoxLayout()
+        colormap_min_layout.setSpacing(2)
+        colormap_min_layout.addWidget(self.colormap_min_label)
+        colormap_min_layout.addWidget(self.colormap_min_input)
+        colormap_max_layout = QVBoxLayout()
+        colormap_max_layout.setSpacing(2)
+        colormap_max_layout.addWidget(self.colormap_max_label)
+        colormap_max_layout.addWidget(self.colormap_max_input)
         apply_plot_row = QHBoxLayout()
         apply_plot_row.addWidget(self.apply_values_btn)
         apply_plot_row.addWidget(self.clear_values_btn)
         apply_plot_row.addWidget(self.plot_marked_axes_btn)
         apply_plot_row.addWidget(self.animate_marked_axes_btn)
-        apply_plot_row.addWidget(self.colormap_label)
-        apply_plot_row.addWidget(self.colormap_combo)
-        apply_plot_row.addWidget(self.colormap_min_input)
-        apply_plot_row.addWidget(self.colormap_max_input)
+        apply_plot_row.addLayout(colormap_layout)
+        apply_plot_row.addLayout(colormap_min_layout)
+        apply_plot_row.addLayout(colormap_max_layout)
+        apply_plot_row.addWidget(self.clip_mode_combo)
         offset_layout.addLayout(apply_plot_row)
         self.controls_layout.addWidget(offset_group)
 
@@ -1747,6 +1771,40 @@ class TimeSeriesEditorQt(QMainWindow):
             return None, None
         return cmin, cmax
 
+    @staticmethod
+    def _resolve_colormap_limits(
+        values: np.ndarray,
+        manual_cmin: float | None,
+        manual_cmax: float | None,
+    ) -> tuple[float, float]:
+        """Resolve colormap min/max using user input where provided."""
+        resolved_min = float(np.min(values))
+        resolved_max = float(np.max(values))
+        if manual_cmin is not None:
+            resolved_min = manual_cmin
+        if manual_cmax is not None:
+            resolved_max = manual_cmax
+        if abs(resolved_max - resolved_min) < 1e-12:
+            resolved_max = resolved_min + 1.0
+        return resolved_min, resolved_max
+
+    def _color_clip_mask(self, color_values: np.ndarray, cmin: float, cmax: float) -> np.ndarray:
+        """Return keep-mask according to the selected clipping mode."""
+        mode = (
+            self.clip_mode_combo.currentText().strip().lower()
+            if hasattr(self, "clip_mode_combo")
+            else "no clipping"
+        )
+        if mode == "clipping outside":
+            return (color_values >= cmin) & (color_values <= cmax)
+        if mode == "clipping inside":
+            return (color_values < cmin) | (color_values > cmax)
+        if mode == "clipping above max":
+            return color_values <= cmax
+        if mode == "clipping below min":
+            return color_values >= cmin
+        return np.ones(len(color_values), dtype=bool)
+
     def plot_marked_axes(self):
         """Scatter-plot variables marked as x/y/z in the variable input fields."""
         import os
@@ -1918,14 +1976,32 @@ class TimeSeriesEditorQt(QMainWindow):
         if has_color:
             all_c = np.concatenate([np.asarray(trace["c"]) for trace in traces if "c" in trace])
             if len(all_c):
-                color_min = float(np.min(all_c))
-                color_max = float(np.max(all_c))
-                if manual_cmin is not None:
-                    color_min = manual_cmin
-                if manual_cmax is not None:
-                    color_max = manual_cmax
-                if abs(color_max - color_min) < 1e-12:
-                    color_max = color_min + 1.0
+                color_min, color_max = self._resolve_colormap_limits(all_c, manual_cmin, manual_cmax)
+                if self.clip_mode_combo.currentText() != "No clipping":
+                    clipped_traces = []
+                    for trace in traces:
+                        if "c" not in trace:
+                            clipped_traces.append(trace)
+                            continue
+                        clip_mask = self._color_clip_mask(np.asarray(trace["c"]), color_min, color_max)
+                        if not np.any(clip_mask):
+                            continue
+                        clipped_trace = dict(trace)
+                        clipped_trace["t"] = trace["t"][clip_mask]
+                        clipped_trace["x"] = trace["x"][clip_mask]
+                        clipped_trace["y"] = trace["y"][clip_mask]
+                        clipped_trace["c"] = trace["c"][clip_mask]
+                        if "z" in trace:
+                            clipped_trace["z"] = trace["z"][clip_mask]
+                        clipped_traces.append(clipped_trace)
+                    traces = [trace for trace in clipped_traces if len(trace["x"]) > 0]
+                    if not traces:
+                        QMessageBox.warning(
+                            self,
+                            "Plot X/Y(/Z)",
+                            "No points remain after clipping with Color Min/Max.",
+                        )
+                        return
         title = "3D scatter plot (x, y, z)" if use_3d else "2D scatter plot (x, y)"
         axis_labels = traces[0]
         if engine == "bokeh" and use_3d:
@@ -2361,14 +2437,18 @@ class TimeSeriesEditorQt(QMainWindow):
             color_min = None
             color_max = None
             if "color" in df.columns:
-                color_min = float(df["color"].min())
-                color_max = float(df["color"].max())
-                if manual_cmin is not None:
-                    color_min = manual_cmin
-                if manual_cmax is not None:
-                    color_max = manual_cmax
-                if abs(color_max - color_min) < 1e-12:
-                    color_max = color_min + 1.0
+                all_colors = np.asarray(df["color"])
+                color_min, color_max = self._resolve_colormap_limits(all_colors, manual_cmin, manual_cmax)
+                if self.clip_mode_combo.currentText() != "No clipping":
+                    clip_mask = self._color_clip_mask(np.asarray(df["color"]), color_min, color_max)
+                    df = df[clip_mask].copy()
+                    if df.empty:
+                        QMessageBox.warning(
+                            self,
+                            "Animate X/Y(/Z)",
+                            "No points remain after clipping with Color Min/Max.",
+                        )
+                        return
             if abs(x_max - x_min) < 1e-12:
                 x_min, x_max = x_min - 0.5, x_max + 0.5
             if abs(y_max - y_min) < 1e-12:
