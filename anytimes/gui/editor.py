@@ -201,8 +201,8 @@ class TimeSeriesEditorQt(QMainWindow):
         super().__init__()
         self.setWindowTitle("AnytimeSeries - time series editor (Qt/PySide6)")
 
-        self._min_left_panel = 320
-        self._min_right_panel = 360
+        self._min_left_panel = 240
+        self._min_right_panel = 280
         self._splitter_ratio = 0.52
 
         self._updating_splitter = False
@@ -265,10 +265,11 @@ class TimeSeriesEditorQt(QMainWindow):
         left_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         left_layout = QVBoxLayout(left_widget)
 
-        # Quick navigation buttons
-        btn_row = QHBoxLayout()
-        btn_row.setContentsMargins(0, 0, 0, 0)
-        btn_row.setSpacing(6)
+        # Quick navigation buttons (2 rows × 2 columns so text fits).
+        btn_grid = QGridLayout()
+        btn_grid.setContentsMargins(0, 0, 0, 0)
+        btn_grid.setHorizontalSpacing(6)
+        btn_grid.setVerticalSpacing(4)
         self.goto_common_btn = QPushButton("Go to Common")
         self.goto_user_btn = QPushButton("Go to User Variables")
         self.unselect_all_btn = QPushButton("Unselect All")
@@ -281,11 +282,11 @@ class TimeSeriesEditorQt(QMainWindow):
             self.select_pos_btn,
         )
 
-        for btn in nav_buttons:
+        for idx, btn in enumerate(nav_buttons):
             btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             btn.setMinimumHeight(28)
-            btn_row.addWidget(btn)
-        left_layout.addLayout(btn_row)
+            btn_grid.addWidget(btn, idx // 2, idx % 2)
+        left_layout.addLayout(btn_grid)
 
         # Tab widget for variables (common, per-file, user)
         self.tabs = QTabWidget()
@@ -300,13 +301,15 @@ class TimeSeriesEditorQt(QMainWindow):
         # -----------------------
         right_widget = QWidget()
         right_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        # Use a vertical layout so an optional embedded plot can span
-
-        # the full width below the control sections when embedded
-
         self.right_outer_layout = QVBoxLayout(right_widget)
-        self.top_row_layout = QHBoxLayout()
-        self.right_outer_layout.addLayout(self.top_row_layout)
+        self.right_splitter = QSplitter(Qt.Vertical)
+        self.right_splitter.setChildrenCollapsible(False)
+        self.right_splitter.setHandleWidth(6)
+        self.right_outer_layout.addWidget(self.right_splitter)
+
+        self.top_row_splitter = QSplitter(Qt.Horizontal)
+        self.top_row_splitter.setChildrenCollapsible(False)
+        self.top_row_splitter.setHandleWidth(6)
 
         self.controls_widget = QWidget()
         self.controls_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -763,12 +766,13 @@ class TimeSeriesEditorQt(QMainWindow):
         self.controls_layout.addStretch(1)
         self.extra_layout.addItem(self.extra_stretch)
 
-        self.top_row_layout.addWidget(self.controls_widget)
-        # extra_widget will be inserted when embed is enabled
-        # Plot view occupies full width below the top row
-        self.right_outer_layout.addWidget(self.plot_view)
-        self.right_outer_layout.setStretch(0, 0)
-        self.right_outer_layout.setStretch(1, 1)
+        self.top_row_splitter.addWidget(self.controls_widget)
+        # extra_widget is inserted in toggle_embed_layout when embed is enabled
+        self.right_splitter.addWidget(self.top_row_splitter)
+        self.right_splitter.addWidget(self.plot_view)
+        self.right_splitter.setStretchFactor(0, 4)
+        self.right_splitter.setStretchFactor(1, 3)
+        self.top_row_splitter.setStretchFactor(0, 5)
         self.plot_view.hide()
         self.main_splitter.addWidget(right_widget)
         self.main_splitter.setStretchFactor(0, 1)
@@ -867,6 +871,7 @@ class TimeSeriesEditorQt(QMainWindow):
 
         self._apply_splitter_ratio()
         QTimer.singleShot(0, self._apply_splitter_ratio)
+        QTimer.singleShot(0, self._apply_secondary_splitters)
 
     def _apply_splitter_ratio(self) -> None:
         """Keep the main splitter proportions responsive when resizing."""
@@ -904,6 +909,13 @@ class TimeSeriesEditorQt(QMainWindow):
 
         ratio = sizes[0] / total
         self._splitter_ratio = max(0.15, min(0.85, ratio))
+
+    def _apply_secondary_splitters(self) -> None:
+        """Set startup sizes for nested splitters used in the right panel."""
+        if hasattr(self, "right_splitter"):
+            self.right_splitter.setSizes([520, 280])
+        if hasattr(self, "top_row_splitter"):
+            self.top_row_splitter.setSizes([920, 440])
 
     def resizeEvent(self, event):  # type: ignore[override]
         super().resizeEvent(event)
@@ -6331,7 +6343,9 @@ class TimeSeriesEditorQt(QMainWindow):
 
         if checked:
             if self.extra_widget.parent() is None:
-                self.top_row_layout.addWidget(self.extra_widget)
+                self.top_row_splitter.addWidget(self.extra_widget)
+                self.top_row_splitter.setStretchFactor(1, 3)
+                self._apply_secondary_splitters()
 
             if self.progress.parent() is self.controls_widget:
                 self.controls_layout.removeWidget(self.progress)
@@ -6387,17 +6401,15 @@ class TimeSeriesEditorQt(QMainWindow):
                     self._mpl_toolbar.hide()
                 if self._mpl_canvas is not None:
                     self._mpl_canvas.hide()
+            self._apply_secondary_splitters()
         else:
             self.plot_view.hide()
             if self._mpl_toolbar is not None:
                 self._mpl_toolbar.hide()
             if self._mpl_canvas is not None:
                 self._mpl_canvas.hide()
-            if self.plot_view.parent() is self.extra_widget:
-                self.extra_layout.removeWidget(self.plot_view)
-                self.right_outer_layout.addWidget(self.plot_view)
             if self.extra_widget.parent() is not None:
-                self.top_row_layout.removeWidget(self.extra_widget)
+                self.top_row_splitter.widget(1).setParent(None)
                 self.extra_widget.setParent(None)
 
             if self.extra_layout.indexOf(self.progress_transform_row) != -1:
