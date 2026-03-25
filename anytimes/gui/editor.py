@@ -933,10 +933,41 @@ class TimeSeriesEditorQt(QMainWindow):
             self.right_splitter.setSizes([520, 280])
         if hasattr(self, "top_row_splitter"):
             self.top_row_splitter.setSizes([920, 440])
+        self._fit_embedded_plot_height()
+
+    def _fit_embedded_plot_height(self) -> None:
+        """Keep the embedded plot directly below controls when resizing.
+
+        Without this adjustment, maximizing the window can leave extra blank
+        space between the bottom of the control groups and the embedded plot.
+        """
+        if not (
+            hasattr(self, "right_splitter")
+            and hasattr(self, "top_row_splitter")
+            and hasattr(self, "embed_plot_cb")
+            and self.embed_plot_cb.isChecked()
+        ):
+            return
+
+        total_height = self.right_splitter.size().height()
+        if total_height <= 1:
+            return
+
+        controls_height = max(
+            self.top_row_splitter.minimumSizeHint().height(),
+            self.top_row_splitter.sizeHint().height(),
+        )
+        plot_min_height = max(1, self.plot_view.minimumHeight())
+
+        max_controls_height = max(1, total_height - plot_min_height)
+        controls_height = max(1, min(controls_height, max_controls_height))
+        plot_height = max(1, total_height - controls_height)
+        self.right_splitter.setSizes([controls_height, plot_height])
 
     def resizeEvent(self, event):  # type: ignore[override]
         super().resizeEvent(event)
         self._apply_splitter_ratio()
+        self._fit_embedded_plot_height()
 
     def eventFilter(self, obj, event):
 
