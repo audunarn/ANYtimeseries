@@ -507,15 +507,26 @@ class TimeSeriesEditorQt(QMainWindow):
         self.colormap_combo = QComboBox()
         self.colormap_combo.addItems(["Viridis", "Plasma", "Inferno", "Magma", "Cividis", "Turbo"])
         self.colormap_combo.setCurrentText("Viridis")
+        self.clip_outside_range_btn = QPushButton("Clip outside range")
+        self.clip_outside_range_btn.setCheckable(True)
+        self.clip_outside_range_btn.setChecked(False)
+        self.clip_outside_range_btn.setToolTip(
+            "When enabled, plotting ignores points where color values are outside "
+            "Color Min/Max (missing min/max uses dataset default)."
+        )
+        colormap_layout = QVBoxLayout()
+        colormap_layout.setSpacing(2)
+        colormap_layout.addWidget(self.colormap_label)
+        colormap_layout.addWidget(self.colormap_combo)
         apply_plot_row = QHBoxLayout()
         apply_plot_row.addWidget(self.apply_values_btn)
         apply_plot_row.addWidget(self.clear_values_btn)
         apply_plot_row.addWidget(self.plot_marked_axes_btn)
         apply_plot_row.addWidget(self.animate_marked_axes_btn)
-        apply_plot_row.addWidget(self.colormap_label)
-        apply_plot_row.addWidget(self.colormap_combo)
+        apply_plot_row.addLayout(colormap_layout)
         apply_plot_row.addWidget(self.colormap_min_input)
         apply_plot_row.addWidget(self.colormap_max_input)
+        apply_plot_row.addWidget(self.clip_outside_range_btn)
         offset_layout.addLayout(apply_plot_row)
         self.controls_layout.addWidget(offset_group)
 
@@ -1712,6 +1723,23 @@ class TimeSeriesEditorQt(QMainWindow):
             return None, None
         return cmin, cmax
 
+    @staticmethod
+    def _resolve_colormap_limits(
+        values: np.ndarray,
+        manual_cmin: float | None,
+        manual_cmax: float | None,
+    ) -> tuple[float, float]:
+        """Resolve colormap min/max using user input where provided."""
+        resolved_min = float(np.min(values))
+        resolved_max = float(np.max(values))
+        if manual_cmin is not None:
+            resolved_min = manual_cmin
+        if manual_cmax is not None:
+            resolved_max = manual_cmax
+        if abs(resolved_max - resolved_min) < 1e-12:
+            resolved_max = resolved_min + 1.0
+        return resolved_min, resolved_max
+
     def plot_marked_axes(self):
         """Scatter-plot variables marked as x/y/z in the variable input fields."""
         import os
@@ -1878,14 +1906,32 @@ class TimeSeriesEditorQt(QMainWindow):
         if has_color:
             all_c = np.concatenate([np.asarray(trace["c"]) for trace in traces if "c" in trace])
             if len(all_c):
-                color_min = float(np.min(all_c))
-                color_max = float(np.max(all_c))
-                if manual_cmin is not None:
-                    color_min = manual_cmin
-                if manual_cmax is not None:
-                    color_max = manual_cmax
-                if abs(color_max - color_min) < 1e-12:
-                    color_max = color_min + 1.0
+                color_min, color_max = self._resolve_colormap_limits(all_c, manual_cmin, manual_cmax)
+                if self.clip_outside_range_btn.isChecked():
+                    clipped_traces = []
+                    for trace in traces:
+                        if "c" not in trace:
+                            clipped_traces.append(trace)
+                            continue
+                        clip_mask = (trace["c"] >= color_min) & (trace["c"] <= color_max)
+                        if not np.any(clip_mask):
+                            continue
+                        clipped_trace = dict(trace)
+                        clipped_trace["t"] = trace["t"][clip_mask]
+                        clipped_trace["x"] = trace["x"][clip_mask]
+                        clipped_trace["y"] = trace["y"][clip_mask]
+                        clipped_trace["c"] = trace["c"][clip_mask]
+                        if "z" in trace:
+                            clipped_trace["z"] = trace["z"][clip_mask]
+                        clipped_traces.append(clipped_trace)
+                    traces = [trace for trace in clipped_traces if len(trace["x"]) > 0]
+                    if not traces:
+                        QMessageBox.warning(
+                            self,
+                            "Plot X/Y(/Z)",
+                            "No points remain after clipping with Color Min/Max.",
+                        )
+                        return
         title = "3D scatter plot (x, y, z)" if use_3d else "2D scatter plot (x, y)"
         axis_labels = traces[0]
         if engine == "bokeh" and use_3d:
@@ -2312,14 +2358,17 @@ class TimeSeriesEditorQt(QMainWindow):
             color_min = None
             color_max = None
             if "color" in df.columns:
-                color_min = float(df["color"].min())
-                color_max = float(df["color"].max())
-                if manual_cmin is not None:
-                    color_min = manual_cmin
-                if manual_cmax is not None:
-                    color_max = manual_cmax
-                if abs(color_max - color_min) < 1e-12:
-                    color_max = color_min + 1.0
+                all_colors = np.asarray(df["color"])
+                color_min, color_max = self._resolve_colormap_limits(all_colors, manual_cmin, manual_cmax)
+                if self.clip_outside_range_btn.isChecked():
+                    df = df[(df["color"] >= color_min) & (df["color"] <= color_max)].copy()
+                    if df.empty:
+                        QMessageBox.warning(
+                            self,
+                            "Animate X/Y(/Z)",
+                            "No points remain after clipping with Color Min/Max.",
+                        )
+                        return
             if abs(x_max - x_min) < 1e-12:
                 x_min, x_max = x_min - 0.5, x_max + 0.5
             if abs(y_max - y_min) < 1e-12:
