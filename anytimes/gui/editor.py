@@ -455,16 +455,18 @@ class TimeSeriesEditorQt(QMainWindow):
         )
         row5.addWidget(self.shift_min_nz_btn)
         row5.addWidget(self.shift_common_max_btn)
-        transform_layout.addLayout(row5)
 
-        row6 = QHBoxLayout()
+
+        #row6 = QHBoxLayout()
         self.shift_x_start_zero_btn = QPushButton("Shift X Start → 0")
         self.shift_x_start_zero_btn.setToolTip(
             "Create a new series where the x-axis starts at zero by subtracting the initial x value."
         )
-        row6.addWidget(self.shift_x_start_zero_btn)
-        row6.addStretch(1)
-        transform_layout.addLayout(row6)
+        row5.addWidget(self.shift_x_start_zero_btn)
+        transform_layout.addLayout(row5)
+        #row6.addWidget(self.shift_x_start_zero_btn)
+        #row6.addStretch(1)
+        #transform_layout.addLayout(row6)
 
 
         # Progress bar is shown by itself unless the plot is embedded
@@ -505,7 +507,7 @@ class TimeSeriesEditorQt(QMainWindow):
         self.animate_marked_axes_btn = QPushButton("Animate X/Y(/Z)")
         self.colormap_label = QLabel("Colormap:")
         self.colormap_combo = QComboBox()
-        self.colormap_combo.addItems(["Viridis", "Plasma", "Inferno", "Magma", "Cividis", "Turbo"])
+        self.colormap_combo.addItems(["Viridis", "Plasma", "Inferno", "Magma", "Cividis", "Turbo", "hsv"])
         self.colormap_combo.setCurrentText("Viridis")
         apply_plot_row = QHBoxLayout()
         apply_plot_row.addWidget(self.apply_values_btn)
