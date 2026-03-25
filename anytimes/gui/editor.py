@@ -536,16 +536,18 @@ class TimeSeriesEditorQt(QMainWindow):
 
         # ---- File list group ----
         top_input_max_height = 220
-        file_group = QGroupBox("Loaded Files")
-        file_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        file_list_layout = QVBoxLayout(file_group)
+        top_input_group_max_height = 290
+        self.file_group = QGroupBox("Loaded Files")
+        self.file_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.file_group.setMaximumHeight(top_input_group_max_height)
+        file_list_layout = QVBoxLayout(self.file_group)
         self.file_list = QListWidget()
         self.file_list.setMinimumWidth(160)
         self.file_list.setMaximumHeight(top_input_max_height)
         self.remove_file_btn = QPushButton("Remove File")
         file_list_layout.addWidget(self.file_list)
         file_list_layout.addWidget(self.remove_file_btn)
-        self.controls_layout.addWidget(file_group)
+        self.controls_layout.addWidget(self.file_group)
 
         # ---- Time window controls ----
         time_group = QGroupBox("Time Window (for Plot/Stats/Transform)")
@@ -708,6 +710,7 @@ class TimeSeriesEditorQt(QMainWindow):
 
         # ---- Calculator ----
         self.calc_group = QGroupBox("Calculator")
+        self.calc_group.setMaximumHeight(top_input_group_max_height)
         calc_layout = QVBoxLayout(self.calc_group)
         calc_layout.addWidget(QLabel(
             "Define a new variable (e.g., result_name = f1_var1 + f2_var2) where f1 and f2 refer to file IDs in the loaded list (c_ common var, u_ user var)."
