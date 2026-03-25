@@ -495,6 +495,9 @@ class TimeSeriesEditorQt(QMainWindow):
         offset_meta_row = QHBoxLayout()
         offset_meta_row.addWidget(self.apply_value_user_var_cb)
         offset_meta_row.addStretch(1)
+        offset_meta_row.addWidget(self.colormap_min_label)
+        offset_meta_row.addSpacing(40)
+        offset_meta_row.addWidget(self.colormap_max_label)
         offset_layout.addLayout(offset_meta_row)
         self.apply_values_btn = QPushButton("Apply Values")
         self.clear_values_btn = QPushButton("Clear Values")
@@ -504,33 +507,15 @@ class TimeSeriesEditorQt(QMainWindow):
         self.colormap_combo = QComboBox()
         self.colormap_combo.addItems(["Viridis", "Plasma", "Inferno", "Magma", "Cividis", "Turbo"])
         self.colormap_combo.setCurrentText("Viridis")
-        self.clip_outside_range_cb = QCheckBox("Clip outside range")
-        self.clip_outside_range_cb.setChecked(False)
-        self.clip_outside_range_cb.setToolTip(
-            "When enabled, plotting ignores points where color values are outside "
-            "Color Min/Max (missing min/max uses dataset default)."
-        )
-        colormap_layout = QVBoxLayout()
-        colormap_layout.setSpacing(2)
-        colormap_layout.addWidget(self.colormap_label)
-        colormap_layout.addWidget(self.colormap_combo)
-        colormap_min_layout = QVBoxLayout()
-        colormap_min_layout.setSpacing(2)
-        colormap_min_layout.addWidget(self.colormap_min_label)
-        colormap_min_layout.addWidget(self.colormap_min_input)
-        colormap_max_layout = QVBoxLayout()
-        colormap_max_layout.setSpacing(2)
-        colormap_max_layout.addWidget(self.colormap_max_label)
-        colormap_max_layout.addWidget(self.colormap_max_input)
         apply_plot_row = QHBoxLayout()
         apply_plot_row.addWidget(self.apply_values_btn)
         apply_plot_row.addWidget(self.clear_values_btn)
         apply_plot_row.addWidget(self.plot_marked_axes_btn)
         apply_plot_row.addWidget(self.animate_marked_axes_btn)
-        apply_plot_row.addLayout(colormap_layout)
-        apply_plot_row.addLayout(colormap_min_layout)
-        apply_plot_row.addLayout(colormap_max_layout)
-        apply_plot_row.addWidget(self.clip_outside_range_cb)
+        apply_plot_row.addWidget(self.colormap_label)
+        apply_plot_row.addWidget(self.colormap_combo)
+        apply_plot_row.addWidget(self.colormap_min_input)
+        apply_plot_row.addWidget(self.colormap_max_input)
         offset_layout.addLayout(apply_plot_row)
         self.controls_layout.addWidget(offset_group)
 
@@ -1760,26 +1745,14 @@ class TimeSeriesEditorQt(QMainWindow):
             return None, None
         return cmin, cmax
 
-    @staticmethod
-    def _resolve_colormap_limits(
-        values: np.ndarray,
-        manual_cmin: float | None,
-        manual_cmax: float | None,
-    ) -> tuple[float, float]:
-        """Resolve colormap min/max using user input where provided."""
-        resolved_min = float(np.min(values))
-        resolved_max = float(np.max(values))
-        if manual_cmin is not None:
-            resolved_min = manual_cmin
-        if manual_cmax is not None:
-            resolved_max = manual_cmax
-        if abs(resolved_max - resolved_min) < 1e-12:
-            resolved_max = resolved_min + 1.0
-        return resolved_min, resolved_max
-
     def plot_marked_axes(self):
         """Scatter-plot variables marked as x/y/z in the variable input fields."""
         import os
+
+        left = self.label_trim_left.value() if hasattr(self, "label_trim_left") else 10
+        right = self.label_trim_right.value() if hasattr(self, "label_trim_right") else 60
+        def _disp(label: str) -> str:
+            return self._trim_label(str(label), left, right)
 
         self._clear_last_plot_call()
         role_entries = {"x": [], "y": [], "z": [], "color": []}
@@ -1866,16 +1839,16 @@ class TimeSeriesEditorQt(QMainWindow):
             t_vals = np.asarray(x_ts.t)[:min_len]
 
             trace = {
-                "file_label": f"F{file_idx + 1}: {os.path.basename(self.file_paths[file_idx])}",
-                "x_var": roles["x"],
-                "y_var": roles["y"],
+                "file_label": _disp(f"F{file_idx + 1}: {os.path.basename(self.file_paths[file_idx])}"),
+                "x_var": _disp(roles["x"]),
+                "y_var": _disp(roles["y"]),
                 "t": t_vals,
                 "x": x_vals,
                 "y": y_vals,
             }
             if c_ts is not None:
                 trace["c"] = np.asarray(c_ts.x)[:min_len]
-                trace["c_var"] = roles["color"]
+                trace["c_var"] = _disp(roles["color"])
             if z_ts is not None:
                 z_vals = np.asarray(z_ts.x)
                 min_len = min(min_len, len(z_vals))
@@ -1887,7 +1860,7 @@ class TimeSeriesEditorQt(QMainWindow):
                 if "c" in trace:
                     trace["c"] = trace["c"][:min_len]
                 trace["z"] = z_vals[:min_len]
-                trace["z_var"] = roles["z"]
+                trace["z_var"] = _disp(roles["z"])
                 use_3d = True
 
             # Respect the active time window (if any start/end input is given).
@@ -1943,32 +1916,14 @@ class TimeSeriesEditorQt(QMainWindow):
         if has_color:
             all_c = np.concatenate([np.asarray(trace["c"]) for trace in traces if "c" in trace])
             if len(all_c):
-                color_min, color_max = self._resolve_colormap_limits(all_c, manual_cmin, manual_cmax)
-                if self.clip_outside_range_cb.isChecked():
-                    clipped_traces = []
-                    for trace in traces:
-                        if "c" not in trace:
-                            clipped_traces.append(trace)
-                            continue
-                        clip_mask = (trace["c"] >= color_min) & (trace["c"] <= color_max)
-                        if not np.any(clip_mask):
-                            continue
-                        clipped_trace = dict(trace)
-                        clipped_trace["t"] = trace["t"][clip_mask]
-                        clipped_trace["x"] = trace["x"][clip_mask]
-                        clipped_trace["y"] = trace["y"][clip_mask]
-                        clipped_trace["c"] = trace["c"][clip_mask]
-                        if "z" in trace:
-                            clipped_trace["z"] = trace["z"][clip_mask]
-                        clipped_traces.append(clipped_trace)
-                    traces = [trace for trace in clipped_traces if len(trace["x"]) > 0]
-                    if not traces:
-                        QMessageBox.warning(
-                            self,
-                            "Plot X/Y(/Z)",
-                            "No points remain after clipping with Color Min/Max.",
-                        )
-                        return
+                color_min = float(np.min(all_c))
+                color_max = float(np.max(all_c))
+                if manual_cmin is not None:
+                    color_min = manual_cmin
+                if manual_cmax is not None:
+                    color_max = manual_cmax
+                if abs(color_max - color_min) < 1e-12:
+                    color_max = color_min + 1.0
         title = "3D scatter plot (x, y, z)" if use_3d else "2D scatter plot (x, y)"
         axis_labels = traces[0]
         if engine == "bokeh" and use_3d:
@@ -2229,6 +2184,11 @@ class TimeSeriesEditorQt(QMainWindow):
         import plotly.express as px
         from plotly.io import to_html
 
+        left = self.label_trim_left.value() if hasattr(self, "label_trim_left") else 10
+        right = self.label_trim_right.value() if hasattr(self, "label_trim_right") else 60
+        def _disp(label: str) -> str:
+            return self._trim_label(str(label), left, right)
+
         role_entries = {"x": [], "y": [], "z": [], "color": []}
         for key, entry in self.var_offsets.items():
             if entry is None:
@@ -2354,7 +2314,7 @@ class TimeSeriesEditorQt(QMainWindow):
                 "time": time_labels,
                 "x": x_vals,
                 "y": y_vals,
-                "series": [f"F{file_idx + 1}: {os.path.basename(self.file_paths[file_idx])}"] * len(x_vals),
+                "series": [_disp(f"F{file_idx + 1}: {os.path.basename(self.file_paths[file_idx])}")] * len(x_vals),
             }
             if z_vals is not None:
                 data["z"] = z_vals
@@ -2380,6 +2340,10 @@ class TimeSeriesEditorQt(QMainWindow):
         mpl_cmap = self._selected_colormap()
         bokeh_palette = self._bokeh_palette_name()
         manual_cmin, manual_cmax = self._manual_colormap_limits()
+        axis_role_map = role_per_file[next(iter(role_per_file))]
+        x_label = _disp(axis_role_map.get("x", "x"))
+        y_label = _disp(axis_role_map.get("y", "y"))
+        z_label = _disp(axis_role_map.get("z", "z"))
 
         if engine == "default":
             import matplotlib.pyplot as plt
@@ -2395,17 +2359,14 @@ class TimeSeriesEditorQt(QMainWindow):
             color_min = None
             color_max = None
             if "color" in df.columns:
-                all_colors = np.asarray(df["color"])
-                color_min, color_max = self._resolve_colormap_limits(all_colors, manual_cmin, manual_cmax)
-                if self.clip_outside_range_cb.isChecked():
-                    df = df[(df["color"] >= color_min) & (df["color"] <= color_max)].copy()
-                    if df.empty:
-                        QMessageBox.warning(
-                            self,
-                            "Animate X/Y(/Z)",
-                            "No points remain after clipping with Color Min/Max.",
-                        )
-                        return
+                color_min = float(df["color"].min())
+                color_max = float(df["color"].max())
+                if manual_cmin is not None:
+                    color_min = manual_cmin
+                if manual_cmax is not None:
+                    color_max = manual_cmax
+                if abs(color_max - color_min) < 1e-12:
+                    color_max = color_min + 1.0
             if abs(x_max - x_min) < 1e-12:
                 x_min, x_max = x_min - 0.5, x_max + 0.5
             if abs(y_max - y_min) < 1e-12:
@@ -2452,10 +2413,10 @@ class TimeSeriesEditorQt(QMainWindow):
                     return scat, time_text
 
             ax.set_title("Animated scatter plot from marked axes")
-            ax.set_xlabel(role_per_file[next(iter(role_per_file))].get("x", "x"))
-            ax.set_ylabel(role_per_file[next(iter(role_per_file))].get("y", "y"))
+            ax.set_xlabel(x_label)
+            ax.set_ylabel(y_label)
             if use_3d and "z" in df.columns:
-                ax.set_zlabel(role_per_file[next(iter(role_per_file))].get("z", "z"))
+                ax.set_zlabel(z_label)
             ax.grid(True, alpha=0.25)
             if "color" in df.columns:
                 fig.colorbar(scat, ax=ax, label="color")
@@ -2494,8 +2455,8 @@ class TimeSeriesEditorQt(QMainWindow):
                 width=900,
                 height=450,
                 title="Animated scatter plot from marked axes",
-                x_axis_label=role_per_file[next(iter(role_per_file))].get("x", "x"),
-                y_axis_label=role_per_file[next(iter(role_per_file))].get("y", "y"),
+                x_axis_label=x_label,
+                y_axis_label=y_label,
                 tools="pan,wheel_zoom,box_zoom,reset,save",
                 sizing_mode="stretch_both",
             )
@@ -2610,8 +2571,8 @@ class TimeSeriesEditorQt(QMainWindow):
             y_min, y_max = y_min - 0.5, y_max + 0.5
 
         fig.update_layout(
-            xaxis_title=role_per_file[next(iter(role_per_file))].get("x", "x"),
-            yaxis_title=role_per_file[next(iter(role_per_file))].get("y", "y"),
+            xaxis_title=x_label,
+            yaxis_title=y_label,
         )
         fig.update_xaxes(range=[x_min, x_max])
         fig.update_yaxes(range=[y_min, y_max])
@@ -2621,9 +2582,9 @@ class TimeSeriesEditorQt(QMainWindow):
                 z_min, z_max = z_min - 0.5, z_max + 0.5
             fig.update_layout(
                 scene=dict(
-                    xaxis_title=role_per_file[next(iter(role_per_file))].get("x", "x"),
-                    yaxis_title=role_per_file[next(iter(role_per_file))].get("y", "y"),
-                    zaxis_title=role_per_file[next(iter(role_per_file))].get("z", "z"),
+                    xaxis_title=x_label,
+                    yaxis_title=y_label,
+                    zaxis_title=z_label,
                     xaxis=dict(range=[x_min, x_max], autorange=False),
                     yaxis=dict(range=[y_min, y_max], autorange=False),
                     zaxis=dict(range=[z_min, z_max], autorange=False),
