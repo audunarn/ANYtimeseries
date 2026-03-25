@@ -481,6 +481,7 @@ class TimeSeriesEditorQt(QMainWindow):
         offset_layout = QVBoxLayout(offset_group)
         offset_examples = QLabel('Examples: add "+1 / 1" substract "-1" divide "/2" multiply "*2"   '
                                  'To plot 2D scatter input "x" and "y" in the fields. For 3D scatter also input "z".'
+                                 ' To include color coding input "c" or "color"'
                                  '  Use Animate button to plot single points over time.')
         offset_examples.setWordWrap(True)
         offset_layout.addWidget(offset_examples)
