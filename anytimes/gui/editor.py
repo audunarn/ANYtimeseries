@@ -794,6 +794,7 @@ class TimeSeriesEditorQt(QMainWindow):
         # themes toggle via ``apply_dark_palette``/``apply_light_palette``.
         self.plot_view.setStyleSheet("border:0px;")
         self._temp_plot_file = None  # temporary HTML used for embedded plots
+        self._plotly_load_finished_handler = None
         # Placeholder for embedded Matplotlib canvas
         self._mpl_canvas = None
         self._mpl_toolbar = None
@@ -2212,8 +2213,6 @@ class TimeSeriesEditorQt(QMainWindow):
 
         # Plotly branch (default for non-"default"/non-"bokeh" engines)
         import plotly.graph_objects as go
-        from plotly.io import to_html
-        import tempfile
 
         fig = go.Figure()
         has_color = any("c" in trace for trace in traces)
@@ -2291,19 +2290,11 @@ class TimeSeriesEditorQt(QMainWindow):
         fig.update_layout(**layout_kwargs)
 
         if getattr(self, "embed_plot_cb", None) and self.embed_plot_cb.isChecked():
-            if self._temp_plot_file and os.path.exists(self._temp_plot_file):
-                try:
-                    os.remove(self._temp_plot_file)
-                except OSError:
-                    pass
-            html = to_html(fig, include_plotlyjs=True, full_html=True)
-            with tempfile.NamedTemporaryFile("w", delete=False, suffix=".html", encoding="utf-8") as tmp:
-                tmp.write(html)
-                tmp.flush()
-                self._temp_plot_file = tmp.name
-            self.plot_view.load(QUrl.fromLocalFile(self._temp_plot_file))
-            self.plot_view.show()
-            self._remember_plot_call(self.plot_marked_axes)
+            self._show_embedded_plotly_figure(
+                fig,
+                self.plot_marked_axes,
+                requires_webgl=use_3d,
+            )
         else:
             self.plot_view.hide()
             fig.show(renderer="browser")
@@ -6522,6 +6513,80 @@ class TimeSeriesEditorQt(QMainWindow):
         self._mpl_toolbar.show()
         self._mpl_canvas.show()
         self.plot_view.hide()
+
+    def _show_embedded_plotly_figure(self, fig, remember_callback, *, requires_webgl=False):
+        """Render Plotly figure in the embedded web view, with optional WebGL fallback."""
+        import os
+        import tempfile
+        from plotly.io import to_html
+
+        if self._temp_plot_file and os.path.exists(self._temp_plot_file):
+            try:
+                os.remove(self._temp_plot_file)
+            except OSError:
+                pass
+        html = to_html(fig, include_plotlyjs=True, full_html=True)
+        with tempfile.NamedTemporaryFile("w", delete=False, suffix=".html", encoding="utf-8") as tmp:
+            tmp.write(html)
+            tmp.flush()
+            self._temp_plot_file = tmp.name
+
+        if self._plotly_load_finished_handler is not None:
+            try:
+                self.plot_view.loadFinished.disconnect(self._plotly_load_finished_handler)
+            except (RuntimeError, TypeError):
+                pass
+            self._plotly_load_finished_handler = None
+
+        self.plot_view.load(QUrl.fromLocalFile(self._temp_plot_file))
+        self.plot_view.show()
+        self._remember_plot_call(remember_callback)
+
+        if not requires_webgl:
+            return
+
+        def _on_load_finished(ok):
+            try:
+                self.plot_view.loadFinished.disconnect(_on_load_finished)
+            except (RuntimeError, TypeError):
+                pass
+            self._plotly_load_finished_handler = None
+            if not ok:
+                return
+
+            webgl_check_js = """
+                (function () {
+                    try {
+                        if (!window.WebGLRenderingContext) {
+                            return false;
+                        }
+                        var canvas = document.createElement('canvas');
+                        var gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+                        return !!gl;
+                    } catch (e) {
+                        return false;
+                    }
+                })();
+            """
+
+            def _on_webgl_check_done(webgl_supported):
+                if webgl_supported:
+                    return
+                self.plot_view.hide()
+                QMessageBox.warning(
+                    self,
+                    "WebGL unavailable",
+                    (
+                        "Embedded Plotly 3D plots require WebGL, but WebGL is not available in "
+                        "the embedded browser. Opening the plot in non-embedded mode instead."
+                    ),
+                )
+                fig.show(renderer="browser")
+
+            self.plot_view.page().runJavaScript(webgl_check_js, _on_webgl_check_done)
+
+        self._plotly_load_finished_handler = _on_load_finished
+        self.plot_view.loadFinished.connect(_on_load_finished)
 
     def toggle_embed_layout(self, state):
         """Re-arrange layout when the embed checkbox is toggled."""
