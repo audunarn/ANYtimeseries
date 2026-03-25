@@ -14,6 +14,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from contextlib import nullcontext
 from array import array
 from collections.abc import Callable, Sequence
+from matplotlib import pyplot as plt
 
 import anyqats as qats
 import numpy as np
@@ -200,8 +201,8 @@ class TimeSeriesEditorQt(QMainWindow):
         super().__init__()
         self.setWindowTitle("AnytimeSeries - time series editor (Qt/PySide6)")
 
-        self._min_left_panel = 320
-        self._min_right_panel = 360
+        self._min_left_panel = 240
+        self._min_right_panel = 280
         self._splitter_ratio = 0.52
 
         self._updating_splitter = False
@@ -264,10 +265,11 @@ class TimeSeriesEditorQt(QMainWindow):
         left_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         left_layout = QVBoxLayout(left_widget)
 
-        # Quick navigation buttons
-        btn_row = QHBoxLayout()
-        btn_row.setContentsMargins(0, 0, 0, 0)
-        btn_row.setSpacing(6)
+        # Quick navigation buttons (2 rows × 2 columns so text fits).
+        btn_grid = QGridLayout()
+        btn_grid.setContentsMargins(0, 0, 0, 0)
+        btn_grid.setHorizontalSpacing(6)
+        btn_grid.setVerticalSpacing(4)
         self.goto_common_btn = QPushButton("Go to Common")
         self.goto_user_btn = QPushButton("Go to User Variables")
         self.unselect_all_btn = QPushButton("Unselect All")
@@ -280,11 +282,11 @@ class TimeSeriesEditorQt(QMainWindow):
             self.select_pos_btn,
         )
 
-        for btn in nav_buttons:
+        for idx, btn in enumerate(nav_buttons):
             btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             btn.setMinimumHeight(28)
-            btn_row.addWidget(btn)
-        left_layout.addLayout(btn_row)
+            btn_grid.addWidget(btn, idx // 2, idx % 2)
+        left_layout.addLayout(btn_grid)
 
         # Tab widget for variables (common, per-file, user)
         self.tabs = QTabWidget()
@@ -299,13 +301,15 @@ class TimeSeriesEditorQt(QMainWindow):
         # -----------------------
         right_widget = QWidget()
         right_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        # Use a vertical layout so an optional embedded plot can span
-
-        # the full width below the control sections when embedded
-
         self.right_outer_layout = QVBoxLayout(right_widget)
-        self.top_row_layout = QHBoxLayout()
-        self.right_outer_layout.addLayout(self.top_row_layout)
+        self.right_splitter = QSplitter(Qt.Vertical)
+        self.right_splitter.setChildrenCollapsible(False)
+        self.right_splitter.setHandleWidth(6)
+        self.right_outer_layout.addWidget(self.right_splitter)
+
+        self.top_row_splitter = QSplitter(Qt.Horizontal)
+        self.top_row_splitter.setChildrenCollapsible(False)
+        self.top_row_splitter.setHandleWidth(6)
 
         self.controls_widget = QWidget()
         self.controls_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -473,7 +477,9 @@ class TimeSeriesEditorQt(QMainWindow):
         offset_group = QGroupBox("Apply operation from variable input fields")
         offset_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         offset_layout = QVBoxLayout(offset_group)
-        offset_examples = QLabel('Examples: add "+1 / 1" substract "-1" divide "/2" multiply "*2"')
+        offset_examples = QLabel('Examples: add "+1 / 1" substract "-1" divide "/2" multiply "*2"   '
+                                 'To plot 2D scatter input "x" and "y" in the fields. For 3D scatter also input "z".'
+                                 '  Use Animate button to plot single points over time.')
         offset_examples.setWordWrap(True)
         offset_layout.addWidget(offset_examples)
         self.apply_value_user_var_cb = QCheckBox("Create user variable instead of overwriting?")
@@ -514,15 +520,19 @@ class TimeSeriesEditorQt(QMainWindow):
         self.controls_layout.addWidget(offset_group)
 
         # ---- File list group ----
-        file_group = QGroupBox("Loaded Files")
-        file_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        file_list_layout = QVBoxLayout(file_group)
+        top_input_max_height = 220
+        top_input_group_max_height = 290
+        self.file_group = QGroupBox("Loaded Files")
+        self.file_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.file_group.setMaximumHeight(top_input_group_max_height)
+        file_list_layout = QVBoxLayout(self.file_group)
         self.file_list = QListWidget()
         self.file_list.setMinimumWidth(160)
+        self.file_list.setMaximumHeight(top_input_max_height)
         self.remove_file_btn = QPushButton("Remove File")
         file_list_layout.addWidget(self.file_list)
         file_list_layout.addWidget(self.remove_file_btn)
-        self.controls_layout.addWidget(file_group)
+        self.controls_layout.addWidget(self.file_group)
 
         # ---- Time window controls ----
         time_group = QGroupBox("Time Window (for Plot/Stats/Transform)")
@@ -608,21 +618,14 @@ class TimeSeriesEditorQt(QMainWindow):
         plot_btn_row = QHBoxLayout()
         self.plot_selected_btn = QPushButton("Plot Selected (one graph)")
         self.plot_side_by_side_btn = QPushButton("Plot Selected (side-by-side)")
-        grid_col = QVBoxLayout()
-        grid_col.addWidget(self.plot_side_by_side_btn)
         self.plot_same_axes_cb = QCheckBox("Same axes")
-        grid_col.addWidget(self.plot_same_axes_cb)
         self.plot_mean_btn = QPushButton("Plot Mean")
         self.plot_rolling_btn = QPushButton("Rolling Mean")
         self.animate_xyz_btn = QPushButton("Animate XYZ scatter (all points)")
 
-        selected_col = QVBoxLayout()
-        selected_col.addWidget(self.plot_selected_btn)
         self.plot_extrema_cb = QCheckBox("Mark max/min")
-        selected_col.addWidget(self.plot_extrema_cb)
-
-        plot_btn_row.addLayout(selected_col)
-        plot_btn_row.addLayout(grid_col)
+        plot_btn_row.addWidget(self.plot_selected_btn)
+        plot_btn_row.addWidget(self.plot_side_by_side_btn)
         plot_btn_row.addWidget(self.plot_mean_btn)
         plot_btn_row.addWidget(self.plot_rolling_btn)
         plot_btn_row.addWidget(self.animate_xyz_btn)
@@ -652,6 +655,8 @@ class TimeSeriesEditorQt(QMainWindow):
         plot_layout.addLayout(plot_btn_row)
         # Label trimming controls
         trim_row = QHBoxLayout()
+        trim_row.addWidget(self.plot_extrema_cb)
+        trim_row.addWidget(self.plot_same_axes_cb)
         trim_row.addWidget(QLabel("Trim label to keep:"))
         trim_row.addWidget(QLabel("Left:"))
         self.label_trim_left = QSpinBox()
@@ -690,11 +695,13 @@ class TimeSeriesEditorQt(QMainWindow):
 
         # ---- Calculator ----
         self.calc_group = QGroupBox("Calculator")
+        self.calc_group.setMaximumHeight(top_input_group_max_height)
         calc_layout = QVBoxLayout(self.calc_group)
         calc_layout.addWidget(QLabel(
             "Define a new variable (e.g., result_name = f1_var1 + f2_var2) where f1 and f2 refer to file IDs in the loaded list (c_ common var, u_ user var)."
         ))
         self.calc_entry = QTextEdit()
+        self.calc_entry.setMaximumHeight(top_input_max_height)
         calc_layout.addWidget(self.calc_entry)
         calc_btn_row = QHBoxLayout()
         self.calc_btn = QPushButton("Calculate")
@@ -724,17 +731,18 @@ class TimeSeriesEditorQt(QMainWindow):
         self.autocomplete_popup.installEventFilter(self)
 
         # ---- Analysis ----
-        self.analysis_group = QGroupBox("Analysis")
+        self.analysis_group = QGroupBox("Analysis for selected varables")
         self.analysis_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         analysis_layout = QVBoxLayout(self.analysis_group)
-        self.show_stats_btn = QPushButton("Show statistic for selected variables")
+        self.show_stats_btn = QPushButton("Statistics")
         self.show_stats_btn.clicked.connect(self.show_stats)
-        analysis_layout.addWidget(self.show_stats_btn)
+        #analysis_layout.addWidget(self.show_stats_btn)
         analysis_btn_row = QHBoxLayout()
         self.psd_btn = QPushButton("PSD")
         self.cycle_range_btn = QPushButton("Cycle Range")
         self.cycle_mean_btn = QPushButton("Range-Mean")
         self.cycle_mean3d_btn = QPushButton("Range-Mean 3-D")
+        analysis_btn_row.addWidget(self.show_stats_btn)
         analysis_btn_row.addWidget(self.psd_btn)
         analysis_btn_row.addWidget(self.cycle_range_btn)
         analysis_btn_row.addWidget(self.cycle_mean_btn)
@@ -760,12 +768,13 @@ class TimeSeriesEditorQt(QMainWindow):
         self.controls_layout.addStretch(1)
         self.extra_layout.addItem(self.extra_stretch)
 
-        self.top_row_layout.addWidget(self.controls_widget)
-        # extra_widget will be inserted when embed is enabled
-        # Plot view occupies full width below the top row
-        self.right_outer_layout.addWidget(self.plot_view)
-        self.right_outer_layout.setStretch(0, 0)
-        self.right_outer_layout.setStretch(1, 1)
+        self.top_row_splitter.addWidget(self.controls_widget)
+        # extra_widget is inserted in toggle_embed_layout when embed is enabled
+        self.right_splitter.addWidget(self.top_row_splitter)
+        self.right_splitter.addWidget(self.plot_view)
+        self.right_splitter.setStretchFactor(0, 4)
+        self.right_splitter.setStretchFactor(1, 3)
+        self.top_row_splitter.setStretchFactor(0, 5)
         self.plot_view.hide()
         self.main_splitter.addWidget(right_widget)
         self.main_splitter.setStretchFactor(0, 1)
@@ -864,6 +873,7 @@ class TimeSeriesEditorQt(QMainWindow):
 
         self._apply_splitter_ratio()
         QTimer.singleShot(0, self._apply_splitter_ratio)
+        QTimer.singleShot(0, self._apply_secondary_splitters)
 
     def _apply_splitter_ratio(self) -> None:
         """Keep the main splitter proportions responsive when resizing."""
@@ -902,9 +912,47 @@ class TimeSeriesEditorQt(QMainWindow):
         ratio = sizes[0] / total
         self._splitter_ratio = max(0.15, min(0.85, ratio))
 
+    def _apply_secondary_splitters(self) -> None:
+        """Set startup sizes for nested splitters used in the right panel."""
+        if hasattr(self, "right_splitter"):
+            self.right_splitter.setSizes([520, 280])
+        if hasattr(self, "top_row_splitter"):
+            self.top_row_splitter.setSizes([920, 440])
+        self._fit_embedded_plot_height()
+
+    def _fit_embedded_plot_height(self) -> None:
+        """Keep the embedded plot directly below controls when resizing.
+
+        Without this adjustment, maximizing the window can leave extra blank
+        space between the bottom of the control groups and the embedded plot.
+        """
+        if not (
+            hasattr(self, "right_splitter")
+            and hasattr(self, "top_row_splitter")
+            and hasattr(self, "embed_plot_cb")
+            and self.embed_plot_cb.isChecked()
+        ):
+            return
+
+        total_height = self.right_splitter.size().height()
+        if total_height <= 1:
+            return
+
+        controls_height = max(
+            self.top_row_splitter.minimumSizeHint().height(),
+            self.top_row_splitter.sizeHint().height(),
+        )
+        plot_min_height = max(1, self.plot_view.minimumHeight())
+
+        max_controls_height = max(1, total_height - plot_min_height)
+        controls_height = max(1, min(controls_height, max_controls_height))
+        plot_height = max(1, total_height - controls_height)
+        self.right_splitter.setSizes([controls_height, plot_height])
+
     def resizeEvent(self, event):  # type: ignore[override]
         super().resizeEvent(event)
         self._apply_splitter_ratio()
+        self._fit_embedded_plot_height()
 
     def eventFilter(self, obj, event):
 
@@ -4855,7 +4903,7 @@ class TimeSeriesEditorQt(QMainWindow):
             else:
                 self._clear_mpl_embed()
                 self.plot_view.hide()
-                fig.show()
+                self._show_mpl_figure_window(fig)
             return
         if mode in ("time", "rolling"):
             if not traces:
@@ -4910,7 +4958,7 @@ class TimeSeriesEditorQt(QMainWindow):
                         fig.canvas.manager.set_window_title("AnyTimeSeries plot")
                 except Exception:
                     pass
-                fig.show()
+                self._show_mpl_figure_window(fig)
 
     @staticmethod
     def _resample(t, y, dt, *, start=None, stop=None):
@@ -5426,7 +5474,7 @@ class TimeSeriesEditorQt(QMainWindow):
         else:
             self._clear_mpl_embed()
             self.plot_view.hide()
-            plt.show()
+            self._show_mpl_figure_window(fig)
 
     def _time_values_for_plot(self, ts: TimeSeries):
         """Return datetime values for plotting when enabled and available."""
@@ -6283,6 +6331,27 @@ class TimeSeriesEditorQt(QMainWindow):
             # Refresh layout so the appropriate widget is shown
             self.toggle_embed_layout(True)
 
+    def _show_mpl_figure_window(self, fig):
+        """Show a Matplotlib figure in a desktop window when not embedding.
+
+        ``Figure.show()`` can raise for figures not managed by pyplot.
+        Prefer the canvas manager when available, then fall back to non-blocking
+        pyplot display.
+        """
+        try:
+            manager = getattr(fig.canvas, "manager", None)
+            if manager is not None and hasattr(manager, "show"):
+                manager.show()
+                return
+        except Exception:
+            pass
+
+        try:
+            plt.figure(fig.number)
+            plt.show(block=False)
+        except Exception:
+            pass
+
     def _clear_mpl_embed(self):
         """Remove any embedded Matplotlib canvas and toolbar."""
         if self._mpl_toolbar is not None:
@@ -6321,7 +6390,9 @@ class TimeSeriesEditorQt(QMainWindow):
 
         if checked:
             if self.extra_widget.parent() is None:
-                self.top_row_layout.addWidget(self.extra_widget)
+                self.top_row_splitter.addWidget(self.extra_widget)
+                self.top_row_splitter.setStretchFactor(1, 3)
+                self._apply_secondary_splitters()
 
             if self.progress.parent() is self.controls_widget:
                 self.controls_layout.removeWidget(self.progress)
@@ -6377,17 +6448,15 @@ class TimeSeriesEditorQt(QMainWindow):
                     self._mpl_toolbar.hide()
                 if self._mpl_canvas is not None:
                     self._mpl_canvas.hide()
+            self._apply_secondary_splitters()
         else:
             self.plot_view.hide()
             if self._mpl_toolbar is not None:
                 self._mpl_toolbar.hide()
             if self._mpl_canvas is not None:
                 self._mpl_canvas.hide()
-            if self.plot_view.parent() is self.extra_widget:
-                self.extra_layout.removeWidget(self.plot_view)
-                self.right_outer_layout.addWidget(self.plot_view)
             if self.extra_widget.parent() is not None:
-                self.top_row_layout.removeWidget(self.extra_widget)
+                self.top_row_splitter.widget(1).setParent(None)
                 self.extra_widget.setParent(None)
 
             if self.extra_layout.indexOf(self.progress_transform_row) != -1:

@@ -1,6 +1,6 @@
 # ANYtimeSeries Documentation
 
-ANYtimeSeries is a Qt-based application for exploring and editing time-series data. This document provides an overview of the application's capabilities and how to get started.
+ANYtimeSeries is a Qt-based application for exploring, editing and analysing time-series data. This guide covers the complete current feature set in the GUI, plus the programmatic utilities exposed by the package.
 
 ## Installation
 
@@ -10,152 +10,174 @@ Install the package from PyPI:
 pip install anytimes
 ```
 
-The core dependencies (``numpy``, ``pandas``, ``scipy``, ``PySide6``, ``matplotlib`` and ``anyqats``) will be installed automatically.
+Core dependencies (including `numpy`, `pandas`, `scipy`, `PySide6`, `matplotlib`, `xarray`, `netCDF4` and `pyextremes`) are installed automatically.
 
 ## Launching the GUI
 
-After installation the GUI can be started from Python or from the command line.
+After installation, launch the editor either from Python:
 
 ```python
 from anytimes import anytimes_gui
 anytimes_gui.main()
 ```
 
-or simply:
+or from the command line:
 
 ```bash
 anytimes
+python -m anytimes
 ```
 
 ## Basic Workflow
 
-1. **Load data** – open one or more time-series files. The application automatically groups files with common variables for an efficient workflow. When loading OrcaFlex studies you can optionally preload `.sim` files so that object/variable listings appear instantly.
-2. **Inspect variables** – select variables and preview the data in table form.
-3. **Manipulate series** – apply predefined operations or build custom expressions to create new series.
-4. **Visualise** – choose from several plot types and engines (Plotly, Bokeh or Matplotlib) to explore the results.
-5. **Export** – save modified series for later use.
-
-## Advanced Features
-
-- Frequency filtering for noise reduction.
-- Equation-based transformations for complex processing.
-- Extreme value statistics and a statistics table summarising key metrics.
-- Support for OrcaFlex `.sim` files, including reusable selections and diffraction-based surface pressure extraction.
-- Configurable light and dark themes for comfortable viewing.
+1. **Load data** – import one or more time-series files. Files with shared variables are grouped into *Common* tabs to speed up cross-file comparisons.
+2. **Select and inspect variables** – tick variables of interest, apply offsets/scales, rename user variables and browse values.
+3. **Transform or calculate** – run quick transforms, equation-based updates or full calculator expressions.
+4. **Analyse and visualise** – create time plots, PSD/cycle plots, statistics tables, RAO estimates, fatigue summaries and extreme-value estimates.
+5. **Export** – save whole files, export selected channels to CSV, or open selected data in AnyQATS.
 
 ## Supported File Types
 
-The loader accepts a broad range of common formats:
+The file loader accepts:
 
-- Text and binary time-series: `csv`, `mat`, `dat`, `ts`, `h5`, `tda`, `asc`, `tdms`, `pkl`, `pickle`, `bin`.
-- Tabular data: `xlsx`, `json`, `feather`, `parquet`.
-- OrcaFlex simulation files: `.sim` with a dialog for selecting objects and variables.
+- **Time-series formats**: `csv`, `dat`, `ts`, `mat`, `h5`, `tda`, `asc`, `tdms`, `bin`, `pkl`, `pickle`.
+- **Tabular formats**: `xlsx`, `json`, `feather`, `parquet`.
+- **OrcaFlex simulations**: `.sim`, including object/variable selection and diffraction-based pressure extraction.
 
-## Button Reference
+## Main Window Controls
 
-### Variable navigation
-- **Go to Common / Go to User Variables** – scrolls to predefined sections in the variable list.
-- **Unselect All** – clears all check boxes.
-- **Select all by list pos.** – selects by row number across all tabs.
+### Variable navigation and selection
+- **Go to Common / Go to User Variables** – jump within variable tabs.
+- **Select All / Unselect All** – bulk tick/untick variables.
+- **Select all by list pos.** – tick variables by row index across tabs.
+- Per-variable controls include **input expressions**, **X/Y/Z markers**, and **Rename** (for user channels).
 
 ### File controls
-- **Load time series file** – open one or more data files.
-- **Save Files** – write all loaded series back to disk.
-- **Clear All** – remove every loaded file and variable.
-- **Save Values… / Load Values…** – store or restore current offsets and scaling factors.
-- **Export Selected to CSV** – export ticked variables; optional resampling via the adjacent `dt` field.
-- **Clear OrcaFlex Selection / Re-select OrcaFlex Variables** – manage previous `.sim` selections.
-- **Reuse OrcaFlex Selection** – toggle whether future `.sim` loads automatically apply the most recent selection.
-- **Dark Theme** – toggle light/dark appearance.
-- **Embed Plot** – draw plots inside the main window instead of a popup.
+- **Load time series file** – import one or many files.
+- **Save Files** – write all currently loaded series.
+- **Remove File / Clear All** – unload one file or reset the workspace.
+- **Save Values… / Load Values…** – persist/restore offset and scale settings.
+- **Export Selected to CSV** – write checked variables to one CSV, with optional resampling via `dt`.
+- **Clear OrcaFlex Selection / Re-select OrcaFlex Variables** – reset and reopen OrcaFlex picks.
+- **Reuse OrcaFlex Selection** – automatically apply the latest OrcaFlex object/variable mapping to future `.sim` files.
+- **Dark Theme** and **Embed Plot** – appearance/plot-hosting toggles.
+
+### Time-window controls
+- **Time Window Start/End** with **Reset** – restrict transforms, analysis and plotting to a chosen interval.
 
 ### Quick transformations
-- Multiply or divide by common factors (`1000`, `10`, `2`) or `-1`.
-- Convert between **Radians** and **Degrees**.
-- **Shift Mean → 0 / Shift Min to Zero** – translate series; optionally ignore the lowest 1 % of values.
-- **Sqrt(sum of squares)**, **Mean**, **Absolute**, **Rolling Avg** – derive a new series from the selection.
-- **Shift Min → 0 : if repeted minima as per input** and **Common Shift Min → 0…** – advanced zero-shifting using tolerance and minimum count inputs.
+- Scalar operations: multiply/divide by `1000`, `10`, `2`, and multiply by `-1`.
+- Angle conversion: **Radians** / **Degrees**.
+- Signal utilities: **Shift Mean → 0**, **Shift Min to Zero**, **Shift X Start → 0**, **Absolute**, **Mean**, **Rolling Avg**, **Sqrt(sum of squares)**.
+- Advanced shifting: **Shift Min → 0 : if repeated minima as per input** and **Common Shift Min → 0 if same minima among selected var** using tolerance/count inputs.
+- **Reduce Points** – downsample selected channels.
+- **Merge Selected** – concatenate selected series end-to-end into a new user variable.
 
 ### Variable input operations
-- **Apply Values** – apply expressions typed in each variable’s field (e.g. `*2`, `/2`, `+1`).
-- **Create user variable instead of overwriting?** – stores results as new user-defined series.
+- **Apply Values** – apply inline formulas entered per variable (e.g., `*2`, `+0.4`).
+- **Create user variable instead of overwriting?** – preserve originals by writing transformed results to user channels.
 
-### File list and time window
-- **Remove File** – unload the highlighted file.
-- **Time Window Start/End** – restrict operations and plots to a time interval; **Reset** clears the limits.
+### Marked-axis tools
+- **Plot X/Y(/Z)** – scatter selected variables using per-row X/Y/Z marker assignments.
+- **Animate X/Y(/Z)** – animate marked coordinates over time.
 
-### Frequency filter
-Radio buttons select **None**, **Low-pass**, **High-pass**, **Band-pass** or **Band-block** filters with associated cutoff inputs. The chosen filter applies to transformations and statistics.
+### Frequency filter (global)
+A shared filter selector provides **None**, **Low-pass**, **High-pass**, **Band-pass** and **Band-block** modes. The active filter affects transforms, statistics and analysis plots.
 
-### Tools
-- **Open in AnyQATS** – launch the external viewer.
-- **Open Extreme Value Statistics Tool** – open the dedicated extreme value analysis window.
-- **Generate RAO from Selected Time Series** – estimate a frequency-domain RAO directly from selected time series. Use one series (time vs response, e.g. pitch angle) for single-series RAO with unit excitation, or pick different excitation/response series for transfer-function RAO; plots amplitude, phase and coherence (coherence shown for paired mode).
-- **Extract OrcaFlex Surface Pressures** – available once coordinates are supplied in the OrcaFlex selector; loads panel pressure series from diffraction models.
+## Plot Controls
 
-### Plot controls
-- **Plot Selected (one graph / side-by-side)** – display selected variables on a single axis or in a grid; **Same axes** forces a common scale.
-- **Plot Mean / Rolling Mean** – combine selected signals.
-- **Animate XYZ scatter (all points)** – show a 3-D animation from three variables.
-- **Raw / Low-pass / High-pass** – choose which filtered components to plot.
-- **Engine** – pick the plotting backend (`plotly`, `bokeh` or the built-in matplotlib).
-- **Show components (used in mean)** – include raw variables when plotting the mean.
-- Label trimming, Y-axis label and rolling-window controls refine the appearance of plots.
-- **Mark max/min** – annotate extrema on the time plot.
+- **Plot Selected (one graph)** and **Plot Selected (side-by-side)**.
+- **Plot Mean** and **Rolling Mean**.
+- **Animate XYZ scatter (all points)** for 3-D trajectory animation.
+- **Raw / Low-pass / High-pass** component toggles.
+- **Same axes** option for side-by-side plots.
+- Label trimming (left/right), custom Y-axis label, rolling-window size and optional X-axis marker.
+- **Mark max/min** to annotate extremes.
+- **Engine** chooser: `plotly`, `bokeh`, or built-in matplotlib backend.
 
-### Calculator
-- **Calculate** – evaluate Python-style expressions to create new variables.
-- **?** – open a short help message about calculator syntax.
+## Calculator
 
-## OrcaFlex integration
+The **Calculator** creates new variables with expressions such as:
 
-Opening one or more OrcaFlex `.sim` files reveals additional tools:
+```text
+result_name = f1_varA + 0.5 * f2_varB
+```
 
-- **Object and variable search** – the selection dialog offers live filters for objects and variables, optional arc-length/extra inputs and the ability to strip redundant substrings (e.g. `-Line1-`) from labels.
-- **Batch apply** – after choosing a reference simulation you can apply the same object/variable selection to every checked simulation, provided their object sets match.
-- **Reusable selections** – enable *Use this selection for all future OrcaFlex files* to remember the current selection, apply it automatically on the next import and optionally align similarly named objects through configurable stripping rules.
-- **Diffraction support** – specify panel coordinates to extract surface pressure time series using a matching diffraction (`.owr`) file. Results are cached per diffraction model so repeat imports are instant.
-- **Redundant substring control** – specify substrings (e.g. `Copy of`) to remove from generated labels, keeping variable names tidy when combining multiple sources.
-- **Surface pressure feedback** – the dialog reports how many series were generated per simulation and surfaces any failures or missing data so problematic files can be corrected quickly.
+where `f1`, `f2`, etc. refer to loaded file IDs. It includes autocomplete and helper guidance (`?`) for syntax.
 
-## Statistics Window
+## Analysis Tools
 
-Selecting **Show statistic for selected variables** opens a table with descriptive statistics. The window provides:
+### Statistics window
+Opened by **Show statistic for selected variables**. Includes:
 
-- Load order toggle between *Files → Variables* and *Variables → Files*.
-- Frequency filters identical to the main window.
-- Histogram line input with optional bar-value text.
-- Sortable table of statistics where columns can be toggled via header right-click.
-- Linked plots: line graph of the time series and histograms by row and column.
-- **Copy as TSV** button for clipboard export.
+- sortable table of descriptive metrics,
+- load-order toggle (Files→Variables or Variables→Files),
+- histogram controls,
+- shared frequency filtering,
+- linked time-series/histogram plotting,
+- **Copy selected as TSV** and **Copy all as TSV**.
 
-## Extreme Value Statistics Window
+### Spectral and cycle plots
+Buttons in **Analysis**:
 
-Launched from **Open Extreme Value Statistics Tool**, this dialog estimates return levels using either the built-in SciPy fitter or the optional `pyextremes` engine. Features include:
+- **PSD** – power spectral density,
+- **Cycle Range**,
+- **Range-Mean**,
+- **Range-Mean 3-D**.
 
-- Engine selector to switch between the original Generalized Pareto fit and a PyExtremes Peaks-Over-Threshold pipeline.
-- Tail selection (**upper** or **lower**).
-- Threshold spin box with **Calc Threshold** helper.
-- Confidence level input for bootstrap intervals.
-- PyExtremes-specific controls for the declustering window, return-period base and bootstrap sample count.
-- **Run EVM** performs the analysis and updates the result text.
-- Plots of the raw time series with threshold, return level curve and a quantile comparison.
+### Extreme Value Statistics (EVM)
+Opened by **Open Extreme Value Statistics Tool**. Features include:
 
-### Troubleshooting unstable fits
+- engine selection (SciPy GPD fit or PyExtremes POT workflow),
+- upper/lower-tail mode,
+- threshold estimation helper,
+- confidence interval control,
+- declustering controls and sweep plotting,
+- return level and quantile diagnostics,
+- iterative refit tooling.
 
-The Generalized Pareto (GPD) fit relies on a sensible threshold and a sufficient number of independent exceedances. When the analysis raises a warning such as `Warning: large shape parameter detected (xi = -1.1465). Return levels may be unstable. Note: fitted GPD shape xi < 0 indicates a bounded tail.`, consider the following adjustments to obtain a stable fit:
+### RAO estimator
+Opened by **Generate RAO from Selected Time Series**:
 
-- **Review the data sample** – confirm that the time window contains the events of interest and that the series is in the correct units. A negative shape parameter often signals that the observed values are capped by a physical limit or data truncation.
-- **Increase the threshold** – a higher threshold reduces bias from the bulk of the distribution and can pull the shape estimate towards zero. Ensure at least ~10–15 clustered exceedances remain after declustering.
-- **Tweak the declustering window** – if peaks are highly correlated, widen the separation criterion (or pre-filter the series) so that clusters represent independent events.
-- **Check the tail selection** – if extreme minima are of interest, switch to the lower-tail option and re-run the analysis.
-- **Cross-validate with diagnostics** – inspect the return level plot and quantile comparison; large curvature or erratic extrapolation confirms that the fitted model is unreliable for long return periods.
+- paired excitation/response transfer-function RAO,
+- single-series spectral RAO (unit excitation assumption),
+- amplitude/phase plotting,
+- coherence plotting for paired mode,
+- summary of peak RAO amplitude/frequency.
 
-Iterating on the threshold and data selection usually produces a more moderate shape parameter (|xi| ≲ 1) and leads to return levels that are consistent with the supporting diagnostics.
+### Fatigue calculation tool
+The package includes a fatigue workflow (rainflow counting + SN/TN damage models) through the `FatigueDialog` and `anytimes.fatigue` utilities. It supports:
 
-## Command Line Helpers
+- SN and TN curve-based calculations,
+- built-in curve templates,
+- optional filename-based exposure parsing (probability/exposure tokens),
+- per-series damage summaries and aggregate life estimates.
 
-For quick access you can create a small batch script that launches the GUI with a specific Python interpreter:
+## OrcaFlex Integration
+
+When `.sim` files are loaded, ANYtimeSeries provides:
+
+- object/variable pickers with live filtering,
+- optional arc-length/extra-value input handling,
+- batch application of selections across compatible simulations,
+- reusable selection state for future imports,
+- configurable redundant-substring stripping for cleaner labels,
+- diffraction (`.owr`) pairing and **Extract Surface Pressures** for panel pressure time histories,
+- caching of selections/diffraction metadata for faster reloads,
+- frequency-domain fallback handling when bulk time-history extraction is unavailable.
+
+## Programmatic Utilities (non-GUI)
+
+In addition to the GUI, the package exposes reusable functions:
+
+- `anytimes.evm` – extreme value helpers and return-level calculations.
+- `anytimes.rao` – RAO estimation from time-series data.
+- `anytimes.fatigue` – fatigue data structures, damage computation and result aggregation.
+- `anytimes.gui.filename_parser` – parse embedded filename metadata (e.g., `Hs0_3`, `prob0_01`, `exposure12`).
+
+## Command-Line Helpers
+
+A Windows `.bat` launcher can be used to pin the GUI to a specific interpreter:
 
 ```batch
 @echo off
@@ -163,7 +185,7 @@ C:\Python\Python313\python.exe C:\Github\ANYtimeseries\anytimes\anytimes_gui.py
 pause
 ```
 
-Update the paths to match your environment.
+Update the paths to match your system.
 
 ## Screenshots
 
