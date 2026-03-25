@@ -494,10 +494,6 @@ class TimeSeriesEditorQt(QMainWindow):
         self.colormap_min_input.setPlaceholderText("auto")
         self.colormap_max_input.setPlaceholderText("auto")
 
-        offset_meta_row = QHBoxLayout()
-        offset_meta_row.addWidget(self.apply_value_user_var_cb)
-        offset_meta_row.addStretch(1)
-        offset_layout.addLayout(offset_meta_row)
         self.apply_values_btn = QPushButton("Apply Values")
         self.clear_values_btn = QPushButton("Clear Values")
         self.plot_marked_axes_btn = QPushButton("Plot X/Y(/Z)")
@@ -521,6 +517,12 @@ class TimeSeriesEditorQt(QMainWindow):
             "Clipping mode for plotting only. If Color Min/Max is blank, defaults "
             "from current data are used."
         )
+        self.plot_resolution_label = QLabel("Resolution percentage")
+        self.plot_resolution_entry = QLineEdit("100")
+        self.plot_resolution_entry.setFixedWidth(70)
+        self.plot_resolution_entry.setToolTip(
+            "Percent of points used for X/Y(/Z) plotting and animation (1-100)."
+        )
         colormap_layout = QVBoxLayout()
         colormap_layout.setSpacing(2)
         colormap_layout.addWidget(self.colormap_label)
@@ -536,12 +538,18 @@ class TimeSeriesEditorQt(QMainWindow):
         apply_plot_row = QHBoxLayout()
         apply_plot_row.addWidget(self.apply_values_btn)
         apply_plot_row.addWidget(self.clear_values_btn)
+        apply_plot_row.addWidget(self.apply_value_user_var_cb)
         apply_plot_row.addWidget(self.plot_marked_axes_btn)
         apply_plot_row.addWidget(self.animate_marked_axes_btn)
         apply_plot_row.addLayout(colormap_layout)
         apply_plot_row.addLayout(colormap_min_layout)
         apply_plot_row.addLayout(colormap_max_layout)
         apply_plot_row.addWidget(self.clip_mode_combo)
+        resolution_layout = QVBoxLayout()
+        resolution_layout.setSpacing(2)
+        resolution_layout.addWidget(self.plot_resolution_label)
+        resolution_layout.addWidget(self.plot_resolution_entry)
+        apply_plot_row.addLayout(resolution_layout)
         offset_layout.addLayout(apply_plot_row)
         self.controls_layout.addWidget(offset_group)
 
@@ -1805,6 +1813,37 @@ class TimeSeriesEditorQt(QMainWindow):
             return color_values >= cmin
         return np.ones(len(color_values), dtype=bool)
 
+    def _plot_resolution_percent(self) -> float | None:
+        """Return configured plot resolution percentage (1-100)."""
+        raw = self.plot_resolution_entry.text().strip() if hasattr(self, "plot_resolution_entry") else "100"
+        try:
+            value = float(raw)
+        except ValueError:
+            QMessageBox.warning(
+                self,
+                "Invalid Resolution Percentage",
+                f"Could not parse Resolution percentage: {raw!r}.",
+            )
+            return None
+        if value <= 0 or value > 100:
+            QMessageBox.warning(
+                self,
+                "Invalid Resolution Percentage",
+                "Resolution percentage must be greater than 0 and up to 100.",
+            )
+            return None
+        return value
+
+    @staticmethod
+    def _resolution_indices(n_points: int, resolution_pct: float) -> np.ndarray | slice:
+        """Return evenly-spaced point indices for requested resolution."""
+        if n_points <= 0 or resolution_pct >= 100:
+            return slice(None)
+        keep_points = max(1, int(round(n_points * resolution_pct / 100.0)))
+        if keep_points >= n_points:
+            return slice(None)
+        return np.unique(np.linspace(0, n_points - 1, keep_points, dtype=int))
+
     def plot_marked_axes(self):
         """Scatter-plot variables marked as x/y/z in the variable input fields."""
         import os
@@ -1831,6 +1870,9 @@ class TimeSeriesEditorQt(QMainWindow):
                 "Plot X/Y(/Z)",
                 'Mark one variable as "x" and one as "y" in the input fields.',
             )
+            return
+        resolution_pct = self._plot_resolution_percent()
+        if resolution_pct is None:
             return
 
         def _expand_key(series_key: str):
@@ -2002,6 +2044,17 @@ class TimeSeriesEditorQt(QMainWindow):
                             "No points remain after clipping with Color Min/Max.",
                         )
                         return
+        for trace in traces:
+            indices = self._resolution_indices(len(trace["x"]), resolution_pct)
+            if isinstance(indices, slice):
+                continue
+            trace["t"] = trace["t"][indices]
+            trace["x"] = trace["x"][indices]
+            trace["y"] = trace["y"][indices]
+            if "c" in trace:
+                trace["c"] = trace["c"][indices]
+            if "z" in trace:
+                trace["z"] = trace["z"][indices]
         title = "3D scatter plot (x, y, z)" if use_3d else "2D scatter plot (x, y)"
         axis_labels = traces[0]
         if engine == "bokeh" and use_3d:
@@ -2284,6 +2337,9 @@ class TimeSeriesEditorQt(QMainWindow):
                 'Mark one variable as "x" and one as "y" in the input fields.',
             )
             return
+        resolution_pct = self._plot_resolution_percent()
+        if resolution_pct is None:
+            return
 
         def _expand_key(series_key: str):
             expanded = []
@@ -2380,6 +2436,15 @@ class TimeSeriesEditorQt(QMainWindow):
                     c_vals = c_vals[mask_arr]
             if len(x_vals) == 0:
                 continue
+            indices = self._resolution_indices(len(x_vals), resolution_pct)
+            if not isinstance(indices, slice):
+                t_vals = t_vals[indices]
+                x_vals = x_vals[indices]
+                y_vals = y_vals[indices]
+                if z_vals is not None:
+                    z_vals = z_vals[indices]
+                if c_vals is not None:
+                    c_vals = c_vals[indices]
 
             time_labels = []
             for t in t_vals:
