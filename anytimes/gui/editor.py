@@ -504,7 +504,7 @@ class TimeSeriesEditorQt(QMainWindow):
         self.animate_marked_axes_btn = QPushButton("Animate X/Y(/Z)")
         self.colormap_label = QLabel("Colormap:")
         self.colormap_combo = QComboBox()
-        self.colormap_combo.addItems(["Viridis", "Plasma", "Inferno", "Magma", "Cividis", "Turbo", "hsv"])
+        self.colormap_combo.addItems(["Viridis", "Plasma", "Inferno", "Magma", "Cividis", "Turbo", "hsv", "binary", "gray"])
         self.colormap_combo.setCurrentText("Viridis")
         self.clip_mode_combo = QComboBox()
         self.clip_mode_combo.addItems(
