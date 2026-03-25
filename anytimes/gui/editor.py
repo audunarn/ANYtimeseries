@@ -535,11 +535,13 @@ class TimeSeriesEditorQt(QMainWindow):
         self.controls_layout.addWidget(offset_group)
 
         # ---- File list group ----
+        top_input_max_height = 220
         file_group = QGroupBox("Loaded Files")
         file_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         file_list_layout = QVBoxLayout(file_group)
         self.file_list = QListWidget()
         self.file_list.setMinimumWidth(160)
+        self.file_list.setMaximumHeight(top_input_max_height)
         self.remove_file_btn = QPushButton("Remove File")
         file_list_layout.addWidget(self.file_list)
         file_list_layout.addWidget(self.remove_file_btn)
@@ -711,6 +713,7 @@ class TimeSeriesEditorQt(QMainWindow):
             "Define a new variable (e.g., result_name = f1_var1 + f2_var2) where f1 and f2 refer to file IDs in the loaded list (c_ common var, u_ user var)."
         ))
         self.calc_entry = QTextEdit()
+        self.calc_entry.setMaximumHeight(top_input_max_height)
         calc_layout.addWidget(self.calc_entry)
         calc_btn_row = QHBoxLayout()
         self.calc_btn = QPushButton("Calculate")
