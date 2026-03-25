@@ -504,10 +504,9 @@ class TimeSeriesEditorQt(QMainWindow):
         self.colormap_combo = QComboBox()
         self.colormap_combo.addItems(["Viridis", "Plasma", "Inferno", "Magma", "Cividis", "Turbo"])
         self.colormap_combo.setCurrentText("Viridis")
-        self.clip_outside_range_btn = QPushButton("Clip outside range")
-        self.clip_outside_range_btn.setCheckable(True)
-        self.clip_outside_range_btn.setChecked(False)
-        self.clip_outside_range_btn.setToolTip(
+        self.clip_outside_range_cb = QCheckBox("Clip outside range")
+        self.clip_outside_range_cb.setChecked(False)
+        self.clip_outside_range_cb.setToolTip(
             "When enabled, plotting ignores points where color values are outside "
             "Color Min/Max (missing min/max uses dataset default)."
         )
@@ -531,7 +530,7 @@ class TimeSeriesEditorQt(QMainWindow):
         apply_plot_row.addLayout(colormap_layout)
         apply_plot_row.addLayout(colormap_min_layout)
         apply_plot_row.addLayout(colormap_max_layout)
-        apply_plot_row.addWidget(self.clip_outside_range_btn)
+        apply_plot_row.addWidget(self.clip_outside_range_cb)
         offset_layout.addLayout(apply_plot_row)
         self.controls_layout.addWidget(offset_group)
 
@@ -1907,7 +1906,7 @@ class TimeSeriesEditorQt(QMainWindow):
             all_c = np.concatenate([np.asarray(trace["c"]) for trace in traces if "c" in trace])
             if len(all_c):
                 color_min, color_max = self._resolve_colormap_limits(all_c, manual_cmin, manual_cmax)
-                if self.clip_outside_range_btn.isChecked():
+                if self.clip_outside_range_cb.isChecked():
                     clipped_traces = []
                     for trace in traces:
                         if "c" not in trace:
@@ -2360,7 +2359,7 @@ class TimeSeriesEditorQt(QMainWindow):
             if "color" in df.columns:
                 all_colors = np.asarray(df["color"])
                 color_min, color_max = self._resolve_colormap_limits(all_colors, manual_cmin, manual_cmax)
-                if self.clip_outside_range_btn.isChecked():
+                if self.clip_outside_range_cb.isChecked():
                     df = df[(df["color"] >= color_min) & (df["color"] <= color_max)].copy()
                     if df.empty:
                         QMessageBox.warning(
