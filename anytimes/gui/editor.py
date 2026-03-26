@@ -659,6 +659,12 @@ class TimeSeriesEditorQt(QMainWindow):
         self.animate_xyz_btn = QPushButton("Animate XYZ scatter (all points)")
 
         self.plot_extrema_cb = QCheckBox("Mark max/min")
+        self.plot_scatter_alpha_label = QLabel("Plot/scatter alpha:")
+        self.plot_scatter_alpha_input = QDoubleSpinBox()
+        self.plot_scatter_alpha_input.setRange(0.0, 1.0)
+        self.plot_scatter_alpha_input.setSingleStep(0.05)
+        self.plot_scatter_alpha_input.setDecimals(2)
+        self.plot_scatter_alpha_input.setValue(1.0)
         plot_btn_row.addWidget(self.plot_selected_btn)
         plot_btn_row.addWidget(self.plot_side_by_side_btn)
         plot_btn_row.addWidget(self.plot_mean_btn)
@@ -690,6 +696,8 @@ class TimeSeriesEditorQt(QMainWindow):
         plot_layout.addLayout(plot_btn_row)
         # Label trimming controls
         trim_row = QHBoxLayout()
+        trim_row.addWidget(self.plot_scatter_alpha_label)
+        trim_row.addWidget(self.plot_scatter_alpha_input)
         trim_row.addWidget(self.plot_extrema_cb)
         trim_row.addWidget(self.plot_same_axes_cb)
         trim_row.addWidget(QLabel("Trim label to keep:"))
@@ -1749,7 +1757,11 @@ class TimeSeriesEditorQt(QMainWindow):
     def _plotly_colorscale_name(self) -> str:
         """Map selected colormap to Plotly colorscale naming."""
         cmap = self._selected_colormap()
-        return cmap.capitalize()
+        alias_map = {
+            "binary": "gray",
+            "grey": "gray",
+        }
+        return alias_map.get(cmap, cmap)
 
     def _bokeh_palette_name(self) -> str:
         """Map selected colormap to Bokeh 256-color palette naming."""
@@ -1835,6 +1847,12 @@ class TimeSeriesEditorQt(QMainWindow):
             )
             return None
         return value
+
+    def _plot_alpha_value(self) -> float:
+        """Return global alpha for line/scatter plots."""
+        if hasattr(self, "plot_scatter_alpha_input"):
+            return float(self.plot_scatter_alpha_input.value())
+        return 1.0
 
     @staticmethod
     def _resolution_indices(n_points: int, resolution_pct: float) -> np.ndarray | slice:
@@ -2013,6 +2031,7 @@ class TimeSeriesEditorQt(QMainWindow):
         plotly_scale = self._plotly_colorscale_name()
         mpl_cmap = self._selected_colormap()
         bokeh_palette = self._bokeh_palette_name()
+        plot_alpha = self._plot_alpha_value()
         manual_cmin, manual_cmax = self._manual_colormap_limits()
         has_color = any("c" in trace for trace in traces)
         color_min = None
@@ -2123,23 +2142,23 @@ class TimeSeriesEditorQt(QMainWindow):
                     data["c"] = trace["c"]
                 src = ColumnDataSource(data=data)
                 if mapper is not None and "c" in trace:
-                    fig.circle(
+                    fig.scatter(
                         x="x",
                         y="y",
                         source=src,
                         size=5,
-                        alpha=0.8,
+                        alpha=plot_alpha,
                             color=linear_cmap("c", bokeh_palette, mapper.low, mapper.high),
                         legend_label=trace["file_label"],
                         muted_alpha=0.1,
                     )
                 else:
-                    fig.circle(
+                    fig.scatter(
                         x="x",
                         y="y",
                         source=src,
                         size=5,
-                        alpha=0.8,
+                        alpha=plot_alpha,
                         color=color,
                         legend_label=trace["file_label"],
                         muted_alpha=0.1,
@@ -2179,10 +2198,10 @@ class TimeSeriesEditorQt(QMainWindow):
                         sc = ax.scatter(
                             trace["x"], trace["y"], z_vals,
                             c=trace["c"], cmap=mpl_cmap, vmin=color_min, vmax=color_max,
-                            s=12, label=trace["file_label"]
+                            s=12, alpha=plot_alpha, label=trace["file_label"]
                         )
                     else:
-                        sc = ax.scatter(trace["x"], trace["y"], z_vals, s=10, label=trace["file_label"])
+                        sc = ax.scatter(trace["x"], trace["y"], z_vals, s=10, alpha=plot_alpha, label=trace["file_label"])
                 ax.set_zlabel(axis_labels.get("z_var", "z"))
             else:
                 fig, ax = plt.subplots(figsize=(10, 6))
@@ -2191,10 +2210,10 @@ class TimeSeriesEditorQt(QMainWindow):
                         sc = ax.scatter(
                             trace["x"], trace["y"],
                             c=trace["c"], cmap=mpl_cmap, vmin=color_min, vmax=color_max,
-                            s=18, alpha=0.8, label=trace["file_label"]
+                            s=18, alpha=plot_alpha, label=trace["file_label"]
                         )
                     else:
-                        sc = ax.scatter(trace["x"], trace["y"], s=14, alpha=0.8, label=trace["file_label"])
+                        sc = ax.scatter(trace["x"], trace["y"], s=14, alpha=plot_alpha, label=trace["file_label"])
             ax.set_title(title)
             ax.set_xlabel(axis_labels["x_var"])
             ax.set_ylabel(axis_labels["y_var"])
@@ -2246,6 +2265,8 @@ class TimeSeriesEditorQt(QMainWindow):
                         mode="markers",
                         name=label,
                         marker=marker_cfg or None,
+                        opacity=plot_alpha,
+                        hovertemplate="x=%{x}<br>y=%{y}<br>z=%{z}<br>color=%{marker.color}<extra>%{fullData.name}</extra>" if "c" in trace else "x=%{x}<br>y=%{y}<br>z=%{z}<extra>%{fullData.name}</extra>",
                     )
                 )
             else:
@@ -2266,7 +2287,17 @@ class TimeSeriesEditorQt(QMainWindow):
                         ),
                     )
                     colorbar_drawn = True
-                fig.add_trace(go.Scatter(x=trace["x"], y=trace["y"], mode="markers", name=label, marker=marker))
+                fig.add_trace(
+                    go.Scatter(
+                        x=trace["x"],
+                        y=trace["y"],
+                        mode="markers",
+                        name=label,
+                        marker=marker,
+                        opacity=plot_alpha,
+                        hovertemplate="x=%{x}<br>y=%{y}<br>color=%{marker.color}<extra>%{fullData.name}</extra>" if "c" in trace else "x=%{x}<br>y=%{y}<extra>%{fullData.name}</extra>",
+                    )
+                )
 
         layout_kwargs = {
             "title": title,
@@ -2474,6 +2505,7 @@ class TimeSeriesEditorQt(QMainWindow):
         plotly_scale = self._plotly_colorscale_name()
         mpl_cmap = self._selected_colormap()
         bokeh_palette = self._bokeh_palette_name()
+        plot_alpha = self._plot_alpha_value()
         manual_cmin, manual_cmax = self._manual_colormap_limits()
         axis_role_map = role_per_file[next(iter(role_per_file))]
         x_label = _disp(axis_role_map.get("x", "x"))
@@ -2520,7 +2552,7 @@ class TimeSeriesEditorQt(QMainWindow):
                 ax.set_xlim(x_min, x_max)
                 ax.set_ylim(y_min, y_max)
                 ax.set_zlim(z_min, z_max)
-                scat = ax.scatter([], [], [], s=18, cmap=mpl_cmap, vmin=color_min, vmax=color_max)
+                scat = ax.scatter([], [], [], s=18, alpha=plot_alpha, cmap=mpl_cmap, vmin=color_min, vmax=color_max)
                 time_text = ax.text2D(0.02, 0.95, "", transform=ax.transAxes)
 
                 def _update(frame_idx):
@@ -2539,7 +2571,7 @@ class TimeSeriesEditorQt(QMainWindow):
                 fig, ax = plt.subplots(figsize=(10, 6))
                 ax.set_xlim(x_min, x_max)
                 ax.set_ylim(y_min, y_max)
-                scat = ax.scatter([], [], s=24, cmap=mpl_cmap, vmin=color_min, vmax=color_max)
+                scat = ax.scatter([], [], s=24, alpha=plot_alpha, cmap=mpl_cmap, vmin=color_min, vmax=color_max)
                 time_text = ax.text(0.02, 0.95, "", transform=ax.transAxes)
 
                 def _update(frame_idx):
@@ -2612,16 +2644,16 @@ class TimeSeriesEditorQt(QMainWindow):
                     c_max = manual_cmax
                 if abs(c_max - c_min) < 1e-12:
                     c_max = c_min + 1.0
-                p.circle(
+                p.scatter(
                     "x",
                     "y",
                     source=src,
                     size=7,
-                    alpha=0.85,
+                    alpha=plot_alpha,
                     color=linear_cmap("c", bokeh_palette, c_min, c_max),
                 )
             else:
-                p.circle("x", "y", source=src, size=7, alpha=0.85)
+                p.scatter("x", "y", source=src, size=7, alpha=plot_alpha)
 
             slider = Slider(start=0, end=len(frame_times) - 1, value=0, step=1, title="Frame")
             full_data = dict(
@@ -2700,6 +2732,16 @@ class TimeSeriesEditorQt(QMainWindow):
             fig = px.scatter_3d(**base_kwargs, z="z")
         else:
             fig = px.scatter(**base_kwargs)
+        fig.update_traces(opacity=plot_alpha)
+        if "color" in df.columns:
+            if use_3d and "z" in df.columns:
+                fig.update_traces(
+                    hovertemplate="x=%{x}<br>y=%{y}<br>z=%{z}<br>color=%{marker.color}<extra>%{hovertext}</extra>"
+                )
+            else:
+                fig.update_traces(
+                    hovertemplate="x=%{x}<br>y=%{y}<br>color=%{marker.color}<extra>%{hovertext}</extra>"
+                )
 
         # Keep axis limits fixed for all animation frames.
         x_min, x_max = float(df["x"].min()), float(df["x"].max())
@@ -4555,6 +4597,7 @@ class TimeSeriesEditorQt(QMainWindow):
         mark_extrema = (
                 hasattr(self, "plot_extrema_cb") and self.plot_extrema_cb.isChecked()
         )
+        plot_alpha = self._plot_alpha_value()
         marker_x = self._marker_x_value()
 
         import numpy as np, anyqats as qats, os
@@ -4846,7 +4889,7 @@ class TimeSeriesEditorQt(QMainWindow):
                             "x",
                             "y",
                             source=cds,
-                            line_alpha=c.get("alpha", 1.0),
+                            line_alpha=c.get("alpha", 1.0) * plot_alpha,
                             color=color,
                             legend_label=c["label"],
                             muted_alpha=0.0,
@@ -4856,8 +4899,8 @@ class TimeSeriesEditorQt(QMainWindow):
                         all_y = np.concatenate([np.asarray(c["y"]) for c in curves])
                         max_idx = np.argmax(all_y)
                         min_idx = np.argmin(all_y)
-                        p.circle([all_t[max_idx]], [all_y[max_idx]], size=6, color="red")
-                        p.circle([all_t[min_idx]], [all_y[min_idx]], size=6, color="blue")
+                        p.scatter([all_t[max_idx]], [all_y[max_idx]], size=6, alpha=plot_alpha, color="red")
+                        p.scatter([all_t[min_idx]], [all_y[min_idx]], size=6, alpha=plot_alpha, color="blue")
                     if marker_x is not None:
                         p.add_layout(
                             Span(
@@ -4929,7 +4972,7 @@ class TimeSeriesEditorQt(QMainWindow):
                                 y=curve["y"],
                                 mode="lines",
                                 name=curve["label"],
-                                opacity=curve.get("alpha", 1.0),
+                                opacity=curve.get("alpha", 1.0) * plot_alpha,
                             ),
                             row=r,
                             col=c,
@@ -4945,6 +4988,7 @@ class TimeSeriesEditorQt(QMainWindow):
                                 y=[all_y[max_idx]],
                                 mode="markers",
                                 marker=dict(color="red", size=8),
+                                opacity=plot_alpha,
                                 showlegend=False,
                             ),
                             row=r,
@@ -4956,6 +5000,7 @@ class TimeSeriesEditorQt(QMainWindow):
                                 y=[all_y[min_idx]],
                                 mode="markers",
                                 marker=dict(color="blue", size=8),
+                                opacity=plot_alpha,
                                 showlegend=False,
                             ),
                             row=r,
@@ -5017,14 +5062,14 @@ class TimeSeriesEditorQt(QMainWindow):
                 lbl = data["label"]
                 curves = data["curves"]
                 for c in curves:
-                    ax.plot(c["t"], c["y"], alpha=c.get("alpha", 1.0), label=c["label"])
+                    ax.plot(c["t"], c["y"], alpha=c.get("alpha", 1.0) * plot_alpha, label=c["label"])
                 if mark_extrema and curves:
                     all_t = np.concatenate([np.asarray(c["t"]) for c in curves])
                     all_y = np.concatenate([np.asarray(c["y"]) for c in curves])
                     max_idx = np.argmax(all_y)
                     min_idx = np.argmin(all_y)
-                    ax.scatter(all_t[max_idx], all_y[max_idx], color="red", label="Max")
-                    ax.scatter(all_t[min_idx], all_y[min_idx], color="blue", label="Min")
+                    ax.scatter(all_t[max_idx], all_y[max_idx], color="red", alpha=plot_alpha, label="Max")
+                    ax.scatter(all_t[min_idx], all_y[min_idx], color="blue", alpha=plot_alpha, label="Min")
                 if marker_x is not None:
                     ax.axvline(marker_x, color="orange", linestyle="--", linewidth=2, label="Marker")
                 ax.set_title(lbl)
@@ -5280,7 +5325,7 @@ class TimeSeriesEditorQt(QMainWindow):
             color="point",
             animation_frame="time",
             animation_group="point",
-            opacity=0.9,
+            opacity=self._plot_alpha_value(),
             title="Animated 3-D Coordinate Scatter",
             template="plotly_dark" if self.theme_switch.isChecked() else "plotly",
         )
@@ -5342,6 +5387,7 @@ class TimeSeriesEditorQt(QMainWindow):
         """
         self._clear_last_plot_call()
         marker_x = self._marker_x_value()
+        plot_alpha = self._plot_alpha_value()
 
         engine = (
             self.plot_engine_combo.currentText()
@@ -5401,7 +5447,7 @@ class TimeSeriesEditorQt(QMainWindow):
                     "y",
                     source=cds,
                     line_width=2 if tr.get("is_mean") else 1,
-                    line_alpha=tr.get("alpha", 1.0),
+                    line_alpha=tr.get("alpha", 1.0) * plot_alpha,
                     color=color,
                     legend_label=tr["label"],
                     muted_alpha=0.0,
@@ -5414,8 +5460,8 @@ class TimeSeriesEditorQt(QMainWindow):
                 all_y = np.concatenate([np.asarray(tr["y"]) for tr in traces])
                 max_idx = np.argmax(all_y)
                 min_idx = np.argmin(all_y)
-                r_max = p.circle([all_t[max_idx]], [all_y[max_idx]], size=6, color="red", legend_label="Max")
-                r_min = p.circle([all_t[min_idx]], [all_y[min_idx]], size=6, color="blue", legend_label="Min")
+                r_max = p.scatter([all_t[max_idx]], [all_y[max_idx]], size=6, color="red", alpha=plot_alpha, legend_label="Max")
+                r_min = p.scatter([all_t[min_idx]], [all_y[min_idx]], size=6, color="blue", alpha=plot_alpha, legend_label="Min")
                 renderers.extend([r_max, r_min])
             if marker_x is not None:
                 p.add_layout(
@@ -5492,7 +5538,7 @@ class TimeSeriesEditorQt(QMainWindow):
                         mode="lines",
                         name=tr["label"],
                         line=dict(width=2 if tr.get("is_mean") else 1),
-                        opacity=tr.get("alpha", 1.0),
+                        opacity=tr.get("alpha", 1.0) * plot_alpha,
                     )
                 )
             if mark_extrema and traces:
@@ -5507,6 +5553,7 @@ class TimeSeriesEditorQt(QMainWindow):
                         y=[all_y[max_idx]],
                         mode="markers",
                         marker=dict(color="red", size=8),
+                        opacity=plot_alpha,
                         name="Max",
                     )
                 )
@@ -5516,6 +5563,7 @@ class TimeSeriesEditorQt(QMainWindow):
                         y=[all_y[min_idx]],
                         mode="markers",
                         marker=dict(color="blue", size=8),
+                        opacity=plot_alpha,
                         name="Min",
                     )
                 )
@@ -5588,7 +5636,7 @@ class TimeSeriesEditorQt(QMainWindow):
                 tr["y"],
                 label=tr["label"],
                 linewidth=2 if tr.get("is_mean") else 1,
-                alpha=tr.get("alpha", 1.0),
+                alpha=tr.get("alpha", 1.0) * plot_alpha,
                 color=color,
             )
         if mark_extrema and traces:
@@ -5596,8 +5644,8 @@ class TimeSeriesEditorQt(QMainWindow):
             all_y = np.concatenate([np.asarray(tr["y"]) for tr in traces])
             max_idx = np.argmax(all_y)
             min_idx = np.argmin(all_y)
-            ax.scatter(all_t[max_idx], all_y[max_idx], color="red", label="Max")
-            ax.scatter(all_t[min_idx], all_y[min_idx], color="blue", label="Min")
+            ax.scatter(all_t[max_idx], all_y[max_idx], color="red", alpha=plot_alpha, label="Max")
+            ax.scatter(all_t[min_idx], all_y[min_idx], color="blue", alpha=plot_alpha, label="Min")
         if marker_x is not None:
             ax.axvline(marker_x, color="orange", linestyle="--", linewidth=2, label="Marker")
 
