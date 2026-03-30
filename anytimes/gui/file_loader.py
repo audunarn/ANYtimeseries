@@ -1666,8 +1666,6 @@ class FileLoader:
                     obj = _match_obj(obj_name)
                 else:
                     continue
-                if isinstance(var, str) and var.strip().lower() == "surface pressures":
-                    continue
                 if obj is None:
                     continue
                 short_obj = self._strip_redundant(obj_name, redundant_subs)

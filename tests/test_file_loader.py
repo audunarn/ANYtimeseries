@@ -261,6 +261,65 @@ def test_is_frequency_domain_model_rejects_time_domain_method(monkeypatch):
     assert loader._is_frequency_domain_model(_Model()) is False
 
 
+def test_load_orcaflex_data_keeps_surface_pressures_selection(monkeypatch):
+    file_loader = _load_file_loader(monkeypatch)
+    loader = file_loader.FileLoader()
+
+    class _General:
+        DynamicsSolutionMethod = "Implicit time domain"
+
+        @staticmethod
+        def TimeHistory(var_name, _time_spec):
+            assert var_name == "Time"
+            return np.array([0.0, 1.0])
+
+    class _Obj:
+        def __init__(self, name):
+            self.Name = name
+            self.typeName = "Vessel"
+
+    class _Model:
+        simulationStartTime = 0.0
+        simulationStopTime = 1.0
+
+        def __init__(self):
+            self.objects = [_Obj("AQ_C2_floater_fwd")]
+
+        def __getitem__(self, key):
+            if key == "General":
+                return _General()
+            if key == "AQ_C2_floater_fwd":
+                return self.objects[0]
+            raise KeyError(key)
+
+    def _specified_period(start, stop):
+        return ("period", float(start), float(stop))
+
+    def _time_history_specification(obj, var, end=None):
+        return (obj.Name, var, end)
+
+    def _get_multiple_time_histories(specs, time_spec):
+        assert time_spec == ("period", 0.0, 1.0)
+        assert specs == [("AQ_C2_floater_fwd", "Surface Pressures", None)]
+        return np.array([[10.0], [12.0]])
+
+    fake_orcfx = types.SimpleNamespace(
+        SpecifiedPeriod=_specified_period,
+        TimeHistorySpecification=_time_history_specification,
+        GetMultipleTimeHistories=_get_multiple_time_histories,
+    )
+    monkeypatch.setitem(sys.modules, "OrcFxAPI", fake_orcfx)
+
+    model = _Model()
+    tsdb = loader._load_orcaflex_data_from_specs(
+        model,
+        [("AQ_C2_floater_fwd", "Surface Pressures", None, None)],
+    )
+
+    assert tsdb is not None
+    assert "AQ_C2_floater_fwd:Surface Pressures" in tsdb.register
+
+
 
 
 def test_extract_model_time_uses_sample_times_for_frequency_domain(monkeypatch):
