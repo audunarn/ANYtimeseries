@@ -261,7 +261,7 @@ def test_is_frequency_domain_model_rejects_time_domain_method(monkeypatch):
     assert loader._is_frequency_domain_model(_Model()) is False
 
 
-def test_load_orcaflex_data_keeps_surface_pressures_selection(monkeypatch):
+def test_load_orcaflex_data_skips_surface_pressures_selection(monkeypatch):
     file_loader = _load_file_loader(monkeypatch)
     loader = file_loader.FileLoader()
 
@@ -295,17 +295,14 @@ def test_load_orcaflex_data_keeps_surface_pressures_selection(monkeypatch):
     def _specified_period(start, stop):
         return ("period", float(start), float(stop))
 
-    def _time_history_specification(obj, var, end=None):
-        return (obj.Name, var, end)
+    called = {"specs_requested": False}
 
     def _get_multiple_time_histories(specs, time_spec):
-        assert time_spec == ("period", 0.0, 1.0)
-        assert specs == [("AQ_C2_floater_fwd", "Surface Pressures", None)]
-        return np.array([[10.0], [12.0]])
+        called["specs_requested"] = True
+        raise AssertionError("GetMultipleTimeHistories should not be called for skipped surface pressures")
 
     fake_orcfx = types.SimpleNamespace(
         SpecifiedPeriod=_specified_period,
-        TimeHistorySpecification=_time_history_specification,
         GetMultipleTimeHistories=_get_multiple_time_histories,
     )
     monkeypatch.setitem(sys.modules, "OrcFxAPI", fake_orcfx)
@@ -317,7 +314,8 @@ def test_load_orcaflex_data_keeps_surface_pressures_selection(monkeypatch):
     )
 
     assert tsdb is not None
-    assert "AQ_C2_floater_fwd:Surface Pressures" in tsdb.register
+    assert tsdb.register == {}
+    assert called["specs_requested"] is False
 
 
 
