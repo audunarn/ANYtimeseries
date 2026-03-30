@@ -1666,6 +1666,11 @@ class FileLoader:
                     obj = _match_obj(obj_name)
                 else:
                     continue
+                # ``Surface Pressures`` is a calculated quantity in this GUI,
+                # populated via the dedicated extraction workflow
+                # (``Extract Surface Pressures``). OrcaFlex time-history reads
+                # can reject it as an unknown variable name (error 26), so skip
+                # direct retrieval here.
                 if isinstance(var, str) and var.strip().lower() == "surface pressures":
                     continue
                 if obj is None:
