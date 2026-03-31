@@ -44,7 +44,7 @@ class StatsDialog(QDialog):
     _PSD_RELATIVE_LEVEL_THRESHOLD = 1.0e-3
     _PSD_XLIM_PADDING = 1.1
 
-    def __init__(self, series_info, parent=None):
+    def __init__(self, series_info, parent=None, preferred_plot_engine: str = "default"):
         super().__init__(parent)
         self.setWindowTitle("Statistics Table")
         self.setWindowFlag(Qt.Window)
@@ -63,6 +63,7 @@ class StatsDialog(QDialog):
         self.series_info = series_info
         self.ts_dict: dict[str, tuple[np.ndarray, np.ndarray]] = {}
         self.selected_columns: set[int] = set()
+        self.preferred_plot_engine = self._normalize_plot_engine(preferred_plot_engine)
 
         main_layout = QVBoxLayout(self)
 
@@ -233,6 +234,16 @@ class StatsDialog(QDialog):
             u = u[:-len(suf)] if suf and u.endswith(suf) else u
             out.append(u or "(all)")
         return out
+
+    @staticmethod
+    def _normalize_plot_engine(engine: str | None) -> str:
+        """Normalize configured plot engine names used by the stats tool."""
+        value = (engine or "").strip().lower()
+        if value == "ploly":
+            value = "plotly"
+        if value not in {"plotly", "bokeh", "default"}:
+            value = "default"
+        return value
 
     @staticmethod
     def _parse_from_filename(name: str) -> dict[str, float]:
