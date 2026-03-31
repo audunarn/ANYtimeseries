@@ -4560,7 +4560,16 @@ class TimeSeriesEditorQt(QMainWindow):
             mb.warning(self, "No selection", "Select variables then retry.")
             return
 
-        dlg = StatsDialog(series_info, self)
+        preferred_plot_engine = (
+            self.plot_engine_combo.currentText()
+            if hasattr(self, "plot_engine_combo")
+            else "default"
+        )
+        dlg = StatsDialog(
+            series_info,
+            self,
+            preferred_plot_engine=preferred_plot_engine,
+        )
         dlg.exec()
 
     def plot_selected_side_by_side(self, checked: bool = False):
