@@ -8,7 +8,7 @@ import warnings
 import anyqats as qats
 import numpy as np
 from anyqats import TimeSeries
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
 from matplotlib.figure import Figure
 from PySide6.QtCore import QEvent, Qt, QTimer
 from PySide6.QtGui import QGuiApplication, QKeySequence
@@ -163,8 +163,8 @@ class StatsDialog(QDialog):
             canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         ts_layout = QHBoxLayout()
-        ts_layout.addWidget(self.line_canvas)
-        ts_layout.addWidget(self.psd_canvas)
+        ts_layout.addLayout(self._create_plot_panel(self.line_canvas))
+        ts_layout.addLayout(self._create_plot_panel(self.psd_canvas))
         hist_layout = QHBoxLayout()
         self.hist_fig_rows = Figure(figsize=(4, 3))
         self.hist_canvas_rows = FigureCanvasQTAgg(self.hist_fig_rows)
@@ -175,8 +175,8 @@ class StatsDialog(QDialog):
             canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         plot_layout.addLayout(ts_layout)
-        hist_layout.addWidget(self.hist_canvas_rows)
-        hist_layout.addWidget(self.hist_canvas_cols)
+        hist_layout.addLayout(self._create_plot_panel(self.hist_canvas_rows))
+        hist_layout.addLayout(self._create_plot_panel(self.hist_canvas_cols))
         plot_layout.addLayout(hist_layout)
         main_layout.addLayout(plot_layout, stretch=3)
 
@@ -353,6 +353,32 @@ class StatsDialog(QDialog):
             )
             fig.tight_layout()
         canvas.draw()
+
+    @staticmethod
+    def _short_plot_label(text: str, max_len: int = 42) -> str:
+        """Return a compact label for legends and inline text."""
+        if len(text) <= max_len:
+            return text
+        return f"{text[:max_len - 1]}…"
+
+    @staticmethod
+    def _format_plot_title(labels: list[str], max_len: int = 140) -> str:
+        """Return a compact title containing full variable labels."""
+        if not labels:
+            return ""
+        joined = " | ".join(labels)
+        if len(joined) <= max_len:
+            return joined
+        return f"{joined[:max_len - 1]}…"
+
+    def _create_plot_panel(self, canvas: FigureCanvasQTAgg) -> QVBoxLayout:
+        """Create a canvas with navigation controls anchored at bottom-left."""
+        panel = QVBoxLayout()
+        panel.addWidget(canvas)
+        toolbar = NavigationToolbar2QT(canvas, self)
+        toolbar.setOrientation(Qt.Horizontal)
+        panel.addWidget(toolbar, alignment=Qt.AlignLeft)
+        return panel
 
     def update_data(self):
         stats_rows = []
@@ -624,6 +650,8 @@ class StatsDialog(QDialog):
         ax = self.line_fig.add_subplot(111)
         self.psd_fig.clear()
         axp = self.psd_fig.add_subplot(111)
+        line_title_labels = []
+        psd_title_labels = []
         psd_limits = []
         psd_period_limits = []
         psd_xlabel = "Frequency [Hz]"
@@ -635,10 +663,13 @@ class StatsDialog(QDialog):
             if not data:
                 continue
             t, y = data
-            label = var
+            full_label = var
+            label = self._short_plot_label(var)
             if file and len(self.ts_dict) > 1:
-                label = f"{file}::{var}"
+                full_label = f"{file}::{var}"
+                label = self._short_plot_label(full_label)
             ax.plot(t, y, label=label)
+            line_title_labels.append(full_label)
             if len(t) > 1:
                 ts_tmp = TimeSeries("tmp", t, y)
                 try:
@@ -659,6 +690,7 @@ class StatsDialog(QDialog):
                     )
                     if x_vals.size and y_vals.size:
                         axp.plot(x_vals, y_vals, label=label)
+                        psd_title_labels.append(full_label)
                     if limit_info is not None:
                         _, low_freq = limit_info
                         psd_limits.append(limit_freq)
@@ -666,6 +698,7 @@ class StatsDialog(QDialog):
 
         ax.set_xlabel("Time")
         ax.set_ylabel("Value")
+        ax.set_title(self._format_plot_title(line_title_labels))
         ax.legend()
         ax.grid(True)
 
@@ -673,6 +706,7 @@ class StatsDialog(QDialog):
 
         axp.set_xlabel(psd_xlabel)
         axp.set_ylabel("Power spectral density")
+        axp.set_title(self._format_plot_title(psd_title_labels))
         if use_period and psd_period_limits:
             axp.set_xlim(
                 left=min(limit[0] for limit in psd_period_limits),
@@ -688,6 +722,7 @@ class StatsDialog(QDialog):
 
         self.hist_fig_rows.clear()
         axh = self.hist_fig_rows.add_subplot(111)
+        hist_title_labels = []
         for r in sel_rows:
             file = self.table.item(r, 0).text()
             var = self.table.item(r, 2).text()
@@ -696,9 +731,11 @@ class StatsDialog(QDialog):
             data = self.ts_dict.get(sid)
             if data:
                 _, y = data
+                short_label = self._short_plot_label(var)
                 counts, bins, patches = axh.hist(
-                    y, bins=30, alpha=0.5, label=var
+                    y, bins=30, alpha=0.5, label=short_label
                 )
+                hist_title_labels.append(var)
                 if show_text:
                     for count, patch in zip(counts, patches):
                         axh.text(
@@ -713,6 +750,7 @@ class StatsDialog(QDialog):
 
         axh.set_xlabel("Value")
         axh.set_ylabel("Frequency")
+        axh.set_title(self._format_plot_title(hist_title_labels))
         axh.legend()
         axh.grid(True)
         self._tight_draw(self.hist_fig_rows, self.hist_canvas_rows)
@@ -798,4 +836,3 @@ class StatsDialog(QDialog):
         self._tight_draw(self.hist_fig_cols, self.hist_canvas_cols)
 
 __all__ = ['StatsDialog']
-
