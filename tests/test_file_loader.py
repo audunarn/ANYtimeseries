@@ -261,6 +261,133 @@ def test_is_frequency_domain_model_rejects_time_domain_method(monkeypatch):
     assert loader._is_frequency_domain_model(_Model()) is False
 
 
+def test_load_orcaflex_data_skips_surface_pressures_selection(monkeypatch):
+    file_loader = _load_file_loader(monkeypatch)
+    loader = file_loader.FileLoader()
+
+    class _General:
+        DynamicsSolutionMethod = "Implicit time domain"
+
+        @staticmethod
+        def TimeHistory(var_name, _time_spec):
+            assert var_name == "Time"
+            return np.array([0.0, 1.0])
+
+    class _Obj:
+        def __init__(self, name):
+            self.Name = name
+            self.typeName = "Vessel"
+
+    class _Model:
+        simulationStartTime = 0.0
+        simulationStopTime = 1.0
+
+        def __init__(self):
+            self.objects = [_Obj("AQ_C2_floater_fwd")]
+
+        def __getitem__(self, key):
+            if key == "General":
+                return _General()
+            if key == "AQ_C2_floater_fwd":
+                return self.objects[0]
+            raise KeyError(key)
+
+    def _specified_period(start, stop):
+        return ("period", float(start), float(stop))
+
+    called = {"specs_requested": False}
+
+    def _get_multiple_time_histories(specs, time_spec):
+        called["specs_requested"] = True
+        raise AssertionError("GetMultipleTimeHistories should not be called for skipped surface pressures")
+
+    fake_orcfx = types.SimpleNamespace(
+        SpecifiedPeriod=_specified_period,
+        GetMultipleTimeHistories=_get_multiple_time_histories,
+    )
+    monkeypatch.setitem(sys.modules, "OrcFxAPI", fake_orcfx)
+
+    model = _Model()
+    tsdb = loader._load_orcaflex_data_from_specs(
+        model,
+        [("AQ_C2_floater_fwd", "Surface Pressures", None, None)],
+    )
+
+    assert tsdb is not None
+    assert tsdb.register == {}
+    assert called["specs_requested"] is False
+
+
+def test_get_surface_pressure_requests_from_specs_extracts_bodies_and_coords(monkeypatch):
+    file_loader = _load_file_loader(monkeypatch)
+    loader = file_loader.FileLoader()
+
+    extra = types.SimpleNamespace(X=1.0, Y=2.0, Z=3.0)
+    bodies, coords = loader._get_surface_pressure_requests_from_specs(
+        [
+            ("BodyA", "Surface Pressures", extra, None),
+            ("BodyB", "Surface Pressures", (4.0, 5.0, 6.0), None),
+            ("BodyA", "Axial Tension", None, None),
+        ]
+    )
+
+    assert bodies == ["BodyA", "BodyB"]
+    assert coords == [(1.0, 2.0, 3.0), (4.0, 5.0, 6.0)]
+
+
+def test_auto_extract_surface_pressures_from_specs_calls_panel_pressure(monkeypatch):
+    file_loader = _load_file_loader(monkeypatch)
+    loader = file_loader.FileLoader()
+
+    monkeypatch.setattr(
+        loader,
+        "_select_diffraction_model_path",
+        lambda *_args, **_kwargs: "/tmp/model.owr",
+    )
+
+    fake_orcfx = types.SimpleNamespace(
+        Diffraction=lambda path: {"path": path},
+    )
+    monkeypatch.setitem(sys.modules, "OrcFxAPI", fake_orcfx)
+
+    captured = {}
+
+    def _fake_get_panel_pressure(**kwargs):
+        captured.update(kwargs)
+        pressure_df = pd.DataFrame(
+            {"1": [10.0, 11.0], "2": [20.0, 21.0], "Time": [0.0, 1.0]}
+        )
+        panel_info = pd.DataFrame(
+            {
+                "name": ["BodyA", "BodyB"],
+                "pidx": [0, 1],
+                "X": [0.0, 0.0],
+                "Y": [0.0, 0.0],
+                "Z": [0.0, 0.0],
+            }
+        )
+        return pressure_df, panel_info
+
+    monkeypatch.setattr(loader, "_get_panel_pressure", _fake_get_panel_pressure)
+
+    model = object()
+    out = loader._auto_extract_surface_pressures_from_specs(
+        filepath="demo.sim",
+        model=model,
+        specs=[
+            ("BodyA", "Surface Pressures", types.SimpleNamespace(X=1.0, Y=2.0, Z=3.0), None),
+            ("BodyB", "Surface Pressures", None, None),
+        ],
+        parent=None,
+    )
+
+    assert out is not None
+    assert captured["model"] is model
+    assert captured["diffraction_model"] == {"path": "/tmp/model.owr"}
+    assert captured["panel_coords"] == ((1.0, 2.0, 3.0),)
+    assert list(out["data"].columns) == ["Time", "1", "2"]
+    assert out["info"]["name"].tolist() == ["BodyA", "BodyB"]
+
 
 
 def test_extract_model_time_uses_sample_times_for_frequency_domain(monkeypatch):
