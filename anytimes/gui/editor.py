@@ -1358,6 +1358,7 @@ class TimeSeriesEditorQt(QMainWindow):
             for src_idx, db in enumerate(self.tsdbs):
                 tag = f"f{src_idx + 1}"
                 source_names = explicit_var_names.get(src_idx)
+                keep_empty_alignment = source_names is not None
                 items = (
                     ((name, db.getm()[name]) for name in source_names)
                     if source_names is not None
@@ -1365,7 +1366,7 @@ class TimeSeriesEditorQt(QMainWindow):
                 )
                 for key, ts in items:
                     x_part = _align_to_window(ts, filtered_series_cache[src_idx][key], target_time, target_coord)
-                    if np.all(np.isnan(x_part)):
+                    if np.all(np.isnan(x_part)) and not keep_empty_alignment:
                         continue
                     shared_ctx[f"{tag}_{_safe(key)}"] = x_part.astype(float)
 
