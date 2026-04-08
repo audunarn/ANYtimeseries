@@ -2344,10 +2344,16 @@ class FileLoader:
 
     def _load_generic_file(self, filepath):
         ext = os.path.splitext(filepath)[-1].lower().lstrip(".")
-        if ext in ["csv", 'mat', 'dat', 'ts',  'h5', 'pickle', 'tda', 'asc', 'tdms', 'pkl', 'bin']:
+        if ext in ['mat', 'dat', 'ts',  'h5', 'pickle', 'tda', 'asc', 'tdms', 'pkl', 'bin']:
             return TsDB.fromfile(filepath)
         elif ext in ["nc", "netcdf"]:
             return self._load_era5_netcdf(filepath)
+        elif ext == "csv":
+            df = pd.read_csv(filepath, sep=None, engine="python", encoding="utf-8-sig")
+            if df.shape[1] == 1:
+                only_col = str(df.columns[0])
+                if "\t" in only_col:
+                    df = pd.read_csv(filepath, sep="\t", engine="python", encoding="utf-8-sig")
         elif ext == "xlsx":
             df = pd.read_excel(filepath)
         elif ext == "json":
@@ -2358,14 +2364,31 @@ class FileLoader:
             df = pd.read_parquet(filepath)
         else:
             raise NotImplementedError(f"No loader for extension: {ext}")
+        # Normalize headers and detect key columns
+        df = df.rename(columns={c: str(c).replace("\ufeff", "").strip() for c in df.columns})
+        lowered = {str(c).strip().lower(): c for c in df.columns}
+
         # Detect time column
-        time_col = next((c for c in df.columns if c.lower() in ["time", "t"]), df.columns[0])
+        time_col = next(
+            (c for c in df.columns if str(c).strip().lower() in ["time", "t", "referencetime", "reference_time"]),
+            next((c for c in df.columns if "time" in str(c).strip().lower()), df.columns[0]),
+        )
         time = df[time_col].values
         tsdb = TsDB()
         skipped = set()
 
         # Detect potential identifier columns with string values
         id_col = None
+        value_col = lowered.get("value")
+        is_long_format_id_value = False
+
+        # Auto-detect long format: variable id + value + time columns.
+        for candidate in ("elementid", "element_id", "variable", "name"):
+            cand_col = lowered.get(candidate)
+            if cand_col is not None and value_col is not None and cand_col != time_col:
+                id_col = cand_col
+                is_long_format_id_value = True
+                break
 
         string_cols = [
             c
@@ -2378,19 +2401,20 @@ class FileLoader:
             ).all()
         ]
 
-        for sc in string_cols:
-            resp = QMessageBox.question(
-                self.parent_gui,
-                "Identifier Column?",
-                f"Column '{sc}' contains strings. Use as identifier?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
-            )
-            if resp == QMessageBox.Yes:
-                id_col = sc
-                break
-            else:
-                skipped.add(sc)
+        if id_col is None:
+            for sc in string_cols:
+                resp = QMessageBox.question(
+                    self.parent_gui,
+                    "Identifier Column?",
+                    f"Column '{sc}' contains strings. Use as identifier?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
+                if resp == QMessageBox.Yes:
+                    id_col = sc
+                    break
+                else:
+                    skipped.add(sc)
 
 
         if id_col:
@@ -2477,7 +2501,11 @@ class FileLoader:
                         continue
                     try:
                         numeric_values = np.array(values, dtype=float)
-                        tsdb.add(TimeSeries(f"{col}_{ident}", time_vals, numeric_values))
+                        if is_long_format_id_value and col == value_col:
+                            ts_name = str(ident)
+                        else:
+                            ts_name = f"{col}_{ident}"
+                        tsdb.add(TimeSeries(ts_name, time_vals, numeric_values))
                     except Exception:
                         skipped.add(col)
 
