@@ -4,6 +4,26 @@ Readers CSV formatted time series files
 import pandas as pd
 
 
+def _read_csv_flexible(path):
+    """
+    Read CSV/TSV-like files and normalize headers.
+
+    Some providers ship tab-delimited files with `.csv` extension and/or UTF-8 BOM.
+    """
+    df = pd.read_csv(path, sep=None, engine="python", encoding="utf-8-sig")
+    if df.shape[1] == 1:
+        only_col = df.columns[0]
+        if isinstance(only_col, str) and "\t" in only_col:
+            df = pd.read_csv(path, sep="\t", engine="python", encoding="utf-8-sig")
+
+    renamed = {}
+    for col in df.columns:
+        clean = str(col).replace("\ufeff", "").strip()
+        renamed[col] = clean
+    df = df.rename(columns=renamed)
+    return df
+
+
 def _find_time_column(df):
     """Return preferred time column name."""
     lower_to_col = {str(col).strip().lower(): col for col in df.columns}
@@ -72,7 +92,7 @@ def read_names(path):
 
     """
     # pandas will infer the format e.g. delimiter.
-    df = pd.read_csv(path, sep=None, engine='python', encoding='utf-8')
+    df = _read_csv_flexible(path)
     df, time_col = _prepare_table(df)
     names = [name for name in df.columns if name != time_col]
 
@@ -103,7 +123,7 @@ def read_data(path, ind=None):
         Time and data
 
     """
-    df = pd.read_csv(path, sep=None, engine='python')  # pandas will infer the format e.g. delimiter.
+    df = _read_csv_flexible(path)
     df, time_col = _prepare_table(df)
 
     if ind is None:
