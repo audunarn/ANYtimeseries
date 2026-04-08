@@ -231,6 +231,29 @@ def test_crop_orcaflex_series_to_window_skips_frequency_domain_models(monkeypatc
     np.testing.assert_array_equal(cropped_data, data)
 
 
+def test_load_generic_csv_long_format_auto_uses_elementid(monkeypatch, tmp_path):
+    file_loader = _load_file_loader(monkeypatch)
+    loader = file_loader.FileLoader()
+
+    csv_path = tmp_path / "met_long.csv"
+    csv_path.write_text(
+        "elementId\tvalue\tunit\treferenceTime\n"
+        "wind_from_direction\t36\tdegrees\t2003-01-01T00:00:00.000Z\n"
+        "wind_speed\t8.5\tm/s\t2003-01-01T00:00:00.000Z\n"
+        "wind_from_direction\t43\tdegrees\t2003-01-01T01:00:00.000Z\n"
+        "wind_speed\t9.0\tm/s\t2003-01-01T01:00:00.000Z\n",
+        encoding="utf-8",
+    )
+
+    tsdb = loader._load_generic_file(str(csv_path))
+    names = tsdb.list(relative=True, display=False)
+
+    assert names == ["wind_from_direction", "wind_speed"]
+    data = tsdb.getm()
+    np.testing.assert_allclose(data["wind_from_direction"].x, np.array([36.0, 43.0]))
+    np.testing.assert_allclose(data["wind_speed"].x, np.array([8.5, 9.0]))
+
+
 def test_is_frequency_domain_model_detects_general_string(monkeypatch):
     file_loader = _load_file_loader(monkeypatch)
     loader = file_loader.FileLoader()
