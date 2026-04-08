@@ -4,6 +4,74 @@ Readers CSV formatted time series files
 import pandas as pd
 
 
+def _read_csv_flexible(path):
+    """
+    Read CSV/TSV-like files and normalize headers.
+
+    Some providers ship tab-delimited files with `.csv` extension and/or UTF-8 BOM.
+    """
+    df = pd.read_csv(path, sep=None, engine="python", encoding="utf-8-sig")
+    if df.shape[1] == 1:
+        only_col = df.columns[0]
+        if isinstance(only_col, str) and "\t" in only_col:
+            df = pd.read_csv(path, sep="\t", engine="python", encoding="utf-8-sig")
+
+    renamed = {}
+    for col in df.columns:
+        clean = str(col).replace("\ufeff", "").strip()
+        renamed[col] = clean
+    df = df.rename(columns=renamed)
+    return df
+
+
+def _find_time_column(df):
+    """Return preferred time column name."""
+    lower_to_col = {str(col).strip().lower(): col for col in df.columns}
+    for key in ("time", "t", "referencetime", "reference_time", "datetime", "date"):
+        if key in lower_to_col:
+            return lower_to_col[key]
+
+    for col in df.columns:
+        col_lower = str(col).strip().lower()
+        if "time" in col_lower:
+            return col
+
+    return df.columns[0]
+
+
+def _prepare_table(df):
+    """
+    Normalize CSV data to a wide table where:
+      * first column is time
+      * remaining columns are numeric series
+    """
+    time_col = _find_time_column(df)
+    lowered = {str(col).strip().lower(): col for col in df.columns}
+
+    value_col = lowered.get("value")
+    variable_col = None
+    for candidate in ("elementid", "element_id", "variable", "name"):
+        if candidate in lowered:
+            variable_col = lowered[candidate]
+            break
+
+    if value_col is not None and variable_col is not None:
+        long_df = df[[time_col, variable_col, value_col]].copy()
+        long_df[value_col] = pd.to_numeric(long_df[value_col], errors="coerce")
+        long_df = long_df.dropna(subset=[value_col])
+        if not long_df.empty:
+            wide = long_df.pivot_table(
+                index=time_col,
+                columns=variable_col,
+                values=value_col,
+                aggfunc="first",
+            ).reset_index()
+            wide.columns.name = None
+            return wide, time_col
+
+    return df, time_col
+
+
 def read_names(path):
     """
     Read time series names from a comma-separated file.
@@ -24,9 +92,9 @@ def read_names(path):
 
     """
     # pandas will infer the format e.g. delimiter.
-    df = pd.read_csv(path, sep=None, engine='python', encoding='utf-8')
-    names = list(df)
-    _ = names.pop(0)    # remove time which is assumed to be in the first column
+    df = _read_csv_flexible(path)
+    df, time_col = _prepare_table(df)
+    names = [name for name in df.columns if name != time_col]
 
     numeric_names = []
     for name in names:
@@ -55,15 +123,16 @@ def read_data(path, ind=None):
         Time and data
 
     """
-    df = pd.read_csv(path, sep=None, engine='python')  # pandas will infer the format e.g. delimiter.
+    df = _read_csv_flexible(path)
+    df, time_col = _prepare_table(df)
 
     if ind is None:
-        cols = list(df.columns[1:])
+        cols = [col for col in df.columns if col != time_col]
     else:
         cols = list(ind)
 
-    # Keep first column (time) and selected numeric data columns.
-    filtered_cols = [df.columns[0]]
+    # Keep selected time column and selected numeric data columns.
+    filtered_cols = [time_col]
     for col in cols:
         if col in df and pd.to_numeric(df[col], errors='coerce').notna().any():
             filtered_cols.append(col)
