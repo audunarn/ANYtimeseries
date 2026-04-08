@@ -1869,8 +1869,10 @@ class TimeSeriesEditorQt(QMainWindow):
         txt = (text or "").strip()
         if not txt:
             return None
+        if txt.startswith("(") and txt.endswith(")"):
+            txt = txt[1:-1].strip()
         m = re.fullmatch(
-            r"\(\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\s*,\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\s*\)",
+            r"([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\s*,\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)",
             txt,
         )
         if not m:
