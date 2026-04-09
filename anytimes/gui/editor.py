@@ -707,6 +707,11 @@ class TimeSeriesEditorQt(QMainWindow):
         trim_row.addWidget(self.plot_extrema_cb)
         trim_row.addWidget(QLabel("Range mode:"))
         trim_row.addWidget(self.plot_range_mode_combo)
+        self.plot_range_help_btn = QPushButton("ℹ")
+        self.plot_range_help_btn.setToolTip("Show help for green and yellow region/range markings.")
+        self.plot_range_help_btn.setMaximumWidth(28)
+        self.plot_range_help_btn.clicked.connect(self.show_plot_range_help)
+        trim_row.addWidget(self.plot_range_help_btn)
         trim_row.addWidget(self.plot_same_axes_cb)
         trim_row.addWidget(QLabel("Trim label to keep:"))
         trim_row.addWidget(QLabel("Left:"))
@@ -1878,6 +1883,148 @@ class TimeSeriesEditorQt(QMainWindow):
         if not m:
             return None
         return float(m.group(1)), float(m.group(2))
+
+    @staticmethod
+    def _parse_region_selector_text(text: str) -> dict | None:
+        """Parse threshold-region selector like ``>300, 3hr`` or ``<5, longest``."""
+        txt = (text or "").strip()
+        if not txt:
+            return None
+        m = re.fullmatch(
+            r"([<>])\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\s*,\s*([A-Za-z0-9_.+\- ]+)",
+            txt,
+        )
+        if not m:
+            return None
+        op = m.group(1)
+        threshold = float(m.group(2))
+        qualifier_raw = m.group(3).strip().lower().replace(" ", "")
+        if qualifier_raw == "longest":
+            return {"op": op, "threshold": threshold, "qualifier": "longest", "min_seconds": None}
+        d = re.fullmatch(r"(\d*\.?\d+)([a-z]+)?", qualifier_raw)
+        if not d:
+            return None
+        value = float(d.group(1))
+        unit = (d.group(2) or "s").lower()
+        unit_scale = {
+            "ms": 1e-3,
+            "millisecond": 1e-3,
+            "milliseconds": 1e-3,
+            "s": 1.0,
+            "sec": 1.0,
+            "secs": 1.0,
+            "second": 1.0,
+            "seconds": 1.0,
+            "m": 60.0,
+            "min": 60.0,
+            "mins": 60.0,
+            "minute": 60.0,
+            "minutes": 60.0,
+            "h": 3600.0,
+            "hr": 3600.0,
+            "hrs": 3600.0,
+            "hour": 3600.0,
+            "hours": 3600.0,
+            "d": 86400.0,
+            "day": 86400.0,
+            "days": 86400.0,
+            "y": 365.25 * 86400.0,
+            "year": 365.25 * 86400.0,
+            "years": 365.25 * 86400.0,
+        }
+        if unit not in unit_scale:
+            return None
+        return {
+            "op": op,
+            "threshold": threshold,
+            "qualifier": "min_duration",
+            "min_seconds": value * unit_scale[unit],
+        }
+
+    def show_plot_range_help(self):
+        """Show usage information for green range and yellow threshold overlays."""
+        QMessageBox.information(
+            self,
+            "Range / Region Plot Help",
+            "\n".join(
+                [
+                    "Green range marking (existing):",
+                    "  • Use (lo,hi), e.g. (10,50) or (320,10).",
+                    "  • Marks intervals where the selected range variable is inside the range.",
+                    "  • Used for angle/range based highlighting (transparent green).",
+                    "",
+                    "Yellow threshold-duration region marking (new):",
+                    "  • Use >value, time   or   <value, time",
+                    "  • Examples: >300, 3hr   <2.5, 30sec   >0.8, 500ms",
+                    "  • Also supports longest, e.g. >300, longest",
+                    "  • Marks matching regions in transparent yellow and places a marker",
+                    "    at the midpoint of the longest matching region.",
+                    "",
+                    "Supported time units for yellow regions:",
+                    "  ms, s, sec, second, seconds, m, min, minute, minutes,",
+                    "  d, day, days, y, year, years, h, hr, hour, hours",
+                    "",
+                    "Notes:",
+                    "  • Green and yellow markings can be combined in the same plot.",
+                    "  • Yellow rules are applied to the variable whose input contains",
+                    "    the >/< expression.",
+                ]
+            ),
+        )
+
+    @staticmethod
+    def _region_segments(
+        t_vals: np.ndarray,
+        y_vals: np.ndarray,
+        op: str,
+        threshold: float,
+        *,
+        min_seconds: float | None = None,
+        longest_only: bool = False,
+    ) -> tuple[np.ndarray, tuple[float, float] | None]:
+        """Return region mask and midpoint marker for condition-selected segments."""
+        t_arr = np.asarray(t_vals, dtype=float)
+        y_arr = np.asarray(y_vals, dtype=float)
+        if t_arr.size == 0 or y_arr.size == 0 or t_arr.size != y_arr.size:
+            return np.zeros(0, dtype=bool), None
+        cond = y_arr > threshold if op == ">" else y_arr < threshold
+        if not np.any(cond):
+            return cond.astype(bool), None
+        seg_idx: list[tuple[int, int]] = []
+        idx = np.flatnonzero(cond)
+        start = idx[0]
+        prev = idx[0]
+        for i in idx[1:]:
+            if i != prev + 1:
+                seg_idx.append((start, prev))
+                start = i
+            prev = i
+        seg_idx.append((start, prev))
+        dt = np.diff(t_arr)
+        dt = dt[np.isfinite(dt) & (dt > 0)]
+        dt_step = float(np.median(dt)) if dt.size else 0.0
+        if min_seconds is not None:
+            seg_idx = [
+                (a, b)
+                for (a, b) in seg_idx
+                if ((t_arr[b] - t_arr[a]) + dt_step) >= float(min_seconds)
+            ]
+        if longest_only and seg_idx:
+            seg_idx = [
+                max(seg_idx, key=lambda ab: (t_arr[ab[1]] - t_arr[ab[0]]) + dt_step)
+            ]
+        out_mask = np.zeros_like(cond, dtype=bool)
+        for a, b in seg_idx:
+            out_mask[a : b + 1] = True
+        if not seg_idx:
+            return out_mask, None
+        mid_a, mid_b = seg_idx[0]
+        if longest_only and len(seg_idx) == 1:
+            mid_a, mid_b = seg_idx[0]
+        else:
+            mid_a, mid_b = max(seg_idx, key=lambda ab: (t_arr[ab[1]] - t_arr[ab[0]]) + dt_step)
+        mid_i = int(round((mid_a + mid_b) / 2.0))
+        return out_mask, (float(t_arr[mid_i]), float(y_arr[mid_i]))
 
     def _range_selector_mode(self) -> str:
         """Return configured range-selector mode."""
@@ -4729,6 +4876,7 @@ class TimeSeriesEditorQt(QMainWindow):
             return None
 
         range_ctx_by_file = {}
+        region_ctx_by_file_var = {}
         for file_idx, (tsdb, fp) in enumerate(zip(self.tsdbs, self.file_paths), start=1):
             fname = os.path.basename(fp)
             selected_vars = []
@@ -4743,6 +4891,35 @@ class TimeSeriesEditorQt(QMainWindow):
                 input_field = self.var_offsets.get(unique_key)
                 if input_field is None:
                     continue
+                region_parsed = self._parse_region_selector_text(input_field.text())
+                if region_parsed is not None:
+                    ts_candidate = tsdb.getm().get(var)
+                    if ts_candidate is not None:
+                        mask_win = self.get_time_window(ts_candidate)
+                        if isinstance(mask_win, slice):
+                            t_sel = np.asarray(ts_candidate.t[mask_win], dtype=float)
+                            y_sel = np.asarray(ts_candidate.x[mask_win], dtype=float)
+                        else:
+                            if not mask_win.any():
+                                t_sel = np.asarray([], dtype=float)
+                                y_sel = np.asarray([], dtype=float)
+                            else:
+                                t_sel = np.asarray(ts_candidate.t[mask_win], dtype=float)
+                                y_sel = np.asarray(ts_candidate.x[mask_win], dtype=float)
+                        if t_sel.size:
+                            region_mask, region_midpoint = self._region_segments(
+                                t_sel,
+                                y_sel,
+                                region_parsed["op"],
+                                float(region_parsed["threshold"]),
+                                min_seconds=region_parsed.get("min_seconds"),
+                                longest_only=(region_parsed.get("qualifier") == "longest"),
+                            )
+                            region_ctx_by_file_var[(file_idx, var)] = dict(
+                                t=t_sel,
+                                mask=region_mask,
+                                midpoint=region_midpoint,
+                            )
                 parsed = self._parse_range_selector_text(input_field.text())
                 if parsed is not None:
                     selector_candidates.append((var, parsed))
@@ -4838,6 +5015,31 @@ class TimeSeriesEditorQt(QMainWindow):
                                     right=np.nan,
                                 )
                                 range_mask = (~np.isnan(y_interp)) & (y_interp >= 0.5)
+                    region_ctx = region_ctx_by_file_var.get((file_idx, var))
+                    region_mask = None
+                    region_midpoint = None
+                    if region_ctx:
+                        reg_t = np.asarray(region_ctx["t"], dtype=float)
+                        reg_mask = np.asarray(region_ctx["mask"], dtype=bool)
+                        if reg_t.size:
+                            if reg_t.size == ts_win.t.size and np.allclose(reg_t, ts_win.t):
+                                region_mask = reg_mask
+                            else:
+                                y_interp = np.interp(
+                                    np.asarray(ts_win.t, dtype=float),
+                                    reg_t,
+                                    reg_mask.astype(float),
+                                    left=np.nan,
+                                    right=np.nan,
+                                )
+                                region_mask = (~np.isnan(y_interp)) & (y_interp >= 0.5)
+                        mid = region_ctx.get("midpoint")
+                        if mid is not None and region_mask is not None and np.any(region_mask):
+                            t_num = np.asarray(ts_win.t, dtype=float)
+                            true_idx = np.flatnonzero(region_mask)
+                            if true_idx.size:
+                                closest = true_idx[np.argmin(np.abs(t_num[true_idx] - float(mid[0])))]
+                                region_midpoint = (t_plot[closest], float(np.asarray(ts_win.x, dtype=float)[closest]))
                     entry = grid_traces.setdefault(
                         raw_label, {"label": disp_label, "curves": []}
                     )
@@ -4850,6 +5052,9 @@ class TimeSeriesEditorQt(QMainWindow):
                             alpha=1.0,
                             range_mask=range_mask,
                             range_key=raw_label,
+                            region_mask=region_mask,
+                            region_key=raw_label,
+                            region_midpoint=region_midpoint,
                         )
                         traces.append(tr)
                         curves.append(
@@ -4860,6 +5065,9 @@ class TimeSeriesEditorQt(QMainWindow):
                                 alpha=1.0,
                                 range_mask=range_mask,
                                 range_key=raw_label,
+                                region_mask=region_mask,
+                                region_key=raw_label,
+                                region_midpoint=region_midpoint,
                             )
                         )
                     if want_lp:
@@ -4873,6 +5081,9 @@ class TimeSeriesEditorQt(QMainWindow):
                                 alpha=1.0,
                                 range_mask=range_mask,
                                 range_key=raw_label,
+                                region_mask=region_mask,
+                                region_key=raw_label,
+                                region_midpoint=region_midpoint,
                             )
                             traces.append(tr)
                             curves.append(
@@ -4883,6 +5094,9 @@ class TimeSeriesEditorQt(QMainWindow):
                                     alpha=1.0,
                                     range_mask=range_mask,
                                     range_key=raw_label,
+                                    region_mask=region_mask,
+                                    region_key=raw_label,
+                                    region_midpoint=region_midpoint,
                                 )
                             )
                     if want_hp:
@@ -4896,6 +5110,9 @@ class TimeSeriesEditorQt(QMainWindow):
                                 alpha=1.0,
                                 range_mask=range_mask,
                                 range_key=raw_label,
+                                region_mask=region_mask,
+                                region_key=raw_label,
+                                region_midpoint=region_midpoint,
                             )
                             traces.append(tr)
                             curves.append(
@@ -4906,6 +5123,9 @@ class TimeSeriesEditorQt(QMainWindow):
                                     alpha=1.0,
                                     range_mask=range_mask,
                                     range_key=raw_label,
+                                    region_mask=region_mask,
+                                    region_key=raw_label,
+                                    region_midpoint=region_midpoint,
                                 )
                             )
                     continue  # nothing else to do for time-domain loop
@@ -5108,6 +5328,88 @@ class TimeSeriesEditorQt(QMainWindow):
                                         fill_alpha=0.15,
                                         line_alpha=0.0,
                                     )
+                    region_curve = next(
+                        (
+                            curve
+                            for curve in curves
+                            if curve.get("region_mask") is not None
+                            and np.asarray(curve.get("region_mask")).size == len(curve["t"])
+                        ),
+                        None,
+                    )
+                    if region_curve is not None:
+                        y_vals = np.concatenate([np.asarray(curve["y"]) for curve in curves]) if curves else np.array([])
+                        if y_vals.size:
+                            y_low = float(np.nanmin(y_vals))
+                            y_high = float(np.nanmax(y_vals))
+                            if np.isfinite(y_low) and np.isfinite(y_high):
+                                if abs(y_high - y_low) < 1e-12:
+                                    y_high = y_low + 1.0
+                                for seg_start, seg_end in self._mask_segments(
+                                    np.asarray(region_curve["t"]),
+                                    np.asarray(region_curve["region_mask"], dtype=bool),
+                                ):
+                                    fig.add_trace(
+                                        go.Scatter(
+                                            x=[seg_start, seg_start, seg_end, seg_end, seg_start],
+                                            y=[y_low, y_high, y_high, y_low, y_low],
+                                            mode="lines",
+                                            line=dict(width=0),
+                                            fill="toself",
+                                            fillcolor="rgba(255,215,0,0.25)",
+                                            hoverinfo="skip",
+                                            showlegend=False,
+                                        ),
+                                        row=r,
+                                        col=c,
+                                    )
+                                mid = region_curve.get("region_midpoint")
+                                if mid is not None:
+                                    fig.add_trace(
+                                        go.Scatter(
+                                            x=[mid[0]],
+                                            y=[mid[1]],
+                                            mode="markers",
+                                            marker=dict(color="gold", size=8),
+                                            opacity=0.8,
+                                            showlegend=False,
+                                        ),
+                                        row=r,
+                                        col=c,
+                                    )
+                    region_curve = next(
+                        (
+                            c
+                            for c in curves
+                            if c.get("region_mask") is not None
+                            and np.asarray(c.get("region_mask")).size == len(c["t"])
+                        ),
+                        None,
+                    )
+                    if region_curve is not None:
+                        y_vals = np.concatenate([np.asarray(c["y"]) for c in curves]) if curves else np.array([])
+                        if y_vals.size:
+                            y_low = float(np.nanmin(y_vals))
+                            y_high = float(np.nanmax(y_vals))
+                            if np.isfinite(y_low) and np.isfinite(y_high):
+                                if abs(y_high - y_low) < 1e-12:
+                                    y_high = y_low + 1.0
+                                for seg_start, seg_end in self._mask_segments(
+                                    np.asarray(region_curve["t"]),
+                                    np.asarray(region_curve["region_mask"], dtype=bool),
+                                ):
+                                    p.quad(
+                                        left=[seg_start],
+                                        right=[seg_end],
+                                        bottom=[y_low],
+                                        top=[y_high],
+                                        fill_color="gold",
+                                        fill_alpha=0.2,
+                                        line_alpha=0.0,
+                                    )
+                                mid = region_curve.get("region_midpoint")
+                                if mid is not None:
+                                    p.scatter([mid[0]], [mid[1]], size=7, color="gold", alpha=0.9)
                     if mark_extrema and curves:
                         all_t = np.concatenate([np.asarray(c["t"]) for c in curves])
                         all_y = np.concatenate([np.asarray(c["y"]) for c in curves])
@@ -5376,6 +5678,24 @@ class TimeSeriesEditorQt(QMainWindow):
                                 np.asarray(range_curve["range_mask"], dtype=bool),
                             ):
                                 ax.axvspan(seg_start, seg_end, color="green", alpha=0.15)
+                region_curve = next(
+                    (
+                        c
+                        for c in curves
+                        if c.get("region_mask") is not None
+                        and np.asarray(c.get("region_mask")).size == len(c["t"])
+                    ),
+                    None,
+                )
+                if region_curve is not None:
+                    for seg_start, seg_end in self._mask_segments(
+                        np.asarray(region_curve["t"]),
+                        np.asarray(region_curve["region_mask"], dtype=bool),
+                    ):
+                        ax.axvspan(seg_start, seg_end, color="gold", alpha=0.25)
+                    mid = region_curve.get("region_midpoint")
+                    if mid is not None:
+                        ax.scatter(mid[0], mid[1], color="gold", alpha=0.9, label="Longest region midpoint")
                 if mark_extrema and curves:
                     all_t = np.concatenate([np.asarray(c["t"]) for c in curves])
                     all_y = np.concatenate([np.asarray(c["y"]) for c in curves])
@@ -5788,6 +6108,19 @@ class TimeSeriesEditorQt(QMainWindow):
                 if t_arr.size != m_arr.size:
                     continue
                 range_groups.setdefault(tr.get("range_key", tr["label"]), (t_arr, m_arr, np.asarray(tr["y"])))
+            region_groups = {}
+            for tr in traces:
+                rmask = tr.get("region_mask")
+                if rmask is None:
+                    continue
+                t_arr = np.asarray(tr["t"])
+                m_arr = np.asarray(rmask, dtype=bool)
+                if t_arr.size != m_arr.size:
+                    continue
+                region_groups.setdefault(
+                    tr.get("region_key", tr["label"]),
+                    (t_arr, m_arr, np.asarray(tr["y"]), tr.get("region_midpoint")),
+                )
             for _, (t_arr, m_arr, y_arr) in range_groups.items():
                 if not np.any(m_arr):
                     continue
@@ -5807,6 +6140,27 @@ class TimeSeriesEditorQt(QMainWindow):
                         fill_alpha=0.15,
                         line_alpha=0.0,
                     )
+            for _, (t_arr, m_arr, y_arr, midpoint) in region_groups.items():
+                if not np.any(m_arr):
+                    continue
+                y_low = float(np.nanmin(y_arr))
+                y_high = float(np.nanmax(y_arr))
+                if not (np.isfinite(y_low) and np.isfinite(y_high)):
+                    continue
+                if abs(y_high - y_low) < 1e-12:
+                    y_high = y_low + 1.0
+                for seg_start, seg_end in self._mask_segments(t_arr, m_arr):
+                    p.quad(
+                        left=[seg_start],
+                        right=[seg_end],
+                        bottom=[y_low],
+                        top=[y_high],
+                        fill_color="gold",
+                        fill_alpha=0.2,
+                        line_alpha=0.0,
+                    )
+                if midpoint is not None:
+                    p.scatter([midpoint[0]], [midpoint[1]], size=7, color="gold", alpha=0.9)
 
             if mark_extrema and traces:
                 import numpy as np
@@ -5921,6 +6275,19 @@ class TimeSeriesEditorQt(QMainWindow):
                 if t_arr.size != m_arr.size:
                     continue
                 range_groups.setdefault(tr.get("range_key", tr["label"]), (t_arr, m_arr, np.asarray(tr["y"])))
+            region_groups = {}
+            for tr in traces:
+                rmask = tr.get("region_mask")
+                if rmask is None:
+                    continue
+                t_arr = np.asarray(tr["t"])
+                m_arr = np.asarray(rmask, dtype=bool)
+                if t_arr.size != m_arr.size:
+                    continue
+                region_groups.setdefault(
+                    tr.get("region_key", tr["label"]),
+                    (t_arr, m_arr, np.asarray(tr["y"]), tr.get("region_midpoint")),
+                )
             for _, (t_arr, m_arr, y_arr) in range_groups.items():
                 if not np.any(m_arr):
                     continue
@@ -5941,6 +6308,39 @@ class TimeSeriesEditorQt(QMainWindow):
                             fillcolor="rgba(0,128,0,0.15)",
                             hoverinfo="skip",
                             showlegend=False,
+                        )
+                    )
+            for _, (t_arr, m_arr, y_arr, midpoint) in region_groups.items():
+                if not np.any(m_arr):
+                    continue
+                y_low = float(np.nanmin(y_arr))
+                y_high = float(np.nanmax(y_arr))
+                if not (np.isfinite(y_low) and np.isfinite(y_high)):
+                    continue
+                if abs(y_high - y_low) < 1e-12:
+                    y_high = y_low + 1.0
+                for seg_start, seg_end in self._mask_segments(t_arr, m_arr):
+                    fig.add_trace(
+                        go.Scatter(
+                            x=[seg_start, seg_start, seg_end, seg_end, seg_start],
+                            y=[y_low, y_high, y_high, y_low, y_low],
+                            mode="lines",
+                            line=dict(width=0),
+                            fill="toself",
+                            fillcolor="rgba(255,215,0,0.25)",
+                            hoverinfo="skip",
+                            showlegend=False,
+                        )
+                    )
+                if midpoint is not None:
+                    fig.add_trace(
+                        go.Scatter(
+                            x=[midpoint[0]],
+                            y=[midpoint[1]],
+                            mode="markers",
+                            marker=dict(color="gold", size=8),
+                            opacity=0.8,
+                            name="Longest region midpoint",
                         )
                     )
             if mark_extrema and traces:
@@ -6080,11 +6480,31 @@ class TimeSeriesEditorQt(QMainWindow):
             if t_arr.size != m_arr.size:
                 continue
             range_groups.setdefault(tr.get("range_key", tr["label"]), (t_arr, m_arr, np.asarray(tr["y"])))
+        region_groups = {}
+        for tr in traces:
+            rmask = tr.get("region_mask")
+            if rmask is None:
+                continue
+            t_arr = np.asarray(tr["t"])
+            m_arr = np.asarray(rmask, dtype=bool)
+            if t_arr.size != m_arr.size:
+                continue
+            region_groups.setdefault(
+                tr.get("region_key", tr["label"]),
+                (t_arr, m_arr, np.asarray(tr["y"]), tr.get("region_midpoint")),
+            )
         for _, (t_arr, m_arr, y_arr) in range_groups.items():
             if not np.any(m_arr):
                 continue
             for seg_start, seg_end in self._mask_segments(t_arr, m_arr):
                 ax.axvspan(seg_start, seg_end, color="green", alpha=0.15)
+        for _, (t_arr, m_arr, _y_arr, midpoint) in region_groups.items():
+            if not np.any(m_arr):
+                continue
+            for seg_start, seg_end in self._mask_segments(t_arr, m_arr):
+                ax.axvspan(seg_start, seg_end, color="gold", alpha=0.25)
+            if midpoint is not None:
+                ax.scatter(midpoint[0], midpoint[1], color="gold", alpha=0.9, label="Longest region midpoint")
         if mark_extrema and traces:
             all_t = np.concatenate([np.asarray(tr["t"]) for tr in traces])
             all_y = np.concatenate([np.asarray(tr["y"]) for tr in traces])
