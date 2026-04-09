@@ -575,11 +575,13 @@ class TimeSeriesEditorQt(QMainWindow):
         time_layout = QHBoxLayout(time_group)
         time_layout.addWidget(QLabel("Start:"))
         self.time_start = QLineEdit()
-        self.time_start.setFixedWidth(60)
+        self.time_start.setMinimumWidth(180)
+        self.time_start.setPlaceholderText("YYYY-MM-DD HH:MM:SS or numeric")
         time_layout.addWidget(self.time_start)
         time_layout.addWidget(QLabel("End:"))
         self.time_end = QLineEdit()
-        self.time_end.setFixedWidth(60)
+        self.time_end.setMinimumWidth(180)
+        self.time_end.setPlaceholderText("YYYY-MM-DD HH:MM:SS or numeric")
         time_layout.addWidget(self.time_end)
         self.reset_time_window_btn = QPushButton("Reset")
         time_layout.addWidget(self.reset_time_window_btn)
@@ -6709,6 +6711,37 @@ class TimeSeriesEditorQt(QMainWindow):
         t = ts.t
         if t.size == 0:
             return np.zeros(0, dtype=bool)
+
+        t_arr = np.asarray(t)
+        if np.issubdtype(t_arr.dtype, np.datetime64):
+            t_dt = pd.to_datetime(t_arr, errors="coerce").to_numpy(dtype="datetime64[ns]")
+            if t_dt.size == 0:
+                return np.zeros(0, dtype=bool)
+
+            default_min = pd.Timestamp(t_dt[0])
+            default_max = pd.Timestamp(t_dt[-1])
+
+            def _safe_datetime(txt, default):
+                raw = txt.strip()
+                if not raw:
+                    return default
+                parsed = pd.to_datetime(raw, errors="coerce")
+                return parsed if pd.notna(parsed) else default
+
+            tmin_dt = _safe_datetime(self.time_start.text(), default_min)
+            tmax_dt = _safe_datetime(self.time_end.text(), default_max)
+            if tmax_dt < tmin_dt:
+                tmin_dt, tmax_dt = tmax_dt, tmin_dt
+
+            tmin = np.datetime64(tmin_dt.to_datetime64())
+            tmax = np.datetime64(tmax_dt.to_datetime64())
+            i0 = np.searchsorted(t_dt, tmin, side="left")
+            i1 = np.searchsorted(t_dt, tmax, side="right")
+            if i0 == 0 and i1 == len(t_dt):
+                return slice(None)
+            if np.all(np.diff(t_dt[i0:i1]) > np.timedelta64(0, "ns")):
+                return slice(i0, i1)
+            return (t_dt >= tmin) & (t_dt <= tmax)
 
         def _safe_float(txt, default):
             try:
