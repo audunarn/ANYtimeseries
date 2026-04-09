@@ -74,6 +74,13 @@ class EVMWindow(QDialog):
         self.ts = tsdb.getm()[var_name]
         self.x = self.ts.x
         self.t = self.ts.t
+        dtg_time = getattr(self.ts, "dtg_time", None)
+        if dtg_time is not None and len(dtg_time) == len(self.t):
+            self._time_for_plot = dtg_time
+            self._has_datetime_time = True
+        else:
+            self._time_for_plot = self.t
+            self._has_datetime_time = False
 
         self.engine_combo = QComboBox()
         self.engine_combo.addItem("Built-in (GPD)", "builtin")
@@ -492,10 +499,10 @@ class EVMWindow(QDialog):
         self.extremes_fig.clear()
         ax = self.extremes_fig.add_subplot(111)
 
-        ax.plot(self.t, self.x, label="Time series")
+        ax.plot(self._time_for_plot, self.x, label="Time series")
         ax.axhline(threshold, color="red", linestyle="--", label="Threshold")
         ax.set_title("Time Series")
-        ax.set_xlabel("Time")
+        ax.set_xlabel("Date-time" if self._has_datetime_time else "Time")
         ax.set_ylabel(self.ts.name)
         ax.grid(True)
         ax.legend()
@@ -878,6 +885,10 @@ class EVMWindow(QDialog):
 
             pyext_options = dict(base_options)
             pyext_options["r"] = declustering_window
+            if self._has_datetime_time:
+                pyext_options["datetime_index"] = np.asarray(
+                    self._time_for_plot, dtype=object
+                )
 
         calc_kwargs = {}
         if engine == "pyextremes":
@@ -1168,9 +1179,17 @@ class EVMWindow(QDialog):
         else:
             idx = 0
 
+        level_value = evm_result.return_levels[idx]
+        if np.isfinite(level_value):
+            level_text = f"{level_value:.5f} {units}"
+        else:
+            level_text = (
+                "n/a (duration shorter than mean threshold-exceedance interval)"
+            )
+
         result += (
             f"The {evm_result.return_periods[idx]:.1f} hour return level is\n"
-            f"{evm_result.return_levels[idx]:.5f} {units}\n\n"
+            f"{level_text}\n\n"
         )
         result += (
             "Fitted tail parameters:\n"
@@ -1421,10 +1440,10 @@ class EVMWindow(QDialog):
         ax = self.fig.add_subplot(1, 3, 2)
         qax = self.fig.add_subplot(1, 3, 3)
 
-        ts_ax.plot(self.t, self.x, label="Time series")
+        ts_ax.plot(self._time_for_plot, self.x, label="Time series")
         ts_ax.axhline(threshold, color="red", linestyle="--", label="Threshold")
         ts_ax.set_title("Time Series")
-        ts_ax.set_xlabel("Time")
+        ts_ax.set_xlabel("Date-time" if self._has_datetime_time else "Time")
         ts_ax.set_ylabel(self.ts.name)
         ts_ax.minorticks_on()
         ts_ax.grid(True, which="both", linestyle="--", alpha=0.5)

@@ -9,6 +9,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass
 import re
+import warnings
 from typing import Any, Mapping, Sequence
 
 import matplotlib.ticker as mticker
@@ -368,8 +369,18 @@ def _return_levels(
             excursion = (scale / shape) * (np.power(scaled_rate, shape) - 1.0)
 
     if tail == "upper":
-        return threshold + excursion
-    return threshold - excursion
+        levels = threshold + excursion
+    else:
+        levels = threshold - excursion
+
+    # POT/GPD return-level expressions are only meaningful in the tail region,
+    # i.e. for durations where the expected number of threshold exceedances is
+    # at least one. For shorter durations (λT < 1) the expression predicts
+    # sub-threshold values that are not part of the fitted tail model.
+    valid_mask = scaled_rate >= 1.0
+    levels = np.asarray(levels, dtype=float)
+    levels = np.where(valid_mask, levels, np.nan)
+    return levels
 
 
 
@@ -563,10 +574,17 @@ def _calculate_extreme_value_statistics_builtin(
                     else:
                         boot_levels = threshold - excursion
 
-                    lower_bounds = np.percentile(boot_levels, ci_alpha / 2, axis=0)
-                    upper_bounds = np.percentile(
-                        boot_levels, 100.0 - ci_alpha / 2, axis=0
-                    )
+                    valid_durations = (exceed_rate * durations) >= 1.0
+                    if not np.all(valid_durations):
+                        boot_levels[:, ~valid_durations] = np.nan
+
+                    with np.errstate(invalid="ignore"):
+                        lower_bounds = np.nanpercentile(
+                            boot_levels, ci_alpha / 2, axis=0
+                        )
+                        upper_bounds = np.nanpercentile(
+                            boot_levels, 100.0 - ci_alpha / 2, axis=0
+                        )
 
     return ExtremeValueResult(
         return_periods=return_periods,
@@ -688,16 +706,36 @@ def _calculate_extreme_value_statistics_pyextremes(
             "pyextremes must be installed to use engine='pyextremes'"
         ) from exc
 
-    t_arr, x_arr = _prepare_tail_arrays(
-        np.asarray(t, dtype=float), np.asarray(x, dtype=float), tail
-    )
+    t_input = np.asarray(t, dtype=float)
+    x_input = np.asarray(x, dtype=float)
+    order = np.argsort(t_input)
+    t_arr, x_arr = _prepare_tail_arrays(t_input, x_input, tail)
 
     if t_arr.size < 2:
         raise ValueError("At least two samples are required for extreme value analysis")
 
-    start_time = pd.Timestamp("1970-01-01")
-    offsets = pd.to_timedelta(t_arr - t_arr[0], unit="s")
-    index = start_time + offsets
+    datetime_index_opt = options.get("datetime_index")
+    if datetime_index_opt is not None:
+        dt_arr = np.asarray(datetime_index_opt, dtype=object)
+        if dt_arr.shape != x_input.shape:
+            raise ValueError(
+                "pyextremes option 'datetime_index' must match the shape of x"
+            )
+
+        dt_sorted = dt_arr[order]
+        index = pd.to_datetime(dt_sorted, errors="coerce")
+        if np.any(pd.isna(index)):
+            raise ValueError(
+                "pyextremes option 'datetime_index' contains invalid datetime values"
+            )
+        index = pd.DatetimeIndex(index)
+        time_index_source = "provided_datetime"
+    else:
+        start_time = pd.Timestamp("1970-01-01")
+        offsets = pd.to_timedelta(t_arr - t_arr[0], unit="s")
+        index = start_time + offsets
+        time_index_source = "relative_seconds"
+
     series = pd.Series(x_arr, index=index, name="signal")
 
     method = str(options.get("method", "POT")).upper()
@@ -708,6 +746,9 @@ def _calculate_extreme_value_statistics_pyextremes(
     metadata: dict[str, object] = {
         "method": method,
         "extremes_type": extremes_type,
+        "time_index_source": time_index_source,
+        "time_index_start": series.index[0],
+        "time_index_end": series.index[-1],
     }
 
     plotting_position_opt = options.get("plotting_position", "weibull")
@@ -874,14 +915,36 @@ def _calculate_extreme_value_statistics_pyextremes(
         seed = int(rng.integers(0, 2**31 - 1))
 
     with _temporary_numpy_seed(seed):
-        return_values = eva.get_return_value(
-            return_period=pyext_return_periods,
-            return_period_size=return_period_size,
-            alpha=alpha,
-            n_samples=n_samples,
-        )
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message="invalid value encountered in subtract",
+                category=RuntimeWarning,
+                module=r"numpy\.lib\._function_base_impl",
+            )
+            return_values = eva.get_return_value(
+                return_period=pyext_return_periods,
+                return_period_size=return_period_size,
+                alpha=alpha,
+                n_samples=n_samples,
+            )
 
     return_levels, ci_lower, ci_upper = return_values
+
+    return_levels = np.asarray(return_levels, dtype=float)
+    if not np.any(np.isfinite(return_levels)):
+        # PyExtremes occasionally produces non-finite bootstrap outputs for
+        # confidence bounds at short return periods. Retry without CI
+        # estimation so that at least deterministic return levels are reported.
+        with _temporary_numpy_seed(seed):
+            point_only = eva.get_return_value(
+                return_period=pyext_return_periods,
+                return_period_size=return_period_size,
+                alpha=None,
+            )
+        return_levels = np.asarray(point_only[0], dtype=float)
+        ci_lower = None
+        ci_upper = None
 
     diagnostic_figure = None
     try:
@@ -941,7 +1004,6 @@ def _calculate_extreme_value_statistics_pyextremes(
     except Exception:  # pragma: no cover - plotting should not fail analysis
         diagnostic_figure = None
 
-    return_levels = np.asarray(return_levels, dtype=float)
     if return_levels.ndim == 0:
         return_levels = return_levels[np.newaxis]
 
@@ -982,4 +1044,3 @@ __all__ = [
     "declustering_boundaries",
 
 ]
-
