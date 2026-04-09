@@ -708,7 +708,7 @@ class TimeSeriesEditorQt(QMainWindow):
         trim_row.addWidget(QLabel("Range mode:"))
         trim_row.addWidget(self.plot_range_mode_combo)
         self.plot_range_help_btn = QPushButton("ℹ")
-        self.plot_range_help_btn.setToolTip("Show help for green and blue region/range markings.")
+        self.plot_range_help_btn.setToolTip("Show help for green and yellow region/range markings.")
         self.plot_range_help_btn.setMaximumWidth(28)
         self.plot_range_help_btn.clicked.connect(self.show_plot_range_help)
         trim_row.addWidget(self.plot_range_help_btn)
@@ -1942,7 +1942,7 @@ class TimeSeriesEditorQt(QMainWindow):
         }
 
     def show_plot_range_help(self):
-        """Show usage information for green range and blue threshold overlays."""
+        """Show usage information for green range and yellow threshold overlays."""
         QMessageBox.information(
             self,
             "Range / Region Plot Help",
@@ -1953,20 +1953,20 @@ class TimeSeriesEditorQt(QMainWindow):
                     "  • Marks intervals where the selected range variable is inside the range.",
                     "  • Used for angle/range based highlighting (transparent green).",
                     "",
-                    "Blue threshold-duration region marking (new):",
+                    "Yellow threshold-duration region marking (new):",
                     "  • Use >value, time   or   <value, time",
                     "  • Examples: >300, 3hr   <2.5, 30sec   >0.8, 500ms",
                     "  • Also supports longest, e.g. >300, longest",
-                    "  • Marks matching regions in transparent blue and places a marker",
+                    "  • Marks matching regions in transparent yellow and places a marker",
                     "    at the midpoint of the longest matching region.",
                     "",
-                    "Supported time units for blue regions:",
+                    "Supported time units for yellow regions:",
                     "  ms, s, sec, second, seconds, m, min, minute, minutes,",
                     "  d, day, days, y, year, years, h, hr, hour, hours",
                     "",
                     "Notes:",
-                    "  • Green and blue markings can be combined in the same plot.",
-                    "  • Blue rules are applied to the variable whose input contains",
+                    "  • Green and yellow markings can be combined in the same plot.",
+                    "  • Yellow rules are applied to the variable whose input contains",
                     "    the >/< expression.",
                 ]
             ),
@@ -5034,8 +5034,12 @@ class TimeSeriesEditorQt(QMainWindow):
                                 )
                                 region_mask = (~np.isnan(y_interp)) & (y_interp >= 0.5)
                         mid = region_ctx.get("midpoint")
-                        if mid is not None:
-                            region_midpoint = (float(mid[0]), float(mid[1]))
+                        if mid is not None and region_mask is not None and np.any(region_mask):
+                            t_num = np.asarray(ts_win.t, dtype=float)
+                            true_idx = np.flatnonzero(region_mask)
+                            if true_idx.size:
+                                closest = true_idx[np.argmin(np.abs(t_num[true_idx] - float(mid[0])))]
+                                region_midpoint = (t_plot[closest], float(np.asarray(ts_win.x, dtype=float)[closest]))
                     entry = grid_traces.setdefault(
                         raw_label, {"label": disp_label, "curves": []}
                     )
@@ -5352,7 +5356,7 @@ class TimeSeriesEditorQt(QMainWindow):
                                             mode="lines",
                                             line=dict(width=0),
                                             fill="toself",
-                                            fillcolor="rgba(0,0,255,0.2)",
+                                            fillcolor="rgba(255,215,0,0.25)",
                                             hoverinfo="skip",
                                             showlegend=False,
                                         ),
@@ -5366,7 +5370,7 @@ class TimeSeriesEditorQt(QMainWindow):
                                             x=[mid[0]],
                                             y=[mid[1]],
                                             mode="markers",
-                                            marker=dict(color="blue", size=8),
+                                            marker=dict(color="gold", size=8),
                                             opacity=0.8,
                                             showlegend=False,
                                         ),
@@ -5399,13 +5403,13 @@ class TimeSeriesEditorQt(QMainWindow):
                                         right=[seg_end],
                                         bottom=[y_low],
                                         top=[y_high],
-                                        fill_color="blue",
+                                        fill_color="gold",
                                         fill_alpha=0.2,
                                         line_alpha=0.0,
                                     )
                                 mid = region_curve.get("region_midpoint")
                                 if mid is not None:
-                                    p.scatter([mid[0]], [mid[1]], size=7, color="blue", alpha=0.8)
+                                    p.scatter([mid[0]], [mid[1]], size=7, color="gold", alpha=0.9)
                     if mark_extrema and curves:
                         all_t = np.concatenate([np.asarray(c["t"]) for c in curves])
                         all_y = np.concatenate([np.asarray(c["y"]) for c in curves])
@@ -5688,10 +5692,10 @@ class TimeSeriesEditorQt(QMainWindow):
                         np.asarray(region_curve["t"]),
                         np.asarray(region_curve["region_mask"], dtype=bool),
                     ):
-                        ax.axvspan(seg_start, seg_end, color="blue", alpha=0.2)
+                        ax.axvspan(seg_start, seg_end, color="gold", alpha=0.25)
                     mid = region_curve.get("region_midpoint")
                     if mid is not None:
-                        ax.scatter(mid[0], mid[1], color="blue", alpha=0.8, label="Longest region midpoint")
+                        ax.scatter(mid[0], mid[1], color="gold", alpha=0.9, label="Longest region midpoint")
                 if mark_extrema and curves:
                     all_t = np.concatenate([np.asarray(c["t"]) for c in curves])
                     all_y = np.concatenate([np.asarray(c["y"]) for c in curves])
@@ -6151,12 +6155,12 @@ class TimeSeriesEditorQt(QMainWindow):
                         right=[seg_end],
                         bottom=[y_low],
                         top=[y_high],
-                        fill_color="blue",
+                        fill_color="gold",
                         fill_alpha=0.2,
                         line_alpha=0.0,
                     )
                 if midpoint is not None:
-                    p.scatter([midpoint[0]], [midpoint[1]], size=7, color="blue", alpha=0.8)
+                    p.scatter([midpoint[0]], [midpoint[1]], size=7, color="gold", alpha=0.9)
 
             if mark_extrema and traces:
                 import numpy as np
@@ -6323,7 +6327,7 @@ class TimeSeriesEditorQt(QMainWindow):
                             mode="lines",
                             line=dict(width=0),
                             fill="toself",
-                            fillcolor="rgba(0,0,255,0.2)",
+                            fillcolor="rgba(255,215,0,0.25)",
                             hoverinfo="skip",
                             showlegend=False,
                         )
@@ -6334,7 +6338,7 @@ class TimeSeriesEditorQt(QMainWindow):
                             x=[midpoint[0]],
                             y=[midpoint[1]],
                             mode="markers",
-                            marker=dict(color="blue", size=8),
+                            marker=dict(color="gold", size=8),
                             opacity=0.8,
                             name="Longest region midpoint",
                         )
@@ -6498,9 +6502,9 @@ class TimeSeriesEditorQt(QMainWindow):
             if not np.any(m_arr):
                 continue
             for seg_start, seg_end in self._mask_segments(t_arr, m_arr):
-                ax.axvspan(seg_start, seg_end, color="blue", alpha=0.2)
+                ax.axvspan(seg_start, seg_end, color="gold", alpha=0.25)
             if midpoint is not None:
-                ax.scatter(midpoint[0], midpoint[1], color="blue", alpha=0.8, label="Longest region midpoint")
+                ax.scatter(midpoint[0], midpoint[1], color="gold", alpha=0.9, label="Longest region midpoint")
         if mark_extrema and traces:
             all_t = np.concatenate([np.asarray(tr["t"]) for tr in traces])
             all_y = np.concatenate([np.asarray(tr["y"]) for tr in traces])
