@@ -6717,8 +6717,15 @@ class TimeSeriesEditorQt(QMainWindow):
             return np.zeros(0, dtype=bool)
 
         t_arr = np.asarray(t)
+        t_dt = None
         if np.issubdtype(t_arr.dtype, np.datetime64):
             t_dt = pd.to_datetime(t_arr, errors="coerce").to_numpy(dtype="datetime64[ns]")
+        elif getattr(ts, "dtg_time", None) is not None:
+            t_dt = pd.to_datetime(np.asarray(ts.dtg_time), errors="coerce").to_numpy(
+                dtype="datetime64[ns]"
+            )
+
+        if t_dt is not None:
             if t_dt.size == 0:
                 return np.zeros(0, dtype=bool)
 
