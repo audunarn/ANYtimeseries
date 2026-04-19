@@ -25,20 +25,6 @@ def _first_existing_name(candidates: Iterable[str], available: Iterable[str]) ->
     return None
 
 
-def _safe_get_coord_or_var(ds: xr.Dataset, name: str) -> xr.DataArray | None:
-    """Return a coordinate or variable without triggering eager fallback lookups.
-
-    Using ``dict.get(name, ds[name])`` is unsafe here because the fallback
-    expression is evaluated eagerly and can raise ``KeyError`` even when the
-    key exists in the first mapping.
-    """
-    if name in ds.coords:
-        return ds.coords[name]
-    if name in ds.variables:
-        return ds[name]
-    return None
-
-
 def _pick_coords(ds: xr.Dataset, var_name: str) -> tuple[np.ndarray, np.ndarray]:
     da = ds[var_name]
     coord_candidates_lon = ("lon", "longitude", "xlon", "nav_lon")
@@ -57,16 +43,8 @@ def _pick_coords(ds: xr.Dataset, var_name: str) -> tuple[np.ndarray, np.ndarray]
             "Expected one of: lon/longitude/nav_lon and lat/latitude/nav_lat."
         )
 
-    lon_da = _safe_get_coord_or_var(ds, lon_name)
-    lat_da = _safe_get_coord_or_var(ds, lat_name)
-    if lon_da is None or lat_da is None:
-        raise ValueError(
-            "Found coordinate aliases but could not access longitude/latitude arrays. "
-            f"Available coords: {list(ds.coords)}; variables: {list(ds.variables)}"
-        )
-
-    lon = lon_da.values
-    lat = lat_da.values
+    lon = ds[lon_name].values
+    lat = ds[lat_name].values
     return lon, lat
 
 
