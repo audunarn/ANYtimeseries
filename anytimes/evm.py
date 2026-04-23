@@ -350,18 +350,19 @@ def _return_levels(
     tail: str,
 
 ) -> np.ndarray:
-    r"""Compute return levels using the OrcaFlex convention.
+    r"""Compute return levels from a POT/GPD model.
 
-    The OrcaFlex documentation defines the return level for a storm of
-    duration ``T`` hours as ::
+    The return-level expression is evaluated for the supplied return periods
+    (expressed here in hours). The fitted threshold ``u``, scale ``σ``,
+    shape ``ξ`` and mean exceedance rate ``λ`` define the extrapolated level.
+
+    For the upper tail:
 
         z_T = u + \frac{\sigma}{\xi} \left( (\lambda T)^{\xi} - 1 \right)
 
-    where ``u`` is the threshold, ``\sigma`` is the scale, ``\xi`` is the
-    shape and ``\lambda`` is the mean cluster rate per hour.  The lower-tail
-    expression mirrors the upper-tail result but subtracts the positive GPD
-    excursion instead of adding it.  The limit as ``\xi`` tends to zero is
-    handled analytically.
+    and for the lower tail the excursion is subtracted instead of added.
+
+    The limit as ``ξ`` tends to zero is handled analytically.
     """
 
     scaled_rate = exceedance_rate * return_durations
@@ -435,10 +436,10 @@ def calculate_extreme_value_statistics(
     ----------
     analysis_mode:
         "record" means use the actual record duration in ``t`` to infer
-        exceedance rate and long-term return values.
+        exceedance rate and return values from the fitted tail.
         "short_term" means the time series is a single realization, e.g. one
-        OrcaFlex 3-hour simulation. In that case, long-term return values are
-        not inferred from the record itself.
+        OrcaFlex 3-hour simulation. Return values are still extrapolated from
+        the fitted tail, but should be interpreted with greater caution.
     reference_storm_duration_hours:
         Used for labelling / metadata in short-term realization mode.
     """
