@@ -72,11 +72,30 @@ class EVMWindow(QDialog):
         )
 
         self.ts = tsdb.getm()[var_name]
-        self.x = self.ts.x
-        self.t = self.ts.t
+
+        x_raw = np.asarray(self.ts.x, dtype=float)
+        t_raw = np.asarray(self.ts.t, dtype=float)
+
+        if x_raw.shape != t_raw.shape:
+            raise ValueError("Time and data arrays must have the same length.")
+
+        finite_mask = np.isfinite(x_raw) & np.isfinite(t_raw)
+
+        if not np.any(finite_mask):
+            raise ValueError("Time series contains no finite samples.")
+
+        self.x = x_raw[finite_mask]
+        self.t = t_raw[finite_mask]
+
+        # sort by time in case input is unsorted
+        order = np.argsort(self.t)
+        self.t = self.t[order]
+        self.x = self.x[order]
+
         dtg_time = getattr(self.ts, "dtg_time", None)
-        if dtg_time is not None and len(dtg_time) == len(self.t):
-            self._time_for_plot = dtg_time
+        if dtg_time is not None and len(dtg_time) == len(t_raw):
+            dtg_arr = np.asarray(dtg_time, dtype=object)[finite_mask][order]
+            self._time_for_plot = dtg_arr
             self._has_datetime_time = True
         else:
             self._time_for_plot = self.t
@@ -93,10 +112,10 @@ class EVMWindow(QDialog):
         self.tail_combo.addItems(["upper", "lower"])
         self.tail_combo.setCurrentText("upper")
 
-        suggested = 0.8 * np.max(self.x)
+        suggested = 0.8 * np.nanmax(self.x)
         self.threshold_spin = QDoubleSpinBox()
         self.threshold_spin.setMaximum(10000000000)
-        self.threshold_spin.setMinimum(float(np.min(self.x)))
+        self.threshold_spin.setMinimum(float(np.nanmin(self.x)))
         self.threshold_spin.setDecimals(4)
         self.threshold_spin.setValue(round(suggested, 4))
         self.threshold_spin.setKeyboardTracking(False)
@@ -234,6 +253,36 @@ class EVMWindow(QDialog):
 
         # Show initial extremes plot with the suggested threshold
         self.update_extremes_plot(threshold)
+
+    def _format_return_period_hours(self, hours: float) -> str:
+        day_hours = 24.0
+        week_hours = 24.0 * 7.0
+        month_hours = 24.0 * 30.4375
+        year_hours = 24.0 * 365.2425
+
+        if abs(hours - day_hours) / day_hours < 1e-6:
+            return "1 day"
+        if abs(hours - week_hours) / week_hours < 1e-6:
+            return "1 week"
+        if abs(hours - month_hours) / month_hours < 1e-6:
+            return "1 month"
+
+        years = hours / year_hours
+        if years >= 1.0:
+            if abs(years - round(years)) < 1e-8:
+                years_rounded = int(round(years))
+                unit = "year" if years_rounded == 1 else "years"
+                return f"{years_rounded} {unit}"
+            unit = "year" if abs(years - 1.0) < 1e-8 else "years"
+            return f"{years:.1f} {unit}"
+
+        days = hours / day_hours
+        if days >= 1.0:
+            unit = "day" if abs(days - 1.0) < 1e-8 else "days"
+            return f"{days:.1f} {unit}"
+
+        unit = "hour" if abs(hours - 1.0) < 1e-8 else "hours"
+        return f"{hours:.1f} {unit}"
 
     def _auto_threshold(self, start_thresh, tail):
         threshold = start_thresh
@@ -656,7 +705,7 @@ class EVMWindow(QDialog):
 
     def on_calc_threshold(self):
         tail = self.tail_combo.currentText()
-        suggested = 0.8 * np.max(self.x) if tail == "upper" else 0.8 * np.min(self.x)
+        suggested = 0.8 * np.nanmax(self.x) if tail == "upper" else 0.8 * np.nanmin(self.x)
         threshold = self._auto_threshold(suggested, tail)
         self.threshold_spin.setValue(round(threshold, 4))
         self._last_evm_result = None
@@ -856,7 +905,6 @@ class EVMWindow(QDialog):
         if self._evm_ran:
             self.run_evm()
 
-
     def _fit_once(self, threshold: float, tail: str, *, precomputed=None):
         engine = self.engine_combo.currentData()
         declustering_window = self._current_declustering_window_seconds()
@@ -872,8 +920,18 @@ class EVMWindow(QDialog):
             else:
                 clustered_peaks = peaks[peaks < threshold]
 
+        clustered_peaks = np.asarray(clustered_peaks, dtype=float)
+        if not np.all(np.isfinite(clustered_peaks)):
+            return "error", {
+                "message": "Clustered exceedances contain NaN or Inf values.",
+                "threshold": threshold,
+            }
+
         if engine != "pyextremes" and len(clustered_peaks) < 10:
             return "insufficient", {"count": len(clustered_peaks), "threshold": threshold}
+
+        duration_hours = float(self.t[-1] - self.t[0]) / 3600.0 if len(self.t) >= 2 else 0.0
+        analysis_mode = "short_term" if duration_hours <= 6.0 else "record"
 
         pyext_options = None
         return_periods = None
@@ -904,10 +962,29 @@ class EVMWindow(QDialog):
                 clustered_peaks=clustered_peaks if engine != "pyextremes" else None,
                 engine=engine,
                 pyextremes_options=pyext_options,
+                analysis_mode=analysis_mode,
+                reference_storm_duration_hours=3.0,
                 **calc_kwargs,
             )
-        except Exception as exc:  # pragma: no cover - defensive GUI guard
+        except Exception as exc:
             return "error", {"message": str(exc), "threshold": threshold}
+
+        if not np.isfinite(evm_result.shape) or not np.isfinite(evm_result.scale):
+            return "error", {
+                "message": (
+                    "Extreme value fit returned non-finite parameters. "
+                    "This usually means the data contains NaN/Inf values, "
+                    "the threshold is unsuitable, or the exceedances have too little variation."
+                ),
+                "threshold": threshold,
+            }
+
+        exceedances = np.asarray(evm_result.exceedances, dtype=float)
+        if exceedances.size == 0 or not np.all(np.isfinite(exceedances)):
+            return "error", {
+                "message": "Extreme value fit returned invalid exceedances.",
+                "threshold": threshold,
+            }
 
         if engine == "pyextremes" and len(evm_result.exceedances) < 10:
             return (
@@ -1127,7 +1204,7 @@ class EVMWindow(QDialog):
         self._latest_warning = warnings_text
 
         units = ""
-        max_val = np.max(self.x) if tail == "upper" else np.min(self.x)
+        max_val = np.nanmax(self.x) if tail == "upper" else np.nanmin(self.x)
 
         header = f"Extreme value statistics ({self.engine_combo.currentText()}): {self.ts.name}"
         if self._latest_warning:
@@ -1140,57 +1217,46 @@ class EVMWindow(QDialog):
             else:
                 result += "Declustering: Mean level crossings\n\n"
 
-        if evm_result.engine == "pyextremes" and evm_result.metadata:
-            meta_lines: list[str] = []
-            method = evm_result.metadata.get("method")
-            if isinstance(method, str):
-                meta_lines.append(f"PyExtremes method: {method}")
-            rp_size = evm_result.metadata.get("return_period_size")
-            if rp_size is not None:
-                meta_lines.append(f"Return-period base: {rp_size}")
-            decluster = evm_result.metadata.get("declustering_window")
-            if decluster is not None:
-                meta_lines.append(f"Declustering window: {decluster}")
-            samples = evm_result.metadata.get("n_samples")
-            if samples is not None:
-                meta_lines.append(f"Bootstrap samples: {samples}")
-            distribution = evm_result.metadata.get("distribution")
-            if distribution is not None:
-                meta_lines.append(f"Distribution: {distribution}")
-            plotting_position = evm_result.metadata.get("plotting_position")
-            if plotting_position is not None:
-                friendly = self._plotting_position_labels.get(
-                    str(plotting_position).lower(), plotting_position
-                )
-                meta_lines.append(f"Plotting position: {friendly}")
-            if meta_lines:
-                result += "\n".join(meta_lines) + "\n\n"
+        if evm_result.metadata:
+            analysis_mode = evm_result.metadata.get("analysis_mode", evm_result.analysis_mode)
+            result += f"Analysis mode: {analysis_mode}\n"
 
-        preferred_hour = 3.0
-        idx_candidates = np.where(
-            np.isclose(evm_result.return_periods, preferred_hour, rtol=1e-6, atol=1e-6)
-        )[0]
-        if idx_candidates.size:
-            idx = int(idx_candidates[0])
-        elif evm_result.return_periods.size:
-            idx = int(
-                np.argmin(np.abs(evm_result.return_periods - preferred_hour))
-            )
-        else:
-            idx = 0
+            ref_storm = evm_result.metadata.get("reference_storm_duration_hours")
+            if ref_storm is not None:
+                result += f"Reference storm duration: {float(ref_storm):.3f} h\n"
 
-        level_value = evm_result.return_levels[idx]
-        if np.isfinite(level_value):
-            level_text = f"{level_value:.5f} {units}"
-        else:
-            level_text = (
-                "n/a (duration shorter than mean threshold-exceedance interval)"
-            )
+            if evm_result.engine == "pyextremes":
+                meta_lines: list[str] = []
+                method = evm_result.metadata.get("method")
+                if isinstance(method, str):
+                    meta_lines.append(f"PyExtremes method: {method}")
+                rp_size = evm_result.metadata.get("return_period_size")
+                if rp_size is not None:
+                    meta_lines.append(f"Return-period base: {rp_size}")
+                decluster = evm_result.metadata.get("declustering_window")
+                if decluster is not None:
+                    meta_lines.append(f"Declustering window: {decluster}")
+                samples = evm_result.metadata.get("n_samples")
+                if samples is not None:
+                    meta_lines.append(f"Bootstrap samples: {samples}")
+                distribution = evm_result.metadata.get("distribution")
+                if distribution is not None:
+                    meta_lines.append(f"Distribution: {distribution}")
+                plotting_position = evm_result.metadata.get("plotting_position")
+                if plotting_position is not None:
+                    friendly = self._plotting_position_labels.get(
+                        str(plotting_position).lower(), plotting_position
+                    )
+                    meta_lines.append(f"Plotting position: {friendly}")
+                if meta_lines:
+                    result += "\n".join(meta_lines) + "\n"
 
-        result += (
-            f"The {evm_result.return_periods[idx]:.1f} hour return level is\n"
-            f"{level_text}\n\n"
-        )
+            note = evm_result.metadata.get("note")
+            if note:
+                result += f"{note}\n"
+
+            result += "\n"
+
         result += (
             "Fitted tail parameters:\n"
             f"Sigma: {scale:.4f}\n"
@@ -1199,20 +1265,44 @@ class EVMWindow(QDialog):
         )
 
         result += f"Total crossings/clusters found: {max(len(boundaries) - 1, 0)}\n"
-
         result += f"Observed maximum value: {max_val:.4f} {units}\n"
         result += f"Return level unit: {units or 'same as input'}\n\n"
-        def _format_hours(value: float) -> str:
-            if abs(value - round(value)) < 1e-8:
-                return f"{int(round(value))}"
-            return f"{value:.1f}".rstrip("0").rstrip(".")
+
+        preferred_targets = [
+            24.0 * 365.2425,  # 1 year
+            24.0 * 365.2425 * 50.0,  # 50 years
+            24.0 * 365.2425 * 100.0,  # 100 years
+            24.0 * 365.2425 * 10000.0,  # 10000 years
+        ]
+
+        chosen_idx = None
+        for target in preferred_targets:
+            matches = np.where(
+                np.isclose(evm_result.return_periods, target, rtol=1e-6, atol=1e-6)
+            )[0]
+            if matches.size:
+                idx = int(matches[0])
+                if np.isfinite(evm_result.return_levels[idx]):
+                    chosen_idx = idx
+                    break
+
+        if chosen_idx is None:
+            finite_idx = np.where(np.isfinite(evm_result.return_levels))[0]
+            if finite_idx.size:
+                chosen_idx = int(finite_idx[0])
+
+        if chosen_idx is not None:
+            result += (
+                f"The {self._format_return_period_hours(evm_result.return_periods[chosen_idx])} return level is\n"
+                f"{evm_result.return_levels[chosen_idx]:.5f} {units}\n\n"
+            )
+        else:
+            result += "Short-term realization mode: return levels are extrapolated from the fitted tail of this realization.\n\n"
 
         result += f"{self.ci_spin.value():.0f}% Confidence Interval:\n"
-
-        available_periods = evm_result.return_periods
-        for target in SUMMARY_RETURN_PERIODS_HOURS:
+        for target in evm_result.return_periods:
             matches = np.where(
-                np.isclose(available_periods, target, rtol=1e-6, atol=1e-6)
+                np.isclose(evm_result.return_periods, target, rtol=1e-6, atol=1e-6)
             )[0]
             if matches.size:
                 idx = int(matches[0])
@@ -1224,7 +1314,8 @@ class EVMWindow(QDialog):
                     interval_text = "n/a – n/a"
             else:
                 interval_text = "n/a – n/a"
-            result += f"{_format_hours(target)} hr: {interval_text}\n"
+
+            result += f"{self._format_return_period_hours(float(target))}: {interval_text}\n"
 
         self.result_text.setPlainText(result)
 
@@ -1403,21 +1494,20 @@ class EVMWindow(QDialog):
         self.show_canvas_message(message)
         self._evm_ran = False
 
-
     def plot_diagnostics(
-        self,
-        durations,
-        levels,
-        exceedances,
-        c,
-        scale,
-        threshold,
-        lower_bounds=None,
-        upper_bounds=None,
-        *,
-        tail: str,
-        warnings: str | None = None,
-        diagnostic_figure: Figure | None = None,
+            self,
+            return_periods_seconds,
+            levels,
+            exceedances,
+            c,
+            scale,
+            threshold,
+            lower_bounds=None,
+            upper_bounds=None,
+            *,
+            tail: str,
+            warnings: str | None = None,
+            diagnostic_figure: Figure | None = None,
     ):
         if diagnostic_figure is not None:
             self._set_canvas_figure(diagnostic_figure)
@@ -1431,6 +1521,7 @@ class EVMWindow(QDialog):
             return
 
         from scipy.stats import genpareto
+        import matplotlib.ticker as mticker
 
         self._set_canvas_figure(self._base_figure)
 
@@ -1440,6 +1531,7 @@ class EVMWindow(QDialog):
         ax = self.fig.add_subplot(1, 3, 2)
         qax = self.fig.add_subplot(1, 3, 3)
 
+        # --- Time series subplot ---
         ts_ax.plot(self._time_for_plot, self.x, label="Time series")
         ts_ax.axhline(threshold, color="red", linestyle="--", label="Threshold")
         ts_ax.set_title("Time Series")
@@ -1448,29 +1540,84 @@ class EVMWindow(QDialog):
         ts_ax.minorticks_on()
         ts_ax.grid(True, which="both", linestyle="--", alpha=0.5)
         ts_ax.legend()
-        ax.plot(durations / 3600, levels, marker="o", label="Return Level")
 
-        if lower_bounds is not None and upper_bounds is not None:
-            ax.fill_between(
-                durations / 3600,
-                lower_bounds,
-                upper_bounds,
-                color="gray",
-                alpha=0.3,
-                label="Confidence Interval",
+        # --- Return level subplot / short-term message ---
+        return_periods_hours = np.asarray(return_periods_seconds, dtype=float) / 3600.0
+        levels = np.asarray(levels, dtype=float)
+
+        finite_mask = (
+                np.isfinite(return_periods_hours)
+                & (return_periods_hours > 0)
+                & np.isfinite(levels)
+        )
+
+        if np.any(finite_mask):
+            x_plot = return_periods_hours[finite_mask]
+            y_plot = levels[finite_mask]
+
+            ax.plot(x_plot, y_plot, marker="o", label="Return Level")
+
+            if lower_bounds is not None and upper_bounds is not None:
+                lower_bounds = np.asarray(lower_bounds, dtype=float)
+                upper_bounds = np.asarray(upper_bounds, dtype=float)
+
+                if (
+                        lower_bounds.shape == levels.shape
+                        and upper_bounds.shape == levels.shape
+                ):
+                    lb_plot = lower_bounds[finite_mask]
+                    ub_plot = upper_bounds[finite_mask]
+                    ci_mask = np.isfinite(lb_plot) & np.isfinite(ub_plot)
+                    if np.any(ci_mask):
+                        ax.fill_between(
+                            x_plot[ci_mask],
+                            lb_plot[ci_mask],
+                            ub_plot[ci_mask],
+                            color="gray",
+                            alpha=0.3,
+                            label="Confidence Interval",
+                        )
+
+            ax.set_xscale("log")
+            ax.xaxis.set_major_locator(mticker.FixedLocator(x_plot))
+            ax.xaxis.set_major_formatter(
+                mticker.FuncFormatter(
+                    lambda value, pos: self._format_return_period_hours(value)
+                )
+            )
+            ax.xaxis.set_minor_locator(mticker.NullLocator())
+            ax.set_title("Return level plot")
+            ax.set_xlabel("Return period")
+            ax.set_ylabel("Return level")
+            for label in ax.get_xticklabels():
+                label.set_rotation(20)
+                label.set_ha("right")
+            ax.grid(True, which="major", linestyle="--", alpha=0.5)
+            ax.legend()
+        else:
+            ax.axis("off")
+            ax.set_title("Return level plot")
+            ax.text(
+                0.5,
+                0.5,
+                "No finite return levels\ncould be computed",
+                ha="center",
+                va="center",
+                wrap=True,
+                fontsize=11,
             )
 
-        ax.set_title("Return level plot")
-        ax.set_xlabel("Storm duration (hours)")
-        ax.set_ylabel("Return level")
-        ax.minorticks_on()
-        ax.grid(True, which="both", linestyle="--", alpha=0.5)
-        ax.legend()
-
+        # --- Quantile plot ---
         exceedances = np.asarray(exceedances, dtype=float)
+        if exceedances.size == 0 or not np.all(np.isfinite(exceedances)):
+            raise ValueError("Exceedances contain invalid values")
+
         excursions = (
             exceedances - threshold if tail == "upper" else threshold - exceedances
         )
+
+        if not np.all(np.isfinite(excursions)):
+            raise ValueError("Excursions contain invalid values")
 
         if np.any(excursions <= 0):
             raise ValueError("All exceedances must lie beyond the threshold")

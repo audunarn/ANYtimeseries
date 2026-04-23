@@ -122,6 +122,7 @@ class ExtremeValueResult:
     engine: str = "builtin"
     metadata: Mapping[str, object] | None = None
     diagnostic_figure: object | None = None
+    analysis_mode: str = "record"
 
 
 @contextmanager
@@ -191,6 +192,9 @@ def decluster_peaks(
     if x_arr.size == 0:
         return np.empty(0, dtype=float), np.array([0], dtype=int)
 
+    if not np.all(np.isfinite(x_arr)):
+        raise ValueError("x must contain only finite values")
+
     if t is not None:
         try:
             t_arr = np.asarray(t, dtype=float)
@@ -199,6 +203,8 @@ def decluster_peaks(
         else:
             if t_arr.shape != x_arr.shape:
                 t_arr = None
+            elif not np.all(np.isfinite(t_arr)):
+                raise ValueError("t must contain only finite values")
     else:
         t_arr = None
 
@@ -386,7 +392,15 @@ def _return_levels(
 
 #: Return periods (in hours) that are always reported in textual summaries and
 #: used when no explicit selection is provided by the caller.
-SUMMARY_RETURN_PERIODS_HOURS = (0.1, 0.5, 1.0, 3.0, 5.0, 10.0)
+SUMMARY_RETURN_PERIODS_HOURS = (
+    24.0,                           # 1 day
+    24.0 * 7.0,                     # 1 week
+    24.0 * 30.4375,                 # 1 month (average)
+    24.0 * 365.2425,                # 1 year
+    24.0 * 365.2425 * 50.0,         # 50 years
+    24.0 * 365.2425 * 100.0,        # 100 years
+    24.0 * 365.2425 * 10000.0,      # 10000 years
+)
 
 _DEFAULT_RETURN_PERIODS_HOURS = SUMMARY_RETURN_PERIODS_HOURS
 
@@ -412,17 +426,28 @@ def calculate_extreme_value_statistics(
     sample_exceedance_rate: bool = False,
     engine: str = "builtin",
     pyextremes_options: Mapping[str, object] | None = None,
+    analysis_mode: str = "record",
+    reference_storm_duration_hours: float = 3.0,
 ) -> ExtremeValueResult:
-    """Estimate return levels for the requested extreme value ``engine``.
+    """Estimate return levels for the requested extreme value engine.
 
-    The default ``engine='builtin'`` reproduces the historical behaviour using
-    SciPy's Generalized Pareto fitting.  Selecting ``engine='pyextremes'``
-    dispatches the computation to :mod:`pyextremes` while keeping the return
-    signature identical.  ``tail`` accepts both ``"upper"`` / ``"high"`` and
-    ``"lower"`` / ``"low"`` labels.
+    Parameters
+    ----------
+    analysis_mode:
+        "record" means use the actual record duration in ``t`` to infer
+        exceedance rate and long-term return values.
+        "short_term" means the time series is a single realization, e.g. one
+        OrcaFlex 3-hour simulation. In that case, long-term return values are
+        not inferred from the record itself.
+    reference_storm_duration_hours:
+        Used for labelling / metadata in short-term realization mode.
     """
 
     tail = _normalise_tail(tail)
+
+    analysis_mode_key = (analysis_mode or "record").lower()
+    if analysis_mode_key not in {"record", "short_term"}:
+        raise ValueError("analysis_mode must be 'record' or 'short_term'")
 
     engine_key = (engine or "builtin").lower()
     if engine_key in {"builtin", "gpd", "scipy"}:
@@ -442,6 +467,8 @@ def calculate_extreme_value_statistics(
             rng=rng,
             clustered_peaks=clustered_peaks,
             sample_exceedance_rate=sample_exceedance_rate,
+            analysis_mode=analysis_mode_key,
+            reference_storm_duration_hours=reference_storm_duration_hours,
         )
 
     if engine_key == "pyextremes":
@@ -454,6 +481,8 @@ def calculate_extreme_value_statistics(
             confidence_level=confidence_level,
             rng=rng,
             options=pyextremes_options or {},
+            analysis_mode=analysis_mode_key,
+            reference_storm_duration_hours=reference_storm_duration_hours,
         )
 
     raise ValueError(f"Unknown extreme value engine '{engine}'")
@@ -471,15 +500,21 @@ def _calculate_extreme_value_statistics_builtin(
     rng: np.random.Generator | None,
     clustered_peaks: np.ndarray | None,
     sample_exceedance_rate: bool,
+    analysis_mode: str,
+    reference_storm_duration_hours: float,
 ) -> ExtremeValueResult:
-    """Original Generalized Pareto implementation used by the GUI."""
+    """Generalized Pareto implementation used by the GUI."""
 
     t, x = _prepare_tail_arrays(np.asarray(t, dtype=float), np.asarray(x, dtype=float), tail)
 
     if clustered_peaks is None:
-        clustered_peaks = cluster_exceedances(x, threshold, tail)
+        clustered_peaks = cluster_exceedances(x, threshold, tail, t=t)
     else:
         clustered_peaks = np.asarray(clustered_peaks, dtype=float)
+
+    if not np.all(np.isfinite(clustered_peaks)):
+        raise ValueError("Clustered peaks contain NaN or Inf values")
+
     if clustered_peaks.size == 0:
         raise ValueError("No exceedances found above the provided threshold")
 
@@ -487,18 +522,62 @@ def _calculate_extreme_value_statistics_builtin(
         excesses = clustered_peaks - threshold
     else:
         excesses = threshold - clustered_peaks
+
+    if not np.all(np.isfinite(excesses)):
+        raise ValueError("Exceedances contain NaN or Inf values")
+
     if np.any(excesses <= 0):
         raise ValueError("Threshold must be exceeded by all clustered peaks")
 
+    if excesses.size < 2:
+        raise ValueError("At least two exceedances are required for GPD fitting")
+
+    if np.allclose(excesses, excesses[0], rtol=0.0, atol=1e-12):
+        raise ValueError(
+            "All exceedances are nearly identical; cannot fit a stable GPD"
+        )
+
     shape, _loc, scale = genpareto.fit(excesses, floc=0)
+
+    if not np.isfinite(shape) or not np.isfinite(scale):
+        raise ValueError(
+            "Built-in GPD fit returned non-finite parameters. "
+            "This usually means the data contains invalid values, "
+            "the threshold is unsuitable, or the exceedances have too little variation."
+        )
 
     duration_seconds = float(t[-1] - t[0])
     duration_hours = duration_seconds / 3600.0
+    if duration_hours <= 0:
+        raise ValueError("Time array must span a non-zero duration")
+
     exceed_rate = clustered_peaks.size / duration_hours
-    return_periods = np.asarray(tuple(return_periods_hours), dtype=float)
+    if not np.isfinite(exceed_rate) or exceed_rate <= 0:
+        raise ValueError("Computed exceedance rate is invalid")
+
+    metadata: dict[str, object] = {
+        "method": "scipy_genpareto",
+        "record_duration_hours": duration_hours,
+        "reference_storm_duration_hours": float(reference_storm_duration_hours),
+        "analysis_mode": analysis_mode,
+    }
+
+    if analysis_mode == "short_term":
+        metadata["note"] = (
+            "Short-term realization mode: return levels are extrapolated from "
+            "the fitted tail of this realization."
+        )
+
+    if return_periods_hours is None:
+        return_periods = np.asarray(_DEFAULT_RETURN_PERIODS_HOURS, dtype=float)
+    else:
+        return_periods = np.asarray(tuple(return_periods_hours), dtype=float)
+
     if np.any(return_periods <= 0):
         raise ValueError("Return periods must be positive")
-    return_secs = return_periods * 3600
+
+    return_secs = return_periods * 3600.0
+
     return_levels = _return_levels(
         threshold=threshold,
         scale=scale,
@@ -559,7 +638,7 @@ def _calculate_extreme_value_statistics_builtin(
                     else:
                         rate_samples = np.full(shapes.size, exceed_rate)
 
-                    rate = rate_samples[:, np.newaxis] * (durations[np.newaxis, :])
+                    rate = rate_samples[:, np.newaxis] * durations[np.newaxis, :]
                     shape_mat = shapes[:, np.newaxis]
                     scale_mat = scales[:, np.newaxis]
 
@@ -574,9 +653,9 @@ def _calculate_extreme_value_statistics_builtin(
                     else:
                         boot_levels = threshold - excursion
 
-                    valid_durations = (exceed_rate * durations) >= 1.0
+                    valid_durations = (rate >= 1.0)
                     if not np.all(valid_durations):
-                        boot_levels[:, ~valid_durations] = np.nan
+                        boot_levels = np.where(valid_durations, boot_levels, np.nan)
 
                     with np.errstate(invalid="ignore"):
                         lower_bounds = np.nanpercentile(
@@ -597,8 +676,9 @@ def _calculate_extreme_value_statistics_builtin(
         threshold=float(threshold),
         exceedance_rate=float(exceed_rate),
         engine="builtin",
-        metadata={"method": "scipy_genpareto"},
+        metadata=metadata,
         diagnostic_figure=None,
+        analysis_mode=analysis_mode,
     )
 
 
@@ -691,17 +771,19 @@ def _calculate_extreme_value_statistics_pyextremes(
     threshold: float,
     *,
     tail: str,
-    return_periods_hours: Sequence[float],
+    return_periods_hours: Sequence[float] | None,
     confidence_level: float,
     rng: np.random.Generator | None,
     options: Mapping[str, object],
+    analysis_mode: str,
+    reference_storm_duration_hours: float,
 ) -> ExtremeValueResult:
     """Estimate return levels using :mod:`pyextremes`."""
 
     try:
         import pandas as pd
         from pyextremes import EVA
-    except ImportError as exc:  # pragma: no cover - defensive guard
+    except ImportError as exc:
         raise ImportError(
             "pyextremes must be installed to use engine='pyextremes'"
         ) from exc
@@ -710,9 +792,6 @@ def _calculate_extreme_value_statistics_pyextremes(
     x_input = np.asarray(x, dtype=float)
     order = np.argsort(t_input)
     t_arr, x_arr = _prepare_tail_arrays(t_input, x_input, tail)
-
-    if t_arr.size < 2:
-        raise ValueError("At least two samples are required for extreme value analysis")
 
     datetime_index_opt = options.get("datetime_index")
     if datetime_index_opt is not None:
@@ -749,6 +828,8 @@ def _calculate_extreme_value_statistics_pyextremes(
         "time_index_source": time_index_source,
         "time_index_start": series.index[0],
         "time_index_end": series.index[-1],
+        "reference_storm_duration_hours": float(reference_storm_duration_hours),
+        "analysis_mode": analysis_mode,
     }
 
     plotting_position_opt = options.get("plotting_position", "weibull")
@@ -768,10 +849,7 @@ def _calculate_extreme_value_statistics_pyextremes(
         if r_value is None:
             diffs = np.diff(t_arr)
             positive_diffs = diffs[diffs > 0]
-            if positive_diffs.size:
-                median_step = float(np.median(positive_diffs))
-            else:
-                median_step = 0.0
+            median_step = float(np.median(positive_diffs)) if positive_diffs.size else 0.0
             r_td = _coerce_pyextremes_timedelta(
                 median_step, argument="r", pd_module=pd
             )
@@ -807,9 +885,11 @@ def _calculate_extreme_value_statistics_pyextremes(
     eva.fit_model(distribution=distribution, **fit_kwargs)
     metadata["distribution"] = distribution
 
-    exceedances = eva.extremes.values
+    exceedances = np.asarray(eva.extremes.values, dtype=float)
     if exceedances.size == 0:
         raise ValueError("PyExtremes did not identify any exceedances")
+    if not np.all(np.isfinite(exceedances)):
+        raise ValueError("PyExtremes returned non-finite exceedances")
 
     params = dict(eva.model.distribution.mle_parameters)
     shape = params.get("c")
@@ -821,6 +901,11 @@ def _calculate_extreme_value_statistics_pyextremes(
 
     shape = float(shape) if shape is not None else float("nan")
     scale = float(scale) if scale is not None else float("nan")
+    if not np.isfinite(shape) or not np.isfinite(scale):
+        raise ValueError(
+            "PyExtremes fit returned non-finite parameters. "
+            "This usually means the input data, threshold, or extracted extremes are invalid."
+        )
 
     duration_seconds = float(t_arr[-1] - t_arr[0])
     duration_hours = duration_seconds / 3600.0
@@ -828,6 +913,22 @@ def _calculate_extreme_value_statistics_pyextremes(
         raise ValueError("Time array must span a non-zero duration")
 
     exceed_rate = exceedances.size / duration_hours
+    if not np.isfinite(exceed_rate) or exceed_rate <= 0:
+        raise ValueError("Computed exceedance rate is invalid")
+
+    if analysis_mode == "short_term":
+        metadata["note"] = (
+            "Short-term realization mode: return levels are extrapolated from "
+            "the fitted tail of this realization."
+        )
+
+    if return_periods_hours is None:
+        return_periods = np.asarray(SUMMARY_RETURN_PERIODS_HOURS, dtype=float)
+    else:
+        return_periods = np.asarray(tuple(return_periods_hours), dtype=float)
+
+    if np.any(return_periods <= 0):
+        raise ValueError("Return periods must be positive")
 
     return_period_size = _coerce_pyextremes_timedelta(
         options.get("return_period_size", "1h"),
@@ -840,69 +941,7 @@ def _calculate_extreme_value_statistics_pyextremes(
     if base_hours <= 0:
         raise ValueError("return_period_size must be positive")
 
-    diagnostic_periods: np.ndarray | None = None
-
-    if return_periods_hours is None:
-        from pyextremes.extremes import return_periods as _pyext_return_periods
-
-        observed_return_values = _pyext_return_periods.get_return_periods(
-            ts=series,
-            extremes=eva.extremes,
-            extremes_method=method,
-            extremes_type=extremes_type,
-            block_size=options.get("block_size") if method == "BM" else None,
-            return_period_size=return_period_size,
-            plotting_position=plotting_position,
-        )
-
-        observed_periods = observed_return_values.loc[:, "return period"].astype(float)
-        if observed_periods.empty:
-            raise ValueError("PyExtremes did not identify any return periods")
-
-        min_period = float(np.nanmin(observed_periods))
-        max_period = float(np.nanmax(observed_periods))
-
-        if not np.isfinite(min_period) or not np.isfinite(max_period):
-            raise ValueError("PyExtremes produced invalid return periods")
-
-        if max_period <= min_period:
-            max_period = min_period * 1.1 if min_period > 0 else 1.0
-
-        diagnostic_periods = np.linspace(min_period, max_period, 100, dtype=float)
-        return_periods = np.asarray(SUMMARY_RETURN_PERIODS_HOURS, dtype=float)
-    else:
-        return_periods = np.asarray(tuple(return_periods_hours), dtype=float)
-        if np.any(return_periods <= 0):
-            raise ValueError("Return periods must be positive")
-
-    metadata["return_periods_hours"] = tuple(return_periods)
-
     pyext_return_periods = return_periods / float(base_hours)
-
-
-    if "diagnostic_return_periods" in options:
-        diagnostic_return_periods_opt = options.get("diagnostic_return_periods")
-    else:
-        diagnostic_return_periods_opt = None
-
-    if diagnostic_return_periods_opt is None:
-        if diagnostic_periods is not None:
-            diagnostic_return_periods = diagnostic_periods
-        else:
-            diagnostic_return_periods = pyext_return_periods
-    else:
-        diagnostic_return_periods = np.asarray(
-            tuple(diagnostic_return_periods_opt), dtype=float
-        )
-        if np.any(diagnostic_return_periods <= 0):
-            raise ValueError("diagnostic_return_periods must be positive")
-        diagnostic_return_periods = diagnostic_return_periods / float(base_hours)
-
-    metadata["diagnostic_return_periods"] = (
-        None
-        if diagnostic_return_periods_opt is None
-        else tuple(np.asarray(diagnostic_return_periods_opt, dtype=float))
-    )
 
     alpha = float(confidence_level) / 100.0
     alpha = min(max(alpha, 1e-6), 0.999999)
@@ -930,12 +969,9 @@ def _calculate_extreme_value_statistics_pyextremes(
             )
 
     return_levels, ci_lower, ci_upper = return_values
-
     return_levels = np.asarray(return_levels, dtype=float)
-    if not np.any(np.isfinite(return_levels)):
-        # PyExtremes occasionally produces non-finite bootstrap outputs for
-        # confidence bounds at short return periods. Retry without CI
-        # estimation so that at least deterministic return levels are reported.
+
+    if return_levels.size == 0 or not np.any(np.isfinite(return_levels)):
         with _temporary_numpy_seed(seed):
             point_only = eva.get_return_value(
                 return_period=pyext_return_periods,
@@ -946,66 +982,8 @@ def _calculate_extreme_value_statistics_pyextremes(
         ci_lower = None
         ci_upper = None
 
-    diagnostic_figure = None
-    try:
-        diagnostic_figure, _ = eva.plot_diagnostic(
-            return_period=diagnostic_return_periods,
-            return_period_size=return_period_size,
-            alpha=alpha,
-            plotting_position=plotting_position,
-        )
-        if diagnostic_figure is not None:
-            for ax in diagnostic_figure.axes:
-                ax.grid(True, which="major", linestyle="--", alpha=0.5)
-                ax.grid(True, which="minor", linestyle=":", alpha=0.3)
-                ax.set_axisbelow(True)
-
-                title = ax.get_title().strip().lower()
-                if title in {"return value plot", "return values plot"}:
-                    x_min, x_max = ax.get_xlim()
-                    if not (np.isfinite(x_min) and np.isfinite(x_max)):
-                        continue
-
-                    preferred_hours = np.asarray(
-                        SUMMARY_RETURN_PERIODS_HOURS, dtype=float
-                    )
-                    preferred = preferred_hours / float(base_hours)
-                    preferred = preferred[np.isfinite(preferred) & (preferred > 0)]
-                    if preferred.size == 0:
-                        continue
-
-                    lower_bound = min(x_min, preferred.min())
-                    upper_bound = max(x_max, preferred.max())
-
-                    if ax.get_xscale() != "log":
-                        ax.set_xscale("log")
-
-                    ax.set_xlim(lower_bound, upper_bound)
-
-                    def _format_return_period_tick(value: float, _pos: int) -> str:
-                        hours = value * float(base_hours)
-                        if not np.isfinite(hours) or hours <= 0:
-                            return ""
-                        if abs(hours - round(hours)) < 1e-6 and hours >= 1.0:
-                            return f"{int(round(hours))}"
-                        if hours >= 1.0:
-                            return f"{hours:.1f}".rstrip("0").rstrip(".")
-                        return f"{hours:.2f}".rstrip("0").rstrip(".")
-
-                    ax.xaxis.set_major_locator(
-                        mticker.FixedLocator(sorted(set(preferred)))
-                    )
-                    ax.xaxis.set_major_formatter(
-                        mticker.FuncFormatter(_format_return_period_tick)
-                    )
-                    ax.xaxis.set_minor_locator(mticker.NullLocator())
-
-
-    except Exception:  # pragma: no cover - plotting should not fail analysis
-        diagnostic_figure = None
-
-    if return_levels.ndim == 0:
-        return_levels = return_levels[np.newaxis]
+        if return_levels.size == 0 or not np.any(np.isfinite(return_levels)):
+            raise ValueError("PyExtremes could not produce any finite return levels")
 
     def _as_array(value) -> np.ndarray:
         if value is None:
@@ -1017,6 +995,22 @@ def _calculate_extreme_value_statistics_pyextremes(
 
     lower_bounds = _as_array(ci_lower)
     upper_bounds = _as_array(ci_upper)
+
+    if lower_bounds.shape != return_levels.shape:
+        lower_bounds = np.full(return_levels.shape, np.nan)
+    if upper_bounds.shape != return_levels.shape:
+        upper_bounds = np.full(return_levels.shape, np.nan)
+
+    diagnostic_figure = None
+    try:
+        diagnostic_figure, _ = eva.plot_diagnostic(
+            return_period=pyext_return_periods,
+            return_period_size=return_period_size,
+            alpha=alpha,
+            plotting_position=plotting_position,
+        )
+    except Exception:
+        diagnostic_figure = None
 
     return ExtremeValueResult(
         return_periods=return_periods,
@@ -1031,6 +1025,7 @@ def _calculate_extreme_value_statistics_pyextremes(
         engine="pyextremes",
         metadata=metadata,
         diagnostic_figure=diagnostic_figure,
+        analysis_mode=analysis_mode,
     )
 
 
