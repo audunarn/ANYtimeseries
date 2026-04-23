@@ -27,6 +27,8 @@ from PySide6.QtWidgets import (
 
 from anytimes.evm import (
     SUMMARY_RETURN_PERIODS_HOURS,
+    SHORT_TERM_STORM_DURATIONS_HOURS,
+    LONG_TERM_RETURN_PERIODS_HOURS,
     calculate_extreme_value_statistics,
     decluster_peaks,
     ExtremeValueResult,
@@ -111,6 +113,12 @@ class EVMWindow(QDialog):
         self.tail_combo = QComboBox()
         self.tail_combo.addItems(["upper", "lower"])
         self.tail_combo.setCurrentText("upper")
+
+        self.analysis_mode_combo = QComboBox()
+        self.analysis_mode_combo.addItem("Automatic", "auto")
+        self.analysis_mode_combo.addItem("Short-term storm", "short_term")
+        self.analysis_mode_combo.addItem("Long-term record", "record")
+        self.analysis_mode_combo.currentIndexChanged.connect(self.on_analysis_mode_changed)
 
         suggested = 0.8 * np.nanmax(self.x)
         self.threshold_spin = QDoubleSpinBox()
@@ -254,35 +262,42 @@ class EVMWindow(QDialog):
         # Show initial extremes plot with the suggested threshold
         self.update_extremes_plot(threshold)
 
-    def _format_return_period_hours(self, hours: float) -> str:
-        day_hours = 24.0
-        week_hours = 24.0 * 7.0
-        month_hours = 24.0 * 30.4375
-        year_hours = 24.0 * 365.2425
+    def _current_analysis_mode(self) -> str:
+        selected = self.analysis_mode_combo.currentData()
+        if selected in {"short_term", "record"}:
+            return str(selected)
 
-        if abs(hours - day_hours) / day_hours < 1e-6:
-            return "1 day"
-        if abs(hours - week_hours) / week_hours < 1e-6:
-            return "1 week"
-        if abs(hours - month_hours) / month_hours < 1e-6:
-            return "1 month"
+        duration_hours = float(self.t[-1] - self.t[0]) / 3600.0 if len(self.t) >= 2 else 0.0
+        return "short_term" if duration_hours <= 6.0 else "record"
 
-        years = hours / year_hours
-        if years >= 1.0:
-            if abs(years - round(years)) < 1e-8:
-                years_rounded = int(round(years))
-                unit = "year" if years_rounded == 1 else "years"
-                return f"{years_rounded} {unit}"
-            unit = "year" if abs(years - 1.0) < 1e-8 else "years"
-            return f"{years:.1f} {unit}"
+    def _current_analysis_mode_label(self) -> str:
+        selected = self.analysis_mode_combo.currentData()
+        if selected == "short_term":
+            return "Short-term storm (manual)"
+        if selected == "record":
+            return "Long-term record (manual)"
 
-        days = hours / day_hours
-        if days >= 1.0:
-            unit = "day" if abs(days - 1.0) < 1e-8 else "days"
-            return f"{days:.1f} {unit}"
+        resolved = self._current_analysis_mode()
+        if resolved == "short_term":
+            return "Short-term storm (automatic)"
+        return "Long-term record (automatic)"
 
-        unit = "hour" if abs(hours - 1.0) < 1e-8 else "hours"
-        return f"{hours:.1f} {unit}"
+    def on_analysis_mode_changed(self, *_args) -> None:
+        self._last_evm_result = None
+        self._evm_ran = False
+
+        resolved_mode = self._current_analysis_mode()
+        if self.engine_combo.currentData() == "pyextremes":
+            if resolved_mode == "short_term":
+                self.pyext_periods_label.setText("PyExtremes storm durations (hours):")
+            else:
+                self.pyext_periods_label.setText("PyExtremes return periods (hours):")
+
+            self.pyext_return_periods_edit.blockSignals(True)
+            self.pyext_return_periods_edit.setText("None")
+            self.pyext_return_periods_edit.blockSignals(False)
+
+        self.update_extremes_plot(self.threshold_spin.value())
 
     def _auto_threshold(self, start_thresh, tail):
         threshold = start_thresh
@@ -324,12 +339,18 @@ class EVMWindow(QDialog):
     def _collect_pyextremes_settings(self) -> tuple[dict[str, object], list[float]]:
         """Return current PyExtremes configuration and return periods."""
 
+        analysis_mode = self._current_analysis_mode()
+
         return_base = self.pyext_return_size_spin.value()
         return_unit = self.pyext_return_unit_combo.currentData() or "h"
         return_period_size = f"{return_base}{return_unit}"
 
         periods_text = self.pyext_return_periods_edit.text().strip()
-        default_periods = list(SUMMARY_RETURN_PERIODS_HOURS)
+
+        if analysis_mode == "short_term":
+            default_periods = list(SHORT_TERM_STORM_DURATIONS_HOURS)
+        else:
+            default_periods = list(LONG_TERM_RETURN_PERIODS_HOURS)
 
         def _merge_periods(user_periods: list[float] | None) -> list[float]:
             merged: list[float] = []
@@ -363,8 +384,10 @@ class EVMWindow(QDialog):
                     "Invalid PyExtremes return periods. Enter a comma-separated "
                     "list of positive numbers or 'None'."
                 ) from exc
+
             if any(period <= 0 for period in user_periods):
                 raise ValueError("PyExtremes return periods must be positive.")
+
             return_periods = _merge_periods(user_periods)
 
         options = {
@@ -722,6 +745,10 @@ class EVMWindow(QDialog):
         layout.addWidget(self.distribution_label, row, 0, 1, 3)
         row += 1
 
+        layout.addWidget(QLabel("Analysis mode:"), row, 0)
+        layout.addWidget(self.analysis_mode_combo, row, 1, 1, 2)
+        row += 1
+
         layout.addWidget(QLabel("Threshold:"), row, 0)
         layout.addWidget(self.threshold_spin, row, 1)
         self.calc_threshold_btn = QPushButton("Calc Threshold")
@@ -775,7 +802,7 @@ class EVMWindow(QDialog):
         layout.addWidget(self.pyext_return_widget, row, 1)
         row += 1
 
-        self.pyext_periods_label = QLabel("PyExtremes return periods (hours):")
+        self.pyext_periods_label = QLabel("PyExtremes periods (hours):")
         layout.addWidget(self.pyext_periods_label, row, 0)
         layout.addWidget(self.pyext_return_periods_edit, row, 1, 1, 2)
         row += 1
@@ -823,6 +850,7 @@ class EVMWindow(QDialog):
         layout.addWidget(self.canvas_message_checkbox, row, 0, 1, 3)
 
         self.on_engine_changed(self.engine_combo.currentIndex())
+        self.on_analysis_mode_changed()
 
     def show_canvas_message(self, message: str):
         """Display *message* on the plot canvas."""
@@ -859,10 +887,13 @@ class EVMWindow(QDialog):
         for widget in self._builtin_widgets:
             widget.setVisible(not is_pyextremes)
 
+        if is_pyextremes:
+            self.on_analysis_mode_changed()
+
         matching_result = (
             self._last_evm_result
             if self._last_evm_result is not None
-            and self._last_evm_result.engine == engine
+               and self._last_evm_result.engine == engine
             else None
         )
         self.update_extremes_plot(self.threshold_spin.value(), matching_result)
@@ -908,6 +939,7 @@ class EVMWindow(QDialog):
     def _fit_once(self, threshold: float, tail: str, *, precomputed=None):
         engine = self.engine_combo.currentData()
         declustering_window = self._current_declustering_window_seconds()
+        analysis_mode = self._current_analysis_mode()
 
         if precomputed is None:
             clustered_peaks, boundaries = self._cluster_exceedances(threshold, tail)
@@ -929,9 +961,6 @@ class EVMWindow(QDialog):
 
         if engine != "pyextremes" and len(clustered_peaks) < 10:
             return "insufficient", {"count": len(clustered_peaks), "threshold": threshold}
-
-        duration_hours = float(self.t[-1] - self.t[0]) / 3600.0 if len(self.t) >= 2 else 0.0
-        analysis_mode = "short_term" if duration_hours <= 6.0 else "record"
 
         pyext_options = None
         return_periods = None
@@ -1015,6 +1044,41 @@ class EVMWindow(QDialog):
             },
         )
 
+    def _format_period_label(self, hours: float, *, period_kind: str) -> str:
+        if period_kind == "storm_duration":
+            if abs(hours - round(hours)) < 1e-8 and hours >= 1.0:
+                return f"{int(round(hours))} h"
+            return f"{hours:.1f} h"
+
+        day_hours = 24.0
+        week_hours = 24.0 * 7.0
+        month_hours = 24.0 * 30.4375
+        year_hours = 24.0 * 365.2425
+
+        if abs(hours - day_hours) / day_hours < 1e-6:
+            return "1 day"
+        if abs(hours - week_hours) / week_hours < 1e-6:
+            return "1 week"
+        if abs(hours - month_hours) / month_hours < 1e-6:
+            return "1 month"
+
+        years = hours / year_hours
+        if years >= 1.0:
+            if abs(years - round(years)) < 1e-8:
+                years_rounded = int(round(years))
+                unit = "year" if years_rounded == 1 else "years"
+                return f"{years_rounded} {unit}"
+            unit = "year" if abs(years - 1.0) < 1e-8 else "years"
+            return f"{years:.1f} {unit}"
+
+        days = hours / day_hours
+        if days >= 1.0:
+            unit = "day" if abs(days - 1.0) < 1e-8 else "days"
+            return f"{days:.1f} {unit}"
+
+        unit = "hour" if abs(hours - 1.0) < 1e-8 else "hours"
+        return f"{hours:.1f} {unit}"
+
     def on_plot_declustering_sweep(self) -> None:
         """Plot GPD parameters against candidate declustering periods."""
 
@@ -1055,6 +1119,8 @@ class EVMWindow(QDialog):
                         engine="pyextremes",
                         pyextremes_options=options,
                         return_periods_hours=pyext_return_periods,
+                        analysis_mode=self._current_analysis_mode(),
+                        reference_storm_duration_hours=3.0,
                     )
                 except Exception:
                     exceedance_counts.append(0)
@@ -1102,6 +1168,8 @@ class EVMWindow(QDialog):
                         n_bootstrap=0,
                         clustered_peaks=clustered,
                         engine="builtin",
+                        analysis_mode=self._current_analysis_mode(),
+                        reference_storm_duration_hours=3.0,
                     )
                 except Exception:
                     xi_values.append(np.nan)
@@ -1217,13 +1285,16 @@ class EVMWindow(QDialog):
             else:
                 result += "Declustering: Mean level crossings\n\n"
 
+        period_kind = "return_period"
         if evm_result.metadata:
             analysis_mode = evm_result.metadata.get("analysis_mode", evm_result.analysis_mode)
-            result += f"Analysis mode: {analysis_mode}\n"
+            result += f"Analysis mode: {self._current_analysis_mode_label()}\n"
 
             ref_storm = evm_result.metadata.get("reference_storm_duration_hours")
             if ref_storm is not None:
                 result += f"Reference storm duration: {float(ref_storm):.3f} h\n"
+
+            period_kind = str(evm_result.metadata.get("period_kind", "return_period"))
 
             if evm_result.engine == "pyextremes":
                 meta_lines: list[str] = []
@@ -1268,12 +1339,15 @@ class EVMWindow(QDialog):
         result += f"Observed maximum value: {max_val:.4f} {units}\n"
         result += f"Return level unit: {units or 'same as input'}\n\n"
 
-        preferred_targets = [
-            24.0 * 365.2425,  # 1 year
-            24.0 * 365.2425 * 50.0,  # 50 years
-            24.0 * 365.2425 * 100.0,  # 100 years
-            24.0 * 365.2425 * 10000.0,  # 10000 years
-        ]
+        if period_kind == "storm_duration":
+            preferred_targets = [3.0, 1.0, 5.0, 10.0, 0.5, 0.1]
+        else:
+            preferred_targets = [
+                24.0 * 365.2425,  # 1 year
+                24.0 * 365.2425 * 50.0,  # 50 years
+                24.0 * 365.2425 * 100.0,  # 100 years
+                24.0 * 365.2425 * 10000.0,  # 10000 years
+            ]
 
         chosen_idx = None
         for target in preferred_targets:
@@ -1292,12 +1366,22 @@ class EVMWindow(QDialog):
                 chosen_idx = int(finite_idx[0])
 
         if chosen_idx is not None:
-            result += (
-                f"The {self._format_return_period_hours(evm_result.return_periods[chosen_idx])} return level is\n"
-                f"{evm_result.return_levels[chosen_idx]:.5f} {units}\n\n"
+            label = self._format_period_label(
+                float(evm_result.return_periods[chosen_idx]),
+                period_kind=period_kind,
             )
+            if period_kind == "storm_duration":
+                result += (
+                    f"The {label} extreme value is\n"
+                    f"{evm_result.return_levels[chosen_idx]:.5f} {units}\n\n"
+                )
+            else:
+                result += (
+                    f"The {label} return level is\n"
+                    f"{evm_result.return_levels[chosen_idx]:.5f} {units}\n\n"
+                )
         else:
-            result += "Short-term realization mode: return levels are extrapolated from the fitted tail of this realization.\n\n"
+            result += "No finite extrapolated values are available.\n\n"
 
         result += f"{self.ci_spin.value():.0f}% Confidence Interval:\n"
         for target in evm_result.return_periods:
@@ -1315,7 +1399,10 @@ class EVMWindow(QDialog):
             else:
                 interval_text = "n/a – n/a"
 
-            result += f"{self._format_return_period_hours(float(target))}: {interval_text}\n"
+            result += (
+                f"{self._format_period_label(float(target), period_kind=period_kind)}: "
+                f"{interval_text}\n"
+            )
 
         self.result_text.setPlainText(result)
 
@@ -1525,13 +1612,20 @@ class EVMWindow(QDialog):
 
         self._set_canvas_figure(self._base_figure)
 
+        period_kind = "return_period"
+        period_axis_label = "Return period"
+        if self._last_evm_result is not None and self._last_evm_result.metadata:
+            period_kind = str(self._last_evm_result.metadata.get("period_kind", "return_period"))
+            period_axis_label = str(
+                self._last_evm_result.metadata.get("period_axis_label", "Return period")
+            )
+
         self.fig.clear()
         self.fig.set_size_inches(14, 4)
         ts_ax = self.fig.add_subplot(1, 3, 1)
         ax = self.fig.add_subplot(1, 3, 2)
         qax = self.fig.add_subplot(1, 3, 3)
 
-        # --- Time series subplot ---
         ts_ax.plot(self._time_for_plot, self.x, label="Time series")
         ts_ax.axhline(threshold, color="red", linestyle="--", label="Threshold")
         ts_ax.set_title("Time Series")
@@ -1541,18 +1635,13 @@ class EVMWindow(QDialog):
         ts_ax.grid(True, which="both", linestyle="--", alpha=0.5)
         ts_ax.legend()
 
-        # --- Return level subplot / short-term message ---
-        return_periods_hours = np.asarray(return_periods_seconds, dtype=float) / 3600.0
+        x_hours = np.asarray(return_periods_seconds, dtype=float) / 3600.0
         levels = np.asarray(levels, dtype=float)
 
-        finite_mask = (
-                np.isfinite(return_periods_hours)
-                & (return_periods_hours > 0)
-                & np.isfinite(levels)
-        )
+        finite_mask = np.isfinite(x_hours) & (x_hours > 0) & np.isfinite(levels)
 
         if np.any(finite_mask):
-            x_plot = return_periods_hours[finite_mask]
+            x_plot = x_hours[finite_mask]
             y_plot = levels[finite_mask]
 
             ax.plot(x_plot, y_plot, marker="o", label="Return Level")
@@ -1561,10 +1650,7 @@ class EVMWindow(QDialog):
                 lower_bounds = np.asarray(lower_bounds, dtype=float)
                 upper_bounds = np.asarray(upper_bounds, dtype=float)
 
-                if (
-                        lower_bounds.shape == levels.shape
-                        and upper_bounds.shape == levels.shape
-                ):
+                if lower_bounds.shape == levels.shape and upper_bounds.shape == levels.shape:
                     lb_plot = lower_bounds[finite_mask]
                     ub_plot = upper_bounds[finite_mask]
                     ci_mask = np.isfinite(lb_plot) & np.isfinite(ub_plot)
@@ -1578,21 +1664,31 @@ class EVMWindow(QDialog):
                             label="Confidence Interval",
                         )
 
-            ax.set_xscale("log")
-            ax.xaxis.set_major_locator(mticker.FixedLocator(x_plot))
-            ax.xaxis.set_major_formatter(
-                mticker.FuncFormatter(
-                    lambda value, pos: self._format_return_period_hours(value)
+            if period_kind == "return_period":
+                ax.set_xscale("log")
+                ax.xaxis.set_major_locator(mticker.FixedLocator(x_plot))
+                ax.xaxis.set_major_formatter(
+                    mticker.FuncFormatter(
+                        lambda value, pos: self._format_period_label(
+                            value, period_kind="return_period"
+                        )
+                    )
                 )
-            )
-            ax.xaxis.set_minor_locator(mticker.NullLocator())
+                ax.xaxis.set_minor_locator(mticker.NullLocator())
+                for label in ax.get_xticklabels():
+                    label.set_rotation(20)
+                    label.set_ha("right")
+                ax.grid(True, which="major", linestyle="--", alpha=0.5)
+            else:
+                ax.set_xticks(x_plot)
+                ax.set_xticklabels(
+                    [self._format_period_label(v, period_kind="storm_duration") for v in x_plot]
+                )
+                ax.grid(True, which="both", linestyle="--", alpha=0.5)
+
             ax.set_title("Return level plot")
-            ax.set_xlabel("Return period")
+            ax.set_xlabel(period_axis_label)
             ax.set_ylabel("Return level")
-            for label in ax.get_xticklabels():
-                label.set_rotation(20)
-                label.set_ha("right")
-            ax.grid(True, which="major", linestyle="--", alpha=0.5)
             ax.legend()
         else:
             ax.axis("off")
@@ -1607,7 +1703,6 @@ class EVMWindow(QDialog):
                 fontsize=11,
             )
 
-        # --- Quantile plot ---
         exceedances = np.asarray(exceedances, dtype=float)
         if exceedances.size == 0 or not np.all(np.isfinite(exceedances)):
             raise ValueError("Exceedances contain invalid values")

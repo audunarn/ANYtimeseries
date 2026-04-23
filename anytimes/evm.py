@@ -391,17 +391,20 @@ def _return_levels(
 
 
 
-#: Return periods (in hours) that are always reported in textual summaries and
-#: used when no explicit selection is provided by the caller.
-SUMMARY_RETURN_PERIODS_HOURS = (
+SHORT_TERM_STORM_DURATIONS_HOURS = (0.1, 0.5, 1.0, 3.0, 5.0, 10.0)
+
+LONG_TERM_RETURN_PERIODS_HOURS = (
     24.0,                           # 1 day
     24.0 * 7.0,                     # 1 week
-    24.0 * 30.4375,                 # 1 month (average)
+    24.0 * 30.4375,                 # 1 month
     24.0 * 365.2425,                # 1 year
     24.0 * 365.2425 * 50.0,         # 50 years
     24.0 * 365.2425 * 100.0,        # 100 years
     24.0 * 365.2425 * 10000.0,      # 10000 years
 )
+
+# Backward-compatible name for GUI imports
+SUMMARY_RETURN_PERIODS_HOURS = LONG_TERM_RETURN_PERIODS_HOURS
 
 _DEFAULT_RETURN_PERIODS_HOURS = SUMMARY_RETURN_PERIODS_HOURS
 
@@ -419,7 +422,7 @@ def calculate_extreme_value_statistics(
     threshold: float,
     *,
     tail: str = "upper",
-    return_periods_hours: Sequence[float] | None = _DEFAULT_RETURN_PERIODS_HOURS,
+    return_periods_hours: Sequence[float] | None = None,
     confidence_level: float = 95.0,
     n_bootstrap: int = 500,
     rng: np.random.Generator | None = None,
@@ -432,16 +435,11 @@ def calculate_extreme_value_statistics(
 ) -> ExtremeValueResult:
     """Estimate return levels for the requested extreme value engine.
 
-    Parameters
-    ----------
     analysis_mode:
-        "record" means use the actual record duration in ``t`` to infer
-        exceedance rate and return values from the fitted tail.
-        "short_term" means the time series is a single realization, e.g. one
-        OrcaFlex 3-hour simulation. Return values are still extrapolated from
-        the fitted tail, but should be interpreted with greater caution.
-    reference_storm_duration_hours:
-        Used for labelling / metadata in short-term realization mode.
+        "record"      -> long-term record interpretation, default outputs are
+                         long-term return periods.
+        "short_term"  -> short-term storm interpretation, default outputs are
+                         storm durations.
     """
 
     tail = _normalise_tail(tail)
@@ -450,19 +448,22 @@ def calculate_extreme_value_statistics(
     if analysis_mode_key not in {"record", "short_term"}:
         raise ValueError("analysis_mode must be 'record' or 'short_term'")
 
+    if return_periods_hours is None:
+        if analysis_mode_key == "short_term":
+            resolved_periods = SHORT_TERM_STORM_DURATIONS_HOURS
+        else:
+            resolved_periods = LONG_TERM_RETURN_PERIODS_HOURS
+    else:
+        resolved_periods = return_periods_hours
+
     engine_key = (engine or "builtin").lower()
     if engine_key in {"builtin", "gpd", "scipy"}:
-        builtin_return_periods = (
-            _DEFAULT_RETURN_PERIODS_HOURS
-            if return_periods_hours is None
-            else return_periods_hours
-        )
         return _calculate_extreme_value_statistics_builtin(
             t,
             x,
             threshold,
             tail=tail,
-            return_periods_hours=builtin_return_periods,
+            return_periods_hours=resolved_periods,
             confidence_level=confidence_level,
             n_bootstrap=n_bootstrap,
             rng=rng,
@@ -478,7 +479,7 @@ def calculate_extreme_value_statistics(
             x,
             threshold,
             tail=tail,
-            return_periods_hours=return_periods_hours,
+            return_periods_hours=resolved_periods,
             confidence_level=confidence_level,
             rng=rng,
             options=pyextremes_options or {},
@@ -561,12 +562,23 @@ def _calculate_extreme_value_statistics_builtin(
         "record_duration_hours": duration_hours,
         "reference_storm_duration_hours": float(reference_storm_duration_hours),
         "analysis_mode": analysis_mode,
+        "period_axis_label": (
+            "Storm duration (hours)" if analysis_mode == "short_term" else "Return period"
+        ),
+        "period_kind": (
+            "storm_duration" if analysis_mode == "short_term" else "return_period"
+        ),
     }
 
     if analysis_mode == "short_term":
         metadata["note"] = (
-            "Short-term realization mode: return levels are extrapolated from "
-            "the fitted tail of this realization."
+            "Short-term realization mode: values are extrapolated over storm duration "
+            "from the fitted tail of this realization."
+        )
+    else:
+        metadata["note"] = (
+            "Long-term record mode: values are extrapolated as return periods "
+            "from the fitted tail of the record."
         )
 
     if return_periods_hours is None:
@@ -831,6 +843,12 @@ def _calculate_extreme_value_statistics_pyextremes(
         "time_index_end": series.index[-1],
         "reference_storm_duration_hours": float(reference_storm_duration_hours),
         "analysis_mode": analysis_mode,
+        "period_axis_label": (
+            "Storm duration (hours)" if analysis_mode == "short_term" else "Return period"
+        ),
+        "period_kind": (
+            "storm_duration" if analysis_mode == "short_term" else "return_period"
+        ),
     }
 
     plotting_position_opt = options.get("plotting_position", "weibull")
