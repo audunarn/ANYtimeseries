@@ -581,6 +581,24 @@ def test_merge_preserves_datetime_reference(qt_app, message_spy, monkeypatch):
     assert not message_spy["crit"]
     assert not message_spy["warn"]
 
+
+def test_time_window_filters_series_with_datetime_reference(qt_app, monkeypatch):
+    dt_index = pd.date_range("2024-01-01 00:00:00", periods=6, freq="H")
+    ts = TimeSeries("wind_speed", dt_index, np.arange(6, dtype=float))
+    editor = _build_editor(monkeypatch, [DummyDB({"wind_speed": ts})], ["file1.ts"])
+
+    editor.time_start.setText("2024-01-01 01:00:00")
+    editor.time_end.setText("2024-01-01 03:00:00")
+
+    mask = editor.get_time_window(ts)
+    if isinstance(mask, slice):
+        idx = np.arange(ts.t.size)[mask]
+    else:
+        idx = np.flatnonzero(mask)
+
+    np.testing.assert_array_equal(idx, np.array([1, 2, 3]))
+
+
 def test_export_selected_to_csv_uses_shared_time_column(qt_app, message_spy, monkeypatch, tmp_path):
     t = np.array([0.0, 1.0, 2.0])
     tsdb = DummyDB(

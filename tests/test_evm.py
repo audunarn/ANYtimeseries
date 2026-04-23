@@ -250,6 +250,28 @@ def test_return_levels_lower_tail_reflects_negative_extremes():
     np.testing.assert_allclose(calculated, expected, rtol=0, atol=1e-12)
 
 
+def test_return_levels_short_durations_outside_tail_are_marked_nan():
+    threshold = 10.0
+    scale = 2.0
+    shape = 0.2
+    exceed_rate = 0.01
+    durations = np.array([0.1, 1.0, 100.0, 150.0])
+
+    calculated = evm._return_levels(
+        threshold=threshold,
+        scale=scale,
+        shape=shape,
+        exceedance_rate=exceed_rate,
+        return_durations=durations,
+        tail="upper",
+    )
+
+    assert np.isnan(calculated[0])
+    assert np.isnan(calculated[1])
+    assert np.isfinite(calculated[2])
+    assert np.isfinite(calculated[3])
+
+
 @pytest.mark.parametrize(
     (
         "column",
@@ -599,6 +621,38 @@ def test_pyextremes_engine_accepts_low_tail_alias():
 
 
 @pytest.mark.skipif(pyextremes is None, reason="pyextremes is not installed")
+def test_pyextremes_engine_prefers_provided_datetime_index():
+    t, x = _synthetic_series()
+    t = t * 3600.0
+    dt_index = pd.date_range("2020-01-01", periods=t.size, freq="h")
+
+    res = calculate_extreme_value_statistics(
+        t,
+        x,
+        1.2,
+        tail="upper",
+        return_periods_hours=(1.0, 2.0),
+        confidence_level=90.0,
+        engine="pyextremes",
+        pyextremes_options={
+            "r": 3600.0,
+            "return_period_size": "1h",
+            "n_samples": 100,
+            "datetime_index": dt_index,
+        },
+        rng=np.random.default_rng(123),
+    )
+
+    assert res.metadata is not None
+    assert res.metadata.get("time_index_source") == "provided_datetime"
+    assert pd.Timestamp(res.metadata["time_index_start"]).year == 2020
+    assert pd.Timestamp(res.metadata["time_index_end"]).year == 2020
+    eva = res.metadata.get("eva")
+    assert eva is not None
+    assert eva.data.index[0].year == 2020
+
+
+@pytest.mark.skipif(pyextremes is None, reason="pyextremes is not installed")
 def test_pyextremes_engine_accepts_plotting_position_selection():
     t, x = _synthetic_series()
     threshold = 1.2
@@ -745,4 +799,3 @@ def test_pyextremes_engine_rejects_invalid_plotting_position():
             engine="pyextremes",
             pyextremes_options={"plotting_position": "invalid"},
         )
-

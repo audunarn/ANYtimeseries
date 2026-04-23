@@ -1152,6 +1152,15 @@ class FileLoader:
                 tsdb = TsDB()
 
             entries = panel_pressure_by_file.get(fp, [])
+            if specs and not entries:
+                extracted = self._auto_extract_surface_pressures_from_specs(
+                    filepath=fp,
+                    model=self.loaded_sim_models[fp],
+                    specs=specs,
+                    parent=dialog,
+                )
+                if extracted is not None:
+                    entries = [extracted]
             for entry in entries:
                 tsdb = self._merge_panel_pressures(
                     tsdb, entry.get("data"), entry.get("info")
@@ -1159,6 +1168,128 @@ class FileLoader:
 
             result[fp] = tsdb
         return result
+
+    def _get_surface_pressure_requests_from_specs(self, specs):
+        body_names = []
+        panel_coords = []
+        for spec in specs or []:
+            if len(spec) < 2:
+                continue
+            obj_name = spec[0] if isinstance(spec[0], str) else spec[1]
+            var = spec[1] if isinstance(spec[0], str) else spec[2]
+            extra = spec[2] if isinstance(spec[0], str) else spec[3]
+            if not isinstance(var, str) or var.strip().lower() != "surface pressures":
+                continue
+            if isinstance(obj_name, str) and obj_name:
+                body_names.append(obj_name)
+            coord = None
+            if isinstance(extra, (tuple, list, np.ndarray)) and len(extra) == 3:
+                coord = tuple(float(v) for v in extra)
+            elif extra is not None:
+                xyz = (
+                    getattr(extra, "X", None),
+                    getattr(extra, "Y", None),
+                    getattr(extra, "Z", None),
+                )
+                if all(v is not None for v in xyz):
+                    try:
+                        coord = tuple(float(v) for v in xyz)
+                    except (TypeError, ValueError):
+                        coord = None
+            if coord is not None:
+                panel_coords.append(coord)
+        if not body_names:
+            return None, []
+        unique_bodies = list(dict.fromkeys(body_names))
+        unique_coords = list(dict.fromkeys(panel_coords))
+        return unique_bodies, unique_coords
+
+    def _select_diffraction_model_path(self, filepath, parent=None):
+        start_dir = self._last_diffraction_dir or os.path.dirname(filepath)
+        if not start_dir or not os.path.isdir(start_dir):
+            start_dir = os.path.dirname(filepath)
+        file_path, _ = QFileDialog.getOpenFileName(
+            parent or self.parent_gui,
+            "Select Diffraction Model (.owr)",
+            start_dir,
+            "Diffraction data (*.owr)",
+        )
+        if not file_path:
+            return None
+        directory = os.path.dirname(file_path)
+        if directory:
+            self._last_diffraction_dir = directory
+        return file_path
+
+    def _auto_extract_surface_pressures_from_specs(self, filepath, model, specs, parent=None):
+        body_names, panel_coords = self._get_surface_pressure_requests_from_specs(specs)
+        if not body_names:
+            return None
+
+        file_path = self._select_diffraction_model_path(filepath, parent=parent)
+        if not file_path:
+            return None
+
+        try:
+            import OrcFxAPI
+            diffraction_model = self._diffraction_cache.get(file_path)
+            if diffraction_model is None:
+                diffraction_model = OrcFxAPI.Diffraction(file_path)
+                self._diffraction_cache[file_path] = diffraction_model
+            pressure_df, panel_info = self._get_panel_pressure(
+                model=model,
+                diffraction_model=diffraction_model,
+                panel_coords=tuple(panel_coords) if panel_coords else None,
+            )
+        except Exception as exc:
+            QMessageBox.critical(
+                parent or self.parent_gui,
+                "Surface Pressure Error",
+                f"Failed to extract surface pressures:\n{exc}",
+            )
+            return None
+
+        if panel_info is None:
+            panel_info = pd.DataFrame()
+        else:
+            panel_info = panel_info.copy().reset_index(drop=True)
+
+        if not panel_info.empty and "name" in panel_info.columns:
+            mask = panel_info["name"].isin(body_names)
+            panel_info = panel_info.loc[mask].reset_index(drop=True)
+            if (
+                pressure_df is not None
+                and not pressure_df.empty
+                and "Time" in pressure_df.columns
+                and "pidx" in panel_info.columns
+            ):
+                allowed_cols = {
+                    str(int(pidx) + 1)
+                    for pidx in panel_info["pidx"].dropna().tolist()
+                }
+                keep_cols = ["Time"] + [
+                    c for c in pressure_df.columns if c != "Time" and c in allowed_cols
+                ]
+                pressure_df = pressure_df[keep_cols]
+
+        if (
+            pressure_df is None
+            or pressure_df.empty
+            or ("Time" in pressure_df.columns and pressure_df.shape[1] <= 1)
+            or ("Time" not in pressure_df.columns and pressure_df.shape[1] == 0)
+        ):
+            QMessageBox.warning(
+                parent or self.parent_gui,
+                "No Surface Pressures",
+                "No surface pressure data was returned for the selected variable.",
+            )
+            return None
+
+        return {
+            "data": pressure_df.copy(),
+            "info": panel_info.copy(),
+            "diffraction_path": file_path,
+        }
 
     def _merge_panel_pressures(self, tsdb, pressures_df, panel_info):
         if tsdb is None:
@@ -1666,6 +1797,11 @@ class FileLoader:
                     obj = _match_obj(obj_name)
                 else:
                     continue
+                # ``Surface Pressures`` is a calculated quantity in this GUI,
+                # populated via the dedicated extraction workflow
+                # (``Extract Surface Pressures``). OrcaFlex time-history reads
+                # can reject it as an unknown variable name (error 26), so skip
+                # direct retrieval here.
                 if isinstance(var, str) and var.strip().lower() == "surface pressures":
                     continue
                 if obj is None:
@@ -2208,10 +2344,16 @@ class FileLoader:
 
     def _load_generic_file(self, filepath):
         ext = os.path.splitext(filepath)[-1].lower().lstrip(".")
-        if ext in ["csv", 'mat', 'dat', 'ts',  'h5', 'pickle', 'tda', 'asc', 'tdms', 'pkl', 'bin']:
+        if ext in ['mat', 'dat', 'ts',  'h5', 'pickle', 'tda', 'asc', 'tdms', 'pkl', 'bin']:
             return TsDB.fromfile(filepath)
         elif ext in ["nc", "netcdf"]:
             return self._load_era5_netcdf(filepath)
+        elif ext == "csv":
+            df = pd.read_csv(filepath, sep=None, engine="python", encoding="utf-8-sig")
+            if df.shape[1] == 1:
+                only_col = str(df.columns[0])
+                if "\t" in only_col:
+                    df = pd.read_csv(filepath, sep="\t", engine="python", encoding="utf-8-sig")
         elif ext == "xlsx":
             df = pd.read_excel(filepath)
         elif ext == "json":
@@ -2222,14 +2364,31 @@ class FileLoader:
             df = pd.read_parquet(filepath)
         else:
             raise NotImplementedError(f"No loader for extension: {ext}")
+        # Normalize headers and detect key columns
+        df = df.rename(columns={c: str(c).replace("\ufeff", "").strip() for c in df.columns})
+        lowered = {str(c).strip().lower(): c for c in df.columns}
+
         # Detect time column
-        time_col = next((c for c in df.columns if c.lower() in ["time", "t"]), df.columns[0])
+        time_col = next(
+            (c for c in df.columns if str(c).strip().lower() in ["time", "t", "referencetime", "reference_time"]),
+            next((c for c in df.columns if "time" in str(c).strip().lower()), df.columns[0]),
+        )
         time = df[time_col].values
         tsdb = TsDB()
         skipped = set()
 
         # Detect potential identifier columns with string values
         id_col = None
+        value_col = lowered.get("value")
+        is_long_format_id_value = False
+
+        # Auto-detect long format: variable id + value + time columns.
+        for candidate in ("elementid", "element_id", "variable", "name"):
+            cand_col = lowered.get(candidate)
+            if cand_col is not None and value_col is not None and cand_col != time_col:
+                id_col = cand_col
+                is_long_format_id_value = True
+                break
 
         string_cols = [
             c
@@ -2242,19 +2401,20 @@ class FileLoader:
             ).all()
         ]
 
-        for sc in string_cols:
-            resp = QMessageBox.question(
-                self.parent_gui,
-                "Identifier Column?",
-                f"Column '{sc}' contains strings. Use as identifier?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
-            )
-            if resp == QMessageBox.Yes:
-                id_col = sc
-                break
-            else:
-                skipped.add(sc)
+        if id_col is None:
+            for sc in string_cols:
+                resp = QMessageBox.question(
+                    self.parent_gui,
+                    "Identifier Column?",
+                    f"Column '{sc}' contains strings. Use as identifier?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
+                if resp == QMessageBox.Yes:
+                    id_col = sc
+                    break
+                else:
+                    skipped.add(sc)
 
 
         if id_col:
@@ -2341,7 +2501,11 @@ class FileLoader:
                         continue
                     try:
                         numeric_values = np.array(values, dtype=float)
-                        tsdb.add(TimeSeries(f"{col}_{ident}", time_vals, numeric_values))
+                        if is_long_format_id_value and col == value_col:
+                            ts_name = str(ident)
+                        else:
+                            ts_name = f"{col}_{ident}"
+                        tsdb.add(TimeSeries(ts_name, time_vals, numeric_values))
                     except Exception:
                         skipped.add(col)
 
