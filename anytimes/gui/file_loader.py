@@ -1919,6 +1919,7 @@ class FileLoader:
                     if object_extra is not None:
                         kwargs["objectExtra"] = object_extra
                     rao = obj_for_rao.SpectralResponseRAO(var_name, **kwargs)
+
                     omega = np.asarray(rao.X, dtype=float)
                     rao_mag = np.asarray(rao.Y, dtype=float)
                     if omega.size and omega.size == rao_mag.size:
