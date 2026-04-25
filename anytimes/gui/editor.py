@@ -78,6 +78,7 @@ from .rao_dialog import RAODialog
 from ..fatigue import FatigueSeries
 from .fatigue_dialog import FatigueDialog
 from .sortable_table_widget_item import SortableTableWidgetItem
+from .swanpost_dialog import SWANpostDialog
 from .variable_tab import VariableRowWidget, VariableTab
 
 
@@ -7301,115 +7302,7 @@ class TimeSeriesEditorQt(QMainWindow):
 
     def open_swanpost_tool(self) -> None:
         """Run SWAN/DNORA postprocessing for selected folders and POIs."""
-
-        dialog = QDialog(self)
-        dialog.setWindowTitle("SWANpost")
-        layout = QVBoxLayout(dialog)
-        layout.addWidget(QLabel("Folders to process (one SWAN run per folder):"))
-
-        folders_list = QListWidget(dialog)
-        folders_list.setSelectionMode(QListWidget.ExtendedSelection)
-        layout.addWidget(folders_list)
-
-        folder_btns = QHBoxLayout()
-        add_folder_btn = QPushButton("Add folder", dialog)
-        remove_folder_btn = QPushButton("Remove selected", dialog)
-        folder_btns.addWidget(add_folder_btn)
-        folder_btns.addWidget(remove_folder_btn)
-        layout.addLayout(folder_btns)
-
-        layout.addWidget(QLabel("POIs (flattened point index): comma-separated, e.g. 0,12,45"))
-        poi_input = QLineEdit(dialog)
-        poi_input.setPlaceholderText("Leave blank to use auto midpoint")
-        layout.addWidget(poi_input)
-
-        run_cancel = QHBoxLayout()
-        run_btn = QPushButton("Run postprocessing", dialog)
-        cancel_btn = QPushButton("Cancel", dialog)
-        run_cancel.addWidget(run_btn)
-        run_cancel.addWidget(cancel_btn)
-        layout.addLayout(run_cancel)
-
-        def _add_folder() -> None:
-            picked = QFileDialog.getExistingDirectory(self, "Select SWAN folder")
-            if picked:
-                existing = {folders_list.item(i).text() for i in range(folders_list.count())}
-                if picked not in existing:
-                    folders_list.addItem(picked)
-
-        def _remove_selected() -> None:
-            for item in folders_list.selectedItems():
-                row = folders_list.row(item)
-                folders_list.takeItem(row)
-
-        add_folder_btn.clicked.connect(_add_folder)
-        remove_folder_btn.clicked.connect(_remove_selected)
-        cancel_btn.clicked.connect(dialog.reject)
-
-        def _run_processing() -> None:
-            try:
-                from ..swanpost import autodetect_file, load_timeseries, plot_timeseries
-            except Exception as exc:
-                QMessageBox.critical(
-                    dialog,
-                    "SWANpost unavailable",
-                    f"Could not import SWANpost dependencies: {exc}",
-                )
-                return
-
-            folders = [folders_list.item(i).text() for i in range(folders_list.count())]
-            if not folders:
-                QMessageBox.warning(dialog, "No folders", "Add at least one folder to process.")
-                return
-
-            pois_raw = poi_input.text().strip()
-            if pois_raw:
-                try:
-                    pois: list[int | None] = [int(part.strip()) for part in pois_raw.split(",") if part.strip()]
-                except ValueError:
-                    QMessageBox.warning(
-                        dialog,
-                        "Invalid POIs",
-                        "POIs must be integers separated by commas (example: 0, 10, 25).",
-                    )
-                    return
-                if not pois:
-                    pois = [None]
-            else:
-                pois = [None]
-
-            processed = 0
-            failures: list[str] = []
-            for folder in folders:
-                run_dir = os.path.abspath(os.path.expanduser(folder))
-                try:
-                    nc_path = autodetect_file(Path(run_dir), ".nc")
-                except Exception as exc:
-                    failures.append(f"{run_dir}: {exc}")
-                    continue
-
-                for poi in pois:
-                    try:
-                        data = load_timeseries(nc_path, point_index=poi)
-                        poi_label = "auto" if poi is None else str(poi)
-                        title = f"SWANpost — {os.path.basename(run_dir)} — POI {poi_label}"
-                        plot_timeseries(data, title=title)
-                        processed += 1
-                    except Exception as exc:
-                        poi_label = "auto" if poi is None else str(poi)
-                        failures.append(f"{run_dir} (POI {poi_label}): {exc}")
-
-            summary = f"Generated {processed} SWANpost plot(s)."
-            if failures:
-                sample = "\n".join(failures[:8])
-                if len(failures) > 8:
-                    sample += f"\n...and {len(failures) - 8} more."
-                QMessageBox.warning(dialog, "SWANpost finished with warnings", f"{summary}\n\n{sample}")
-            else:
-                QMessageBox.information(dialog, "SWANpost finished", summary)
-            dialog.accept()
-
-        run_btn.clicked.connect(_run_processing)
+        dialog = SWANpostDialog(self)
         dialog.exec()
 
     def apply_dark_palette(self):

@@ -26,6 +26,7 @@ WIND_SPEED_CANDIDATES = ("wind_speed", "wspd", "ws", "windspd")
 WIND_DIR_CANDIDATES = ("wind_dir", "wdir", "wd", "winddir")
 WIND_U_CANDIDATES = ("wind_u", "u10", "uwnd", "x_wind")
 WIND_V_CANDIDATES = ("wind_v", "v10", "vwnd", "y_wind")
+DEPTH_CANDIDATES = ("depth", "dep", "bathymetry", "h", "bot", "bottom")
 
 
 def _pick_best_file(files: Sequence[Path], suffix: str) -> Path:
@@ -87,6 +88,90 @@ def _wind_from_uv(ds: xr.Dataset, point_index: int | None) -> tuple[xr.DataArray
     speed = np.hypot(u_s, v_s)
     direction = (np.degrees(np.arctan2(u_s, v_s)) + 360.0) % 360.0
     return speed, direction
+
+
+def _pick_depth_var(ds: xr.Dataset) -> xr.DataArray | None:
+    """Return best-guess depth variable from dataset."""
+    for name in DEPTH_CANDIDATES:
+        if name in ds:
+            return ds[name]
+    # Fallback to variables containing likely depth tokens.
+    for name, da in ds.data_vars.items():
+        lname = name.lower()
+        if "depth" in lname or "bath" in lname or lname in {"h", "dep"}:
+            return da
+    return None
+
+
+def _mesh_from_1d(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    xx, yy = np.meshgrid(x, y)
+    return xx, yy
+
+
+def _xy_for_depth_da(ds: xr.Dataset, da: xr.DataArray) -> tuple[np.ndarray, np.ndarray]:
+    dims = list(da.dims)
+    if "time" in dims:
+        da = da.isel(time=0)
+        dims = list(da.dims)
+
+    if len(dims) >= 2:
+        y_dim, x_dim = dims[-2], dims[-1]
+        x_coord = np.asarray(ds.coords[x_dim].values, dtype=float) if x_dim in ds.coords else None
+        y_coord = np.asarray(ds.coords[y_dim].values, dtype=float) if y_dim in ds.coords else None
+        if x_coord is not None and y_coord is not None and x_coord.ndim == 1 and y_coord.ndim == 1:
+            return _mesh_from_1d(x_coord, y_coord)
+
+        for x_name, y_name in (("x", "y"), ("lon", "lat"), ("longitude", "latitude")):
+            if x_name in ds and y_name in ds:
+                xv = np.asarray(ds[x_name].values, dtype=float)
+                yv = np.asarray(ds[y_name].values, dtype=float)
+                if xv.shape == da.shape and yv.shape == da.shape:
+                    return xv, yv
+                if xv.ndim == 1 and yv.ndim == 1 and da.ndim == 2:
+                    return _mesh_from_1d(xv, yv)
+
+        y_idx, x_idx = np.indices(da.shape[-2:])
+        return x_idx.astype(float), y_idx.astype(float)
+
+    if len(dims) == 1:
+        x = np.asarray(ds.coords[dims[0]].values, dtype=float) if dims[0] in ds.coords else np.arange(da.size, dtype=float)
+        y = np.zeros_like(x, dtype=float)
+        return x, y
+
+    x = np.arange(da.size, dtype=float)
+    y = np.zeros_like(x, dtype=float)
+    return x, y
+
+
+def load_depth_points_from_nc(nc_file: Path) -> np.ndarray:
+    """Extract depth map points as Nx3 (x, y, depth) from netCDF result files."""
+    ds = xr.open_dataset(nc_file)
+    try:
+        da = _pick_depth_var(ds)
+        if da is None:
+            raise KeyError(f"No depth variable found. Available variables: {list(ds.data_vars)}")
+        if "time" in da.dims:
+            da = da.isel(time=0)
+        depth = np.asarray(da.values, dtype=float)
+        if depth.ndim == 0:
+            raise ValueError("Depth variable is scalar and cannot define a map.")
+
+        xx, yy = _xy_for_depth_da(ds, da)
+        if xx.shape != depth.shape:
+            try:
+                xx = np.broadcast_to(xx, depth.shape)
+                yy = np.broadcast_to(yy, depth.shape)
+            except ValueError as exc:
+                raise ValueError("Could not align depth coordinates with depth grid shape.") from exc
+
+        pts = np.column_stack((xx.ravel(), yy.ravel(), depth.ravel()))
+        finite = np.all(np.isfinite(pts), axis=1)
+        pts = pts[finite]
+        if pts.size == 0:
+            raise ValueError("Depth map points are empty after filtering non-finite values.")
+        return pts
+    finally:
+        ds.close()
 
 
 def load_timeseries(nc_file: Path, point_index: int | None = None) -> TimeseriesData:
