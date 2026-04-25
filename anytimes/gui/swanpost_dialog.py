@@ -88,7 +88,7 @@ class SWANpostDialog(QDialog):
         dlg.setOption(QFileDialog.ShowDirsOnly, True)
         dlg.setOption(QFileDialog.DontUseNativeDialog, True)
 
-        list_views = dlg.findChildren((QListView, QTreeView))
+        list_views = list(dlg.findChildren(QListView)) + list(dlg.findChildren(QTreeView))
         for view in list_views:
             view.setSelectionMode(QAbstractItemView.ExtendedSelection)
 
