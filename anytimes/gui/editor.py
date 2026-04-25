@@ -77,6 +77,7 @@ from .rao_dialog import RAODialog
 from ..fatigue import FatigueSeries
 from .fatigue_dialog import FatigueDialog
 from .sortable_table_widget_item import SortableTableWidgetItem
+from .swanpost_dialog import SWANpostDialog
 from .variable_tab import VariableRowWidget, VariableTab
 
 
@@ -640,9 +641,11 @@ class TimeSeriesEditorQt(QMainWindow):
         self.launch_qats_btn = QPushButton("Open in AnyQATS")
         self.evm_tool_btn = QPushButton("Open Extreme Value Statistics Tool")
         self.rao_tool_btn = QPushButton("Generate RAO from Selected Time Series")
+        self.swanpost_tool_btn = QPushButton("Run SWANpost")
         tools_layout.addWidget(self.launch_qats_btn)
         tools_layout.addWidget(self.evm_tool_btn)
         tools_layout.addWidget(self.rao_tool_btn)
+        tools_layout.addWidget(self.swanpost_tool_btn)
         self.controls_layout.addWidget(self.tools_group)
 
         # ---- Plot controls ----
@@ -893,6 +896,7 @@ class TimeSeriesEditorQt(QMainWindow):
         self.launch_qats_btn.clicked.connect(self.launch_qats)
         self.evm_tool_btn.clicked.connect(self.open_evm_tool)
         self.rao_tool_btn.clicked.connect(self.open_rao_tool)
+        self.swanpost_tool_btn.clicked.connect(self.open_swanpost_tool)
         self.reselect_orcaflex_btn.clicked.connect(self.reselect_orcaflex_variables)
         self.psd_btn.clicked.connect(lambda: self.plot_selected(mode="psd"))
         self.cycle_range_btn.clicked.connect(lambda: self.plot_selected(mode="cycle"))
@@ -7294,6 +7298,11 @@ class TimeSeriesEditorQt(QMainWindow):
             parent=self,
         )
         dlg.exec()
+
+    def open_swanpost_tool(self) -> None:
+        """Run SWAN/DNORA postprocessing for selected folders and POIs."""
+        dialog = SWANpostDialog(self)
+        dialog.exec()
 
     def apply_dark_palette(self):
 
