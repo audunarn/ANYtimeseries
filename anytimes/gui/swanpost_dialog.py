@@ -8,18 +8,15 @@ import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 from PySide6.QtWidgets import (
-    QAbstractItemView,
     QDialog,
     QFileDialog,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QListView,
     QListWidget,
     QMessageBox,
     QPushButton,
-    QTreeView,
     QVBoxLayout,
 )
 
@@ -83,18 +80,35 @@ class SWANpostDialog(QDialog):
         self._render_empty_map("Open one or more folders to generate a depth map")
 
     def _select_multiple_directories(self) -> list[Path]:
-        dlg = QFileDialog(self, "Select SWAN folders")
-        dlg.setFileMode(QFileDialog.Directory)
-        dlg.setOption(QFileDialog.ShowDirsOnly, True)
-        dlg.setOption(QFileDialog.DontUseNativeDialog, True)
+        selected_paths: list[Path] = []
+        seen: set[str] = set()
 
-        list_views = list(dlg.findChildren(QListView)) + list(dlg.findChildren(QTreeView))
-        for view in list_views:
-            view.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        while True:
+            picked = QFileDialog.getExistingDirectory(
+                self,
+                "Select SWAN folder",
+                "",
+                QFileDialog.ShowDirsOnly,
+            )
+            if not picked:
+                break
 
-        if not dlg.exec():
-            return []
-        return [Path(p) for p in dlg.selectedFiles()]
+            resolved = str(Path(picked).expanduser().resolve())
+            if resolved not in seen:
+                selected_paths.append(Path(resolved))
+                seen.add(resolved)
+
+            add_more = QMessageBox.question(
+                self,
+                "Add another folder?",
+                "Do you want to add one more folder?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if add_more != QMessageBox.Yes:
+                break
+
+        return selected_paths
 
     def _open_folders(self) -> None:
         selected = self._select_multiple_directories()
