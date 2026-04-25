@@ -61,7 +61,8 @@ class RAOMode(str, Enum):
 class RAOXSourceUnit(str, Enum):
     """Source unit for precomputed RAO x-data."""
 
-    HZ = "Hz"
+    HZ = "Frequency [Hz]"
+    HZ_TIMES_2PI = "Frequency [Hz] × 2π correction"
     PERIOD_S = "Period [s]"
 
 
@@ -157,7 +158,8 @@ class RAODialog(QDialog):
         self.x_source_unit_combo.setCurrentText(RAOXSourceUnit.HZ.value)
         self.x_source_unit_combo.setToolTip(
             "Source unit of the first array in precomputed/spectral RAO data. "
-            "Use Hz if the source x-data is frequency. "
+            "Use Frequency [Hz] if the source x-data is already ordinary frequency. "
+            "Use Frequency [Hz] × 2π correction if the data has been divided by 2π before reaching this dialog. "
             "Use Period [s] if the source x-data is already period."
         )
 
@@ -450,7 +452,8 @@ class RAODialog(QDialog):
 
         self.x_source_unit_help_label.setText(
             "<b>Precomputed RAO x-data source:</b> Select how the first precomputed RAO array "
-            "should be interpreted. Use <b>Hz</b> when the source x-data is frequency. "
+            "should be interpreted. Use <b>Frequency [Hz]</b> when the source x-data is already frequency. "
+            "Use <b>Frequency [Hz] × 2π correction</b> if the plotted periods are too large by a factor of about 2π. "
             "Use <b>Period [s]</b> when the source x-data is already period. "
             "This setting only affects precomputed/spectral RAO data. "
             "The plot x-axis is always Period [s]."
@@ -919,6 +922,9 @@ class RAODialog(QDialog):
         if x_source_unit == RAOXSourceUnit.PERIOD_S:
             period = x_input
             freq_hz = 1.0 / period
+        elif x_source_unit == RAOXSourceUnit.HZ_TIMES_2PI:
+            freq_hz = x_input * (2.0 * np.pi)
+            period = 1.0 / freq_hz
         else:
             freq_hz = x_input
             period = 1.0 / freq_hz

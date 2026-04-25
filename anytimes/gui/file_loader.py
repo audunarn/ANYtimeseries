@@ -1909,24 +1909,59 @@ class FileLoader:
                 continue
         if not resolved_specs:
             return tsdb
+
         spectral_lookup = {}
         if self._is_frequency_domain_model(model):
             for fallback_spec, label in zip(fallback_specs, names):
                 try:
                     obj_name, var_name, object_extra = fallback_spec
                     obj_for_rao = model[obj_name]
+
+
                     kwargs = {}
                     if object_extra is not None:
                         kwargs["objectExtra"] = object_extra
+
                     rao = obj_for_rao.SpectralResponseRAO(var_name, **kwargs)
 
-                    omega = np.asarray(rao.X, dtype=float)
+                    # OrcaFlex spectral response exports label the x-axis as
+                    # Frequency (Hz). Store the RAO x-data as Hz here.
+                    #
+                    # Do not divide by 2*pi here. Doing so shifts a point such as
+                    # 0.101436 Hz from period 9.858 s to 61.94 s, which does not
+                    # match the OrcaFlex spectral response graph/export.
+                    freq_hz = np.asarray(rao.X, dtype=float)
                     rao_mag = np.asarray(rao.Y, dtype=float)
-                    if omega.size and omega.size == rao_mag.size:
+
+                    if freq_hz.ndim != 1 or rao_mag.ndim != 1:
+                        continue
+
+                    if freq_hz.size != rao_mag.size:
+                        continue
+
+                    valid = (
+                            np.isfinite(freq_hz)
+                            & np.isfinite(rao_mag)
+                            & (freq_hz > 0.0)
+                    )
+
+                    freq_hz = freq_hz[valid]
+                    rao_mag = rao_mag[valid]
+
+                    if freq_hz.size:
                         spectral_lookup[label] = {
-                            "freq_hz": omega / (2.0 * np.pi),
+                            # New self-describing metadata.
+                            "x_data": freq_hz,
+                            "x_data_unit": "Hz",
+
+                            # Backward-compatible metadata used by the existing RAO dialog.
+                            "freq_hz": freq_hz,
                             "rao_amp": rao_mag,
+
+                            # Helpful for debugging/inspection.
+                            "source": "OrcaFlex SpectralResponseRAO",
                         }
+
                 except Exception:
                     continue
 
