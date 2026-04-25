@@ -40,6 +40,7 @@ The application integrates with the bundled **anyqats** package and supports a b
 ### Convenience utilities
 - Switch between light and dark themes, embed plots, open external viewers and manage offsets/scaling presets via save/load dialogs.
 - Track file loading progress with an integrated progress bar and optional preloading callbacks.
+- Run **SWANpost** from the Tools panel: open one or many SWAN output folders, generate a depth map from the finest available depth variable in result files (fallback to `.BOT`), pick POIs by clicking the map (or type POIs manually), and run full DNORA/SWAN postprocessing for each folder/POI combination.
 
 
 <p align="center">
@@ -121,4 +122,3 @@ Released under the MIT License. See [LICENSE](LICENSE) for details.
 
 [1]: <https://www.orcina.com/orcaflex/demo/> "Demo version of Orcaflex"
 [2]: <https://github.com/audunarn/ANYtimeseries/releases> "ANYtimes releases"
-
