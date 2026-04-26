@@ -8,15 +8,18 @@ import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QDialog,
     QFileDialog,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListView,
     QListWidget,
     QMessageBox,
     QPushButton,
+    QTreeView,
     QVBoxLayout,
 )
 
@@ -80,34 +83,24 @@ class SWANpostDialog(QDialog):
         self._render_empty_map("Open one or more folders to generate a depth map")
 
     def _select_multiple_directories(self) -> list[Path]:
+        dlg = QFileDialog(self, "Select SWAN folders")
+        dlg.setFileMode(QFileDialog.Directory)
+        dlg.setOption(QFileDialog.ShowDirsOnly, True)
+        dlg.setOption(QFileDialog.DontUseNativeDialog, True)
+
+        for view in list(dlg.findChildren(QListView)) + list(dlg.findChildren(QTreeView)):
+            view.setSelectionMode(QAbstractItemView.ExtendedSelection)
+
+        if not dlg.exec():
+            return []
+
         selected_paths: list[Path] = []
         seen: set[str] = set()
-
-        while True:
-            picked = QFileDialog.getExistingDirectory(
-                self,
-                "Select SWAN folder",
-                "",
-                QFileDialog.ShowDirsOnly,
-            )
-            if not picked:
-                break
-
-            resolved = str(Path(picked).expanduser().resolve())
+        for path in dlg.selectedFiles():
+            resolved = str(Path(path).expanduser().resolve())
             if resolved not in seen:
                 selected_paths.append(Path(resolved))
                 seen.add(resolved)
-
-            add_more = QMessageBox.question(
-                self,
-                "Add another folder?",
-                "Do you want to add one more folder?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
-            )
-            if add_more != QMessageBox.Yes:
-                break
-
         return selected_paths
 
     def _open_folders(self) -> None:
@@ -224,8 +217,19 @@ class SWANpostDialog(QDialog):
         ax = self.figure.add_subplot(111)
 
         if np.unique(x).size >= 3 and np.unique(y).size >= 3 and len(x) >= 20:
-            contour = ax.tricontourf(x, y, z, levels=24, cmap="viridis")
-            self.figure.colorbar(contour, ax=ax, label="Depth")
+            base_levels = np.array([0.0, 10.0, 20.0, 50.0, 200.0, 400.0], dtype=float)
+            zmin = float(np.nanmin(z))
+            zmax = float(np.nanmax(z))
+            in_range = base_levels[(base_levels >= zmin) & (base_levels <= zmax)]
+            if in_range.size < 2:
+                in_range = np.linspace(zmin, zmax, num=8)
+
+            contours = ax.tricontour(x, y, z, levels=np.unique(in_range), colors="#666666", linewidths=0.8)
+            ax.clabel(contours, inline=True, fontsize=7, fmt="%g")
+
+            if zmin <= 0.0 <= zmax:
+                zero_contour = ax.tricontour(x, y, z, levels=[0.0], colors="black", linewidths=1.8)
+                ax.clabel(zero_contour, inline=True, fontsize=8, fmt="%g")
         else:
             scatter = ax.scatter(x, y, c=z, s=12, cmap="viridis")
             self.figure.colorbar(scatter, ax=ax, label="Depth")

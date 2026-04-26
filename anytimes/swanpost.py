@@ -16,8 +16,8 @@ class TimeseriesData:
     time: np.ndarray
     hs: np.ndarray
     tp: np.ndarray
-    wind_speed: np.ndarray
-    wind_dir_deg: np.ndarray
+    wind_speed: np.ndarray | None
+    wind_dir_deg: np.ndarray | None
 
 
 HS_CANDIDATES = ("hs", "swh", "significant_wave_height", "Hsig")
@@ -196,18 +196,16 @@ def load_timeseries(nc_file: Path, point_index: int | None = None) -> Timeseries
         else:
             ws_s, wd_s = _wind_from_uv(ds, point_index)
             if ws_s is None or wd_s is None:
-                raise KeyError(
-                    "Could not find wind speed/direction variables or wind U/V components. "
-                    f"Found variables: {list(ds.data_vars)}"
-                )
+                ws_s = None
+                wd_s = None
 
         time = hs_s["time"].values
         return TimeseriesData(
             time=np.asarray(time),
             hs=np.asarray(hs_s.values, dtype=float),
             tp=np.asarray(tp_s.values, dtype=float),
-            wind_speed=np.asarray(ws_s.values, dtype=float),
-            wind_dir_deg=np.asarray(wd_s.values, dtype=float),
+            wind_speed=np.asarray(ws_s.values, dtype=float) if ws_s is not None else None,
+            wind_dir_deg=np.asarray(wd_s.values, dtype=float) if wd_s is not None else None,
         )
     finally:
         ds.close()
@@ -232,27 +230,38 @@ def plot_timeseries(data: TimeseriesData, title: str) -> None:
     axes[1].set_ylabel("Tp [s]")
     axes[1].grid(True, alpha=0.3)
 
-    axes[2].plot(t, data.wind_speed, color="tab:green", lw=1.8, label="Wind speed")
-    u, v = _arrow_components_from_met_direction(data.wind_speed, data.wind_dir_deg)
+    if data.wind_speed is not None and data.wind_dir_deg is not None:
+        axes[2].plot(t, data.wind_speed, color="tab:green", lw=1.8, label="Wind speed")
+        u, v = _arrow_components_from_met_direction(data.wind_speed, data.wind_dir_deg)
 
-    n = len(t)
-    stride = max(1, n // 40)
-    axes[2].quiver(
-        t[::stride],
-        data.wind_speed[::stride],
-        u[::stride],
-        v[::stride],
-        angles="xy",
-        scale_units="xy",
-        scale=max(np.nanmax(data.wind_speed), 1.0) * 8,
-        width=0.002,
-        color="tab:orange",
-        alpha=0.85,
-    )
-    axes[2].set_ylabel("Wind [m/s]")
+        n = len(t)
+        stride = max(1, n // 40)
+        axes[2].quiver(
+            t[::stride],
+            data.wind_speed[::stride],
+            u[::stride],
+            v[::stride],
+            angles="xy",
+            scale_units="xy",
+            scale=max(np.nanmax(data.wind_speed), 1.0) * 8,
+            width=0.002,
+            color="tab:orange",
+            alpha=0.85,
+        )
+        axes[2].set_ylabel("Wind [m/s]")
+        axes[2].legend(loc="upper right")
+    else:
+        axes[2].text(
+            0.5,
+            0.5,
+            "Wind variables not available in this result file",
+            transform=axes[2].transAxes,
+            ha="center",
+            va="center",
+        )
+        axes[2].set_ylabel("Wind")
     axes[2].set_xlabel("Time")
     axes[2].grid(True, alpha=0.3)
-    axes[2].legend(loc="upper right")
 
     axes[0].set_title(title)
     locator = mdates.AutoDateLocator()
