@@ -7,7 +7,6 @@ import csv
 import os
 import subprocess
 import sys
-import webbrowser
 from typing import Iterable
 
 import numpy as np
@@ -16,6 +15,7 @@ from matplotlib.figure import Figure
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QCheckBox,
     QDoubleSpinBox,
     QFileDialog,
@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QPlainTextEdit,
+    QProgressBar,
     QSplitter,
     QVBoxLayout,
     QWidget,
@@ -192,6 +193,12 @@ class SWANToolDialog(QMainWindow):
         self.run_btn.clicked.connect(lambda: self._run(save_output=False))
         self.save_btn.clicked.connect(lambda: self._run(save_output=True))
         layout.addLayout(row)
+
+        self.progress = QProgressBar()
+        self.progress.setVisible(False)
+        self.progress.setTextVisible(True)
+        self.progress.setFormat("Processing…")
+        layout.addWidget(self.progress)
 
     def _build_map(self, layout: QVBoxLayout) -> None:
         group = QGroupBox("Map preview from selected .nc region")
@@ -475,15 +482,30 @@ class SWANToolDialog(QMainWindow):
             lat_da = self._pick_coord(ds, ("latitude", "lat", "LAT"))
             lon_da = self._pick_coord(ds, ("longitude", "lon", "LON"))
             if lat_da is None or lon_da is None:
+                lat_da, lon_da = self._fallback_spec_lat_lon(ds)
+            if lat_da is None or lon_da is None:
                 return []
-            lats = np.asarray(lat_da.values, dtype=float).reshape(-1)
-            lons = np.asarray(lon_da.values, dtype=float).reshape(-1)
+            lats = np.asarray(lat_da.values, dtype=float)
+            lons = np.asarray(lon_da.values, dtype=float)
+            while lats.ndim > 1:
+                lats = lats[0]
+            while lons.ndim > 1:
+                lons = lons[0]
+            lats = lats.reshape(-1)
+            lons = lons.reshape(-1)
             n = min(lats.size, lons.size)
             return [
                 Poi(lat=float(lats[i]), lon=float(lons[i]))
                 for i in range(n)
                 if np.isfinite(lats[i]) and np.isfinite(lons[i])
             ]
+
+    def _fallback_spec_lat_lon(self, ds: xr.Dataset):
+        lat_key = next((name for name in ds.variables if "lat" in name.lower()), None)
+        lon_key = next((name for name in ds.variables if "lon" in name.lower()), None)
+        if lat_key is None or lon_key is None:
+            return None, None
+        return ds[lat_key], ds[lon_key]
 
     def _dedupe_pois(self, pois: list[Poi]) -> list[Poi]:
         seen: set[str] = set()
@@ -733,15 +755,28 @@ class SWANToolDialog(QMainWindow):
         self._log(f"  SPEC_DIR_SPREADING_S={self.spreading_s.value()}")
         self._log(f"  Save output requested: {save_output}")
 
-        started_at = self._now_epoch()
-        self._run_source_postprocessor(
-            folders=folders,
-            pois=pois,
-            save_output=save_output,
-        )
-        if not save_output:
-            for folder in folders:
-                self._open_new_html_outputs(folder, started_at)
+        self._set_processing_state(True, mode="Saving output…" if save_output else "Running postprocessing…")
+        try:
+            self._run_source_postprocessor(
+                folders=folders,
+                pois=pois,
+                save_output=save_output,
+            )
+        finally:
+            self._set_processing_state(False)
+
+    def _set_processing_state(self, is_busy: bool, mode: str = "Processing…") -> None:
+        self.run_btn.setEnabled(not is_busy)
+        self.save_btn.setEnabled(not is_busy)
+        self.progress.setVisible(is_busy)
+        if is_busy:
+            self.progress.setRange(0, 0)
+            self.progress.setFormat(mode)
+        else:
+            self.progress.setRange(0, 100)
+            self.progress.setValue(0)
+            self.progress.setFormat("Processing…")
+        QApplication.processEvents()
 
     def _run_source_postprocessor(self, folders: list[Path], pois: list[Poi], save_output: bool) -> None:
         script_path = Path(swan_post.__file__).resolve()
@@ -764,26 +799,10 @@ class SWANToolDialog(QMainWindow):
             env = dict(**os.environ)
             env.setdefault("MPLBACKEND", "Agg")
             subprocess.run(cmd, check=True, cwd=str(folders[0]), env=env)
-            mode = "saved (no auto-open)" if save_output else "generated and auto-opened"
+            mode = "saved (no auto-open)" if save_output else "generated and auto-opened once by script"
             self._log(f"Postprocessor completed; outputs {mode}.")
         except subprocess.CalledProcessError as exc:
             self._log(f"Postprocessor failed: {exc}")
-
-    def _open_new_html_outputs(self, folder: Path, started_at: float) -> None:
-        html_files = sorted(
-            [p for p in folder.rglob("*.html") if p.is_file() and p.stat().st_mtime >= started_at],
-            key=lambda p: p.stat().st_mtime,
-        )
-        if not html_files:
-            self._log(f"No new HTML outputs detected in: {folder}")
-            return
-        for html in html_files:
-            self._log(f"Opening HTML output in browser: {html}")
-            webbrowser.open(html.resolve().as_uri())
-
-    def _now_epoch(self) -> float:
-        import time
-        return time.time()
 
     def _log(self, message: str) -> None:
         self.log_output.appendPlainText(message)
