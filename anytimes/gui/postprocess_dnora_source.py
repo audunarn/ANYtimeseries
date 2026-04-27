@@ -896,6 +896,32 @@ def parse_args() -> Inputs:
         default=5.0,
         help="Spreading parameter s for oceanwaves.as_directional (default: 5.0).",
     )
+    parser.add_argument(
+        "--split-report-files",
+        dest="split_report_files",
+        action="store_true",
+        default=None,
+        help="Write split HTML reports (default: current script setting).",
+    )
+    parser.add_argument(
+        "--single-report-file",
+        dest="split_report_files",
+        action="store_false",
+        help="Write a single combined HTML report.",
+    )
+    parser.add_argument(
+        "--auto-open-split-files",
+        dest="auto_open_split_files",
+        action="store_true",
+        default=None,
+        help="Auto-open produced HTML reports in browser (default: current script setting).",
+    )
+    parser.add_argument(
+        "--no-auto-open-split-files",
+        dest="auto_open_split_files",
+        action="store_false",
+        help="Do not auto-open produced HTML reports.",
+    )
 
     args = parser.parse_args()
     directories = tuple(Path(d).expanduser().resolve() for d in args.directory)
@@ -944,6 +970,11 @@ def parse_args() -> Inputs:
             spec_file = None
 
     point_coords = _resolve_point_coordinates(args.point_lat, args.point_lon)
+
+    if args.split_report_files is not None:
+        globals()["SPLIT_REPORT_FILES"] = bool(args.split_report_files)
+    if args.auto_open_split_files is not None:
+        globals()["AUTO_OPEN_SPLIT_FILES"] = bool(args.auto_open_split_files)
 
     return Inputs(
         directories=directories,
@@ -5562,7 +5593,7 @@ def generate_metocean_report(
             print(f"Open manually: http://127.0.0.1:{port}/{out_files[0].name}")
 
 def main() -> None:
-    use_code_config = USE_CODE_CONFIG or len(sys.argv) == 1
+    use_code_config = USE_CODE_CONFIG and len(sys.argv) == 1
     inputs = _build_inputs_from_code_config() if use_code_config else parse_args()
 
     point_coords = _normalize_point_coords(inputs.point_coord)
