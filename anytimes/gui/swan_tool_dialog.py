@@ -68,6 +68,7 @@ class SWANToolDialog(QMainWindow):
         self.resize(1300, 780)
 
         self._preview_layers: list[PreviewLayer] = []
+        self._spec_points: list[Poi] = []
         self._preview_nc_path: Path | None = None
         self._is_syncing_point = False
 
@@ -388,9 +389,11 @@ class SWANToolDialog(QMainWindow):
 
     def _load_region_preview(self) -> None:
         self._preview_layers = []
+        self._spec_points = []
         self._preview_nc_path = None
 
         loaded_layers: list[PreviewLayer] = []
+        spec_points_accum: list[Poi] = []
         for folder in self._folder_paths():
             try:
                 nc = self._autodetect_preview_nc(folder)
@@ -410,6 +413,11 @@ class SWANToolDialog(QMainWindow):
                 self._log(f"Map preview source added: {nc}")
             except Exception as exc:
                 self._log(f"Preview skip for {folder}: {exc}")
+            try:
+                spec_path = self._autodetect_spec_nc(folder)
+                spec_points_accum.extend(self._read_spec_points(spec_path))
+            except Exception:
+                pass
 
         if loaded_layers:
             # Draw coarse first and fine last => finest takes precedence visually.
@@ -420,6 +428,10 @@ class SWANToolDialog(QMainWindow):
             )
         else:
             self.map_info.setText("No valid .nc file found for region preview.")
+
+        self._spec_points = self._dedupe_pois(spec_points_accum)
+        if self._spec_points:
+            self._log(f"Loaded {len(self._spec_points)} spectral point(s) from *_spec.nc files.")
 
         self._refresh_map()
 
@@ -451,6 +463,38 @@ class SWANToolDialog(QMainWindow):
         if not candidates:
             raise FileNotFoundError(f"No non-spec .nc file found in {folder}")
         return sorted(candidates, key=lambda p: (-p.stat().st_size, p.name.lower()))[0]
+
+    def _autodetect_spec_nc(self, folder: Path) -> Path:
+        candidates = [p for p in folder.iterdir() if p.is_file() and p.suffix.lower() == ".nc" and "spec" in p.name.lower()]
+        if not candidates:
+            raise FileNotFoundError(f"No *_spec*.nc file found in {folder}")
+        return sorted(candidates, key=lambda p: (-p.stat().st_size, p.name.lower()))[0]
+
+    def _read_spec_points(self, spec_path: Path) -> list[Poi]:
+        with xr.open_dataset(spec_path) as ds:
+            lat_da = self._pick_coord(ds, ("latitude", "lat", "LAT"))
+            lon_da = self._pick_coord(ds, ("longitude", "lon", "LON"))
+            if lat_da is None or lon_da is None:
+                return []
+            lats = np.asarray(lat_da.values, dtype=float).reshape(-1)
+            lons = np.asarray(lon_da.values, dtype=float).reshape(-1)
+            n = min(lats.size, lons.size)
+            return [
+                Poi(lat=float(lats[i]), lon=float(lons[i]))
+                for i in range(n)
+                if np.isfinite(lats[i]) and np.isfinite(lons[i])
+            ]
+
+    def _dedupe_pois(self, pois: list[Poi]) -> list[Poi]:
+        seen: set[str] = set()
+        unique: list[Poi] = []
+        for poi in pois:
+            key = f"{poi.lat:.6f},{poi.lon:.6f}"
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(poi)
+        return unique
 
     def _read_preview_data_from_nc(
         self, nc_path: Path
@@ -645,6 +689,17 @@ class SWANToolDialog(QMainWindow):
         pois = self._poi_values()
         if pois:
             ax.scatter([p.lon for p in pois], [p.lat for p in pois], color="orange", s=45, label="POI list")
+
+        if self._spec_points:
+            ax.scatter(
+                [p.lon for p in self._spec_points],
+                [p.lat for p in self._spec_points],
+                color="deepskyblue",
+                edgecolors="black",
+                s=60,
+                marker="^",
+                label="Spectral points",
+            )
 
         handles, labels = ax.get_legend_handles_labels()
         if handles:
