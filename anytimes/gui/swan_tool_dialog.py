@@ -304,7 +304,7 @@ class SWANToolDialog(QMainWindow):
 
         for folder in self._folder_paths():
             try:
-                nc = swan_post.autodetect_file(folder, ".nc", None)
+                nc = self._autodetect_preview_nc(folder)
                 lat, lon, land_mask, depth_grid = self._read_preview_data_from_nc(nc)
                 if lat is None or lon is None:
                     continue
@@ -322,6 +322,15 @@ class SWANToolDialog(QMainWindow):
         if self._preview_nc_path is None:
             self.map_info.setText("No valid .nc file found for region preview.")
         self._refresh_map()
+
+    def _autodetect_preview_nc(self, folder: Path) -> Path:
+        candidates = [
+            p for p in folder.iterdir()
+            if p.is_file() and p.suffix.lower() == ".nc" and "spec" not in p.name.lower()
+        ]
+        if not candidates:
+            raise FileNotFoundError(f"No non-spec .nc file found in {folder}")
+        return sorted(candidates, key=lambda p: (-p.stat().st_size, p.name.lower()))[0]
 
     def _read_preview_data_from_nc(
         self, nc_path: Path
@@ -449,6 +458,15 @@ class SWANToolDialog(QMainWindow):
                     cmap="OrRd",
                     alpha=0.45,
                 )
+                ax.contour(
+                    lon,
+                    lat,
+                    self._land_mask.astype(float),
+                    levels=[0.5],
+                    colors="black",
+                    linewidths=1.0,
+                    alpha=0.9,
+                )
             ax.scatter(lon.ravel(), lat.ravel(), s=0.4, alpha=0.20, color="white", label="Grid")
             ax.set_xlim(np.nanmin(lon), np.nanmax(lon))
             ax.set_ylim(np.nanmin(lat), np.nanmax(lat))
@@ -474,6 +492,18 @@ class SWANToolDialog(QMainWindow):
             return
 
         pois = self._poi_values()
+        if not pois:
+            manual = self._current_manual_poi()
+            if manual is not None:
+                pois = [manual]
+                self._log(f"Using manual POI without adding to list: {manual.label}")
+            else:
+                QMessageBox.warning(
+                    self,
+                    "No POI",
+                    "Please add at least one valid POI (or enter a valid manual latitude/longitude) before running.",
+                )
+                return
         self._log("Running SWANtool with parameters:")
         self._log(f"  SPLIT_REPORT_FILES={self.split_report_cb.isChecked()}")
         self._log(f"  DEFAULT_ARROW_RESOLUTION={int(self.arrow_resolution.value())}")
