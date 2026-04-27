@@ -152,17 +152,6 @@ class SWANToolDialog(QMainWindow):
         group = QGroupBox("3) Parameters")
         form = QFormLayout(group)
 
-        self.script_path_edit = QLineEdit()
-        self.script_path_edit.setText(str(Path(swan_post.__file__).resolve()))
-        pick_script_btn = QPushButton("Browse…")
-        pick_script_btn.clicked.connect(self._pick_postprocess_script)
-        script_row = QHBoxLayout()
-        script_row.addWidget(self.script_path_edit)
-        script_row.addWidget(pick_script_btn)
-        script_wrap = QWidget()
-        script_wrap.setLayout(script_row)
-        form.addRow("Postprocess script", script_wrap)
-
         self.split_report_cb = QCheckBox("Split report files")
         self.split_report_cb.setChecked(True)
         form.addRow(self.split_report_cb)
@@ -184,16 +173,6 @@ class SWANToolDialog(QMainWindow):
         form.addRow("SPEC_DIR_SPREADING_S", self.spreading_s)
 
         layout.addWidget(group)
-
-    def _pick_postprocess_script(self) -> None:
-        filepath, _ = QFileDialog.getOpenFileName(
-            self,
-            "Select postprocess_dnora script",
-            str(Path(self.script_path_edit.text()).parent if self.script_path_edit.text() else Path.cwd()),
-            "Python files (*.py);;All files (*)",
-        )
-        if filepath:
-            self.script_path_edit.setText(filepath)
 
     def _build_action_row(self, layout: QVBoxLayout) -> None:
         row = QHBoxLayout()
@@ -605,7 +584,7 @@ class SWANToolDialog(QMainWindow):
                 self._open_new_html_outputs(folder, started_at)
 
     def _run_source_postprocessor(self, folders: list[Path], pois: list[Poi], save_output: bool) -> None:
-        script_path = Path(self.script_path_edit.text().strip() or str(Path(swan_post.__file__).resolve())).resolve()
+        script_path = Path(swan_post.__file__).resolve()
         if not script_path.exists():
             self._log(f"Postprocessor script not found: {script_path}")
             return
