@@ -75,6 +75,8 @@ class SWANToolDialog(QMainWindow):
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
         split = QSplitter(Qt.Horizontal)
+        split.setChildrenCollapsible(False)
+        split.setHandleWidth(10)
         root.addWidget(split)
 
         left = QWidget()
@@ -85,6 +87,8 @@ class SWANToolDialog(QMainWindow):
         right_layout = QVBoxLayout(right)
         split.addWidget(right)
         split.setSizes([530, 770])
+        split.setStretchFactor(0, 1)
+        split.setStretchFactor(1, 2)
 
         self._build_folder_group(left_layout)
         self._build_poi_group(left_layout)
@@ -333,6 +337,11 @@ class SWANToolDialog(QMainWindow):
         self._refresh_map()
 
     def _on_map_clicked(self, event) -> None:
+        if event.button != 1:
+            return
+        # When matplotlib toolbar pan/zoom is active, let that interaction win.
+        if getattr(self.map_toolbar, "mode", ""):
+            return
         if event.xdata is None or event.ydata is None:
             return
         self._is_syncing_point = True
