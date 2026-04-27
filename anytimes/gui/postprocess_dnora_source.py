@@ -896,6 +896,32 @@ def parse_args() -> Inputs:
         default=5.0,
         help="Spreading parameter s for oceanwaves.as_directional (default: 5.0).",
     )
+    parser.add_argument(
+        "--split-report-files",
+        dest="split_report_files",
+        action="store_true",
+        default=None,
+        help="Write split HTML reports (default: current script setting).",
+    )
+    parser.add_argument(
+        "--single-report-file",
+        dest="split_report_files",
+        action="store_false",
+        help="Write a single combined HTML report.",
+    )
+    parser.add_argument(
+        "--auto-open-split-files",
+        dest="auto_open_split_files",
+        action="store_true",
+        default=None,
+        help="Auto-open produced HTML reports in browser (default: current script setting).",
+    )
+    parser.add_argument(
+        "--no-auto-open-split-files",
+        dest="auto_open_split_files",
+        action="store_false",
+        help="Do not auto-open produced HTML reports.",
+    )
 
     args = parser.parse_args()
     directories = tuple(Path(d).expanduser().resolve() for d in args.directory)
@@ -944,6 +970,11 @@ def parse_args() -> Inputs:
             spec_file = None
 
     point_coords = _resolve_point_coordinates(args.point_lat, args.point_lon)
+
+    if args.split_report_files is not None:
+        globals()["SPLIT_REPORT_FILES"] = bool(args.split_report_files)
+    if args.auto_open_split_files is not None:
+        globals()["AUTO_OPEN_SPLIT_FILES"] = bool(args.auto_open_split_files)
 
     return Inputs(
         directories=directories,
@@ -2133,6 +2164,35 @@ def _iter_selected_spec_point_datasets(
             continue
         seen.add(spec_point_idx)
         yield request_idx, spec_point_idx, _select_spec_point_dataset_by_index(spec_ds, spec_point_idx), matched_point_coord
+
+
+def _iter_all_spec_point_datasets(spec_ds: xr.Dataset):
+    """
+    Yield all spectral points directly from the spec dataset (no POI matching).
+
+    Yields:
+        display_idx: zero-based index in the iteration order
+        spec_point_idx: spectral point index in the dataset
+        selected_ds: dataset sliced to one spectral point
+        spec_point_coord: spectral (lat, lon) if available, else None
+    """
+    if "points" in spec_ds.sizes and int(spec_ds.sizes["points"]) > 1:
+        npoints = int(spec_ds.sizes["points"])
+    else:
+        npoints = 1
+
+    lats = None
+    lons = None
+    if "latitude" in spec_ds and "longitude" in spec_ds:
+        lats = np.asarray(spec_ds["latitude"].values, dtype=float).reshape(-1)
+        lons = np.asarray(spec_ds["longitude"].values, dtype=float).reshape(-1)
+
+    for display_idx in range(npoints):
+        spec_point_idx = int(display_idx if npoints > 1 else 0)
+        coord = None
+        if lats is not None and lons is not None and display_idx < lats.size and display_idx < lons.size:
+            coord = (float(lats[display_idx]), float(lons[display_idx]))
+        yield display_idx, spec_point_idx, _select_spec_point_dataset_by_index(spec_ds, spec_point_idx), coord
 def _select_spec_point_dataset_by_index(spec_ds: xr.Dataset, point_idx: int) -> xr.Dataset:
     """
     Select a single spectral point by index.
@@ -3578,13 +3638,12 @@ def export_wave_statistics(spec_file: Path, point_coord: tuple[float, float] | t
     import xarray as xr
     import pandas as pd
 
-    point_coords = _normalize_point_coords(point_coord)
     ds = xr.open_dataset(spec_file)
 
     try:
         rows: list[dict[str, float | int]] = []
 
-        for request_idx, spec_point_idx, selected_ds, matched_point_coord in _iter_selected_spec_point_datasets(ds, point_coords):
+        for display_idx, spec_point_idx, selected_ds, spec_point_coord in _iter_all_spec_point_datasets(ds):
             _, freq_name, dir_name, da = _detect_spec_axes_and_var(selected_ds)
 
             freq = da[freq_name].values.astype(float)
@@ -3602,16 +3661,18 @@ def export_wave_statistics(spec_file: Path, point_coord: tuple[float, float] | t
             theta_p = direction_deg[peak_idx[1]]
 
             row: dict[str, float | int] = {
-                "requested_point_index": int(request_idx),
+                "spectral_point_order": int(display_idx),
                 "spec_point_index": int(spec_point_idx),
-                "requested_lat": float(matched_point_coord[0]),
-                "requested_lon": float(matched_point_coord[1]),
                 "Hs_mean": float(np.nanmean(hs)),
                 "Hs_max": float(np.nanmax(hs)),
                 "Hs_p95": float(np.nanpercentile(hs, 95)),
                 "Tp_peak": float(Tp),
                 "Dir_peak": float(theta_p),
             }
+
+            if spec_point_coord is not None:
+                row["spec_lat"] = float(spec_point_coord[0])
+                row["spec_lon"] = float(spec_point_coord[1])
 
             if "latitude" in selected_ds and "longitude" in selected_ds:
                 sel_lat = np.asarray(selected_ds["latitude"].values, dtype=float).reshape(-1)
@@ -3653,13 +3714,12 @@ def run_directional_spec_plot(inputs: Inputs) -> None:
     if inputs.spec_file is None:
         raise ValueError("A spec file is required.")
 
-    point_coords = _normalize_point_coords(inputs.point_coord)
     spec_ds = xr.open_dataset(inputs.spec_file)
 
     try:
         any_written = False
 
-        for request_idx, spec_point_idx, selected, matched_point_coord in _iter_selected_spec_point_datasets(spec_ds, point_coords):
+        for display_idx, spec_point_idx, selected, spec_point_coord in _iter_all_spec_point_datasets(spec_ds):
             _, freq_name, dir_name, spec_da = _detect_spec_axes_and_var(selected)
 
             time_name = spec_da.dims[0]
@@ -3683,7 +3743,7 @@ def run_directional_spec_plot(inputs: Inputs) -> None:
             valid = np.where(np.isfinite(hs_series) & (hs_series > 0))[0]
             if len(valid) == 0:
                 print(
-                    f"No valid spectra found for requested point {request_idx + 1} "
+                    f"No valid spectra found for spectral point {display_idx + 1} "
                     f"(spec point index {spec_point_idx}). Skipping."
                 )
                 continue
@@ -3782,8 +3842,8 @@ def run_directional_spec_plot(inputs: Inputs) -> None:
                 title=dict(
                     text=(
                         f"Directional wave spectra E(f,θ) — key sea states — {inputs.spec_file.name}"
-                        f"<br>Requested POI {request_idx + 1}: lat={matched_point_coord[0]:.6f}, lon={matched_point_coord[1]:.6f}"
-                        f"<br>Selected spectral point index={spec_point_idx}{spec_lat_text}{spec_lon_text}"
+                        f"<br>Spectral point {display_idx + 1} (index={spec_point_idx})"
+                        f"{spec_lat_text}{spec_lon_text}"
                     ),
                     x=0.5,
                     xanchor="center",
@@ -3795,7 +3855,7 @@ def run_directional_spec_plot(inputs: Inputs) -> None:
             )
 
             out_file = inputs.spec_file.parent / (
-                f"{inputs.spec_file.stem}_dirspec_2x2_req{request_idx + 1}_specpt{spec_point_idx}.html"
+                f"{inputs.spec_file.stem}_dirspec_2x2_sp{display_idx + 1}_specpt{spec_point_idx}.html"
             )
             fig.write_html(
                 out_file,
@@ -5021,16 +5081,15 @@ def generate_metocean_report(
         ds = xr.open_dataset(spec_file)
 
         try:
-            point_coords = _normalize_point_coords(inputs.point_coord)
-            selected_entries = list(_iter_selected_spec_point_datasets(ds, point_coords))
+            selected_entries = list(_iter_all_spec_point_datasets(ds))
             if not selected_entries:
-                raise ValueError("No spectral points could be matched to the requested POIs.")
+                raise ValueError("No spectral points found in the spectral dataset.")
 
             dash_buttons_html: list[str] = []
             dash_contents_html: list[str] = []
             dirspec_tab_html_parts: list[str] = []
 
-            for request_idx, spec_point_idx, selected_ds, matched_point_coord in selected_entries:
+            for display_idx, spec_point_idx, selected_ds, spec_point_coord in selected_entries:
                 _, freq_name, dir_name, da = _detect_spec_axes_and_var(selected_ds)
 
                 freq = da[freq_name].values.astype(float)
@@ -5236,8 +5295,7 @@ def generate_metocean_report(
                                 {
                                     "title.text": (
                                         f"{spec_file.name}"
-                                        f"<br>Requested POI {request_idx + 1}: lat={matched_point_coord[0]:.6f}, lon={matched_point_coord[1]:.6f}"
-                                        f"<br>Selected spectral point index={spec_point_idx}{spec_lat_text}{spec_lon_text}"
+                                        f"<br>Spectral point {display_idx + 1} (index={spec_point_idx}){spec_lat_text}{spec_lon_text}"
                                         f"<br>Showing: {name}"
                                     )
                                 },
@@ -5249,8 +5307,7 @@ def generate_metocean_report(
                     title=dict(
                         text=(
                             f"{spec_file.name}"
-                            f"<br>Requested POI {request_idx + 1}: lat={matched_point_coord[0]:.6f}, lon={matched_point_coord[1]:.6f}"
-                            f"<br>Selected spectral point index={spec_point_idx}{spec_lat_text}{spec_lon_text}"
+                            f"<br>Spectral point {display_idx + 1} (index={spec_point_idx}){spec_lat_text}{spec_lon_text}"
                             f"<br>Showing: {dataset_names[0]}"
                         ),
                         x=0.5,
@@ -5294,10 +5351,10 @@ def generate_metocean_report(
                 )
 
                 html_dash = fig1.to_html(full_html=False, config={"responsive": True}, auto_play=False)
-                subtab_id = f"dash_req_{request_idx}_spec_{spec_point_idx}"
+                subtab_id = f"dash_sp_{display_idx}_spec_{spec_point_idx}"
 
                 dash_buttons_html.append(
-                    f'<button onclick="openDashSubtab(\'{subtab_id}\')">POI {request_idx + 1} → spectral point {spec_point_idx}</button>'
+                    f'<button onclick="openDashSubtab(\'{subtab_id}\')">Spectral point {display_idx + 1} (idx {spec_point_idx})</button>'
                 )
                 dash_contents_html.append(
                     f'<div id="{subtab_id}" class="subtabcontent">{html_dash}</div>'
@@ -5378,8 +5435,7 @@ def generate_metocean_report(
                     title=dict(
                         text=(
                             f"Directional wave spectra E(f,θ) — key sea states — {spec_file.name}"
-                            f"<br>Requested POI {request_idx + 1}: lat={matched_point_coord[0]:.6f}, lon={matched_point_coord[1]:.6f}"
-                            f"<br>Selected spectral point index={spec_point_idx}{spec_lat_text}{spec_lon_text}"
+                            f"<br>Spectral point {display_idx + 1} (index={spec_point_idx}){spec_lat_text}{spec_lon_text}"
                         ),
                         x=0.5,
                         xanchor="center",
@@ -5562,7 +5618,7 @@ def generate_metocean_report(
             print(f"Open manually: http://127.0.0.1:{port}/{out_files[0].name}")
 
 def main() -> None:
-    use_code_config = USE_CODE_CONFIG or len(sys.argv) == 1
+    use_code_config = USE_CODE_CONFIG and len(sys.argv) == 1
     inputs = _build_inputs_from_code_config() if use_code_config else parse_args()
 
     point_coords = _normalize_point_coords(inputs.point_coord)
