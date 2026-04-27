@@ -3,6 +3,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import subprocess
+import sys
+import webbrowser
 from typing import Iterable
 
 import numpy as np
@@ -472,16 +475,41 @@ class SWANToolDialog(QMainWindow):
                 continue
 
             if not pois:
-                self._log(f"Plotting default point for {nc_path.name}")
-                data = swan_post.load_timeseries(nc_path, point_index=None)
-                swan_post.plot_timeseries(data, title=f"SWAN postprocessing — {nc_path.name}")
+                started_at = self._now_epoch()
+                self._log(f"Running source postprocessor for default point: {nc_path.name}")
+                self._run_source_postprocessor(folder, point_index=None)
+                self._open_new_html_outputs(folder, started_at)
                 continue
 
             for poi in pois:
+                started_at = self._now_epoch()
                 idx = self._nearest_point_index(nc_path, poi)
-                self._log(f"Plotting {nc_path.name} at POI {poi.label} (point_index={idx})")
-                data = swan_post.load_timeseries(nc_path, point_index=idx)
-                swan_post.plot_timeseries(data, title=f"SWAN postprocessing — {nc_path.name} @ {poi.label}")
+                self._log(f"Running source postprocessor for {nc_path.name} at POI {poi.label} (point_index={idx})")
+                self._run_source_postprocessor(folder, point_index=idx)
+                self._open_new_html_outputs(folder, started_at)
+
+    def _run_source_postprocessor(self, folder: Path, point_index: int | None) -> None:
+        script_path = Path(swan_post.__file__).resolve()
+        cmd = [sys.executable, str(script_path), str(folder)]
+        if point_index is not None:
+            cmd += ["--point-index", str(int(point_index))]
+        try:
+            subprocess.run(cmd, check=True, cwd=str(folder))
+        except subprocess.CalledProcessError as exc:
+            self._log(f"Postprocessor failed for {folder}: {exc}")
+
+    def _open_new_html_outputs(self, folder: Path, started_at: float) -> None:
+        html_files = sorted(
+            [p for p in folder.rglob("*.html") if p.is_file() and p.stat().st_mtime >= started_at],
+            key=lambda p: p.stat().st_mtime,
+        )
+        for html in html_files:
+            self._log(f"Opening HTML output in browser: {html}")
+            webbrowser.open(html.resolve().as_uri())
+
+    def _now_epoch(self) -> float:
+        import time
+        return time.time()
 
     def _nearest_point_index(self, nc_path: Path, poi: Poi) -> int | None:
         # Build point index using the same stacked non-time dimension ordering
