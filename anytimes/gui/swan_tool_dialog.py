@@ -371,6 +371,10 @@ class SWANToolDialog(QMainWindow):
     def _read_preview_data_from_nc(
         self, nc_path: Path
     ) -> tuple[np.ndarray | None, np.ndarray | None, np.ndarray | None, np.ndarray | None]:
+        # Local import keeps this function robust in bundled/runtime environments
+        # where module globals may not be initialized as expected.
+        import xarray as xr
+
         with xr.open_dataset(nc_path) as ds:
             lat = self._pick_coord(ds, ("lat", "latitude", "LAT", "nav_lat", "y"))
             lon = self._pick_coord(ds, ("lon", "longitude", "LON", "nav_lon", "x"))
