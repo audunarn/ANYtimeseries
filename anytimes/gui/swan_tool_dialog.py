@@ -7,7 +7,7 @@ from typing import Iterable
 
 import numpy as np
 import xarray as xr
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
 from matplotlib.figure import Figure
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -183,7 +183,9 @@ class SWANToolDialog(QMainWindow):
         self.map_fig = Figure(figsize=(7, 6), facecolor="white")
         self.map_canvas = FigureCanvasQTAgg(self.map_fig)
         self.map_canvas.setStyleSheet("background: white;")
+        self.map_toolbar = NavigationToolbar2QT(self.map_canvas, self)
         self.map_canvas.mpl_connect("button_press_event", self._on_map_clicked)
+        vbox.addWidget(self.map_toolbar)
         vbox.addWidget(self.map_canvas)
         layout.addWidget(group)
 
