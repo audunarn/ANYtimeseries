@@ -534,7 +534,7 @@ class SWANToolDialog(QMainWindow):
 
             # Align coordinate arrays to the same non-time dimensions as hs.
             template = hs.isel(time=0)
-            lat_b, lon_b = xr.broadcast(lat_da, lon_da, template)
+            lat_b, lon_b, _ = xr.broadcast(lat_da, lon_da, template)
             if any(dim not in lat_b.dims for dim in non_time_dims):
                 return None
 
