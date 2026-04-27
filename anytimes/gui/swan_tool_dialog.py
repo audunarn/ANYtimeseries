@@ -422,9 +422,11 @@ class SWANToolDialog(QMainWindow):
                 self._log(f"Preview skip for {folder}: {exc}")
             try:
                 spec_path = self._autodetect_spec_nc(folder)
-                spec_points_accum.extend(self._read_spec_points(spec_path))
-            except Exception:
-                pass
+                points = self._read_spec_points(spec_path)
+                spec_points_accum.extend(points)
+                self._log(f"Spectral source opened: {spec_path} (points found: {len(points)})")
+            except Exception as exc:
+                self._log(f"Spectral preview skip for {folder}: {exc}")
 
         if loaded_layers:
             # Draw coarse first and fine last => finest takes precedence visually.
@@ -472,19 +474,30 @@ class SWANToolDialog(QMainWindow):
         return sorted(candidates, key=lambda p: (-p.stat().st_size, p.name.lower()))[0]
 
     def _autodetect_spec_nc(self, folder: Path) -> Path:
-        candidates = [p for p in folder.iterdir() if p.is_file() and p.suffix.lower() == ".nc" and "spec" in p.name.lower()]
+        candidates = [p for p in folder.iterdir() if p.is_file() and p.suffix.lower() == ".nc" and p.stem.lower().endswith("_spec")]
+        if not candidates:
+            candidates = [p for p in folder.iterdir() if p.is_file() and p.suffix.lower() == ".nc" and "_spec" in p.name.lower()]
         if not candidates:
             raise FileNotFoundError(f"No *_spec*.nc file found in {folder}")
         return sorted(candidates, key=lambda p: (-p.stat().st_size, p.name.lower()))[0]
 
     def _read_spec_points(self, spec_path: Path) -> list[Poi]:
         with xr.open_dataset(spec_path) as ds:
-            lat_da = self._pick_coord(ds, ("latitude", "lat", "LAT"))
-            lon_da = self._pick_coord(ds, ("longitude", "lon", "LON"))
+            lat_da = self._pick_coord(ds, ("latitude", "lat", "LAT", "y", "Y"))
+            lon_da = self._pick_coord(ds, ("longitude", "lon", "LON", "x", "X"))
             if lat_da is None or lon_da is None:
                 lat_da, lon_da = self._fallback_spec_lat_lon(ds)
             if lat_da is None or lon_da is None:
                 return []
+
+            if "points" in ds.dims:
+                points_dim_name = next((d for d in lat_da.dims if d == "points"), None)
+                if points_dim_name is not None and "points" not in lon_da.dims and lon_da.dims:
+                    try:
+                        lon_da = lon_da.broadcast_like(lat_da)
+                    except Exception:
+                        pass
+
             lats = np.asarray(lat_da.values, dtype=float)
             lons = np.asarray(lon_da.values, dtype=float)
             while lats.ndim > 1:
@@ -501,8 +514,25 @@ class SWANToolDialog(QMainWindow):
             ]
 
     def _fallback_spec_lat_lon(self, ds: xr.Dataset):
-        lat_key = next((name for name in ds.variables if "lat" in name.lower()), None)
-        lon_key = next((name for name in ds.variables if "lon" in name.lower()), None)
+        point_dims = {"points", "point", "station", "site", "location"}
+
+        def _candidate(vars_iter, key_substrings):
+            for name in vars_iter:
+                lname = name.lower()
+                if not any(token in lname for token in key_substrings):
+                    continue
+                da = ds[name]
+                if any(dim.lower() in point_dims for dim in da.dims):
+                    return name
+            for name in vars_iter:
+                lname = name.lower()
+                if any(token in lname for token in key_substrings):
+                    return name
+            return None
+
+        var_names = list(ds.variables)
+        lat_key = _candidate(var_names, ("lat", "north", "y"))
+        lon_key = _candidate(var_names, ("lon", "east", "x"))
         if lat_key is None or lon_key is None:
             return None, None
         return ds[lat_key], ds[lon_key]
