@@ -56,6 +56,7 @@ class SWANToolDialog(QMainWindow):
         self._lat_grid: np.ndarray | None = None
         self._lon_grid: np.ndarray | None = None
         self._land_mask: np.ndarray | None = None
+        self._depth_grid: np.ndarray | None = None
         self._preview_nc_path: Path | None = None
         self._is_syncing_point = False
 
@@ -272,17 +273,19 @@ class SWANToolDialog(QMainWindow):
         self._lat_grid = None
         self._lon_grid = None
         self._land_mask = None
+        self._depth_grid = None
         self._preview_nc_path = None
 
         for folder in self._folder_paths():
             try:
                 nc = swan_post.autodetect_file(folder, ".nc", None)
-                lat, lon, land_mask = self._read_preview_data_from_nc(nc)
+                lat, lon, land_mask, depth_grid = self._read_preview_data_from_nc(nc)
                 if lat is None or lon is None:
                     continue
                 self._lat_grid = lat
                 self._lon_grid = lon
                 self._land_mask = land_mask
+                self._depth_grid = depth_grid
                 self._preview_nc_path = nc
                 self.map_info.setText(f"Preview from: {nc}")
                 self._log(f"Map preview source: {nc}")
@@ -296,12 +299,12 @@ class SWANToolDialog(QMainWindow):
 
     def _read_preview_data_from_nc(
         self, nc_path: Path
-    ) -> tuple[np.ndarray | None, np.ndarray | None, np.ndarray | None]:
+    ) -> tuple[np.ndarray | None, np.ndarray | None, np.ndarray | None, np.ndarray | None]:
         with xr.open_dataset(nc_path) as ds:
             lat = self._pick_coord(ds, ("lat", "latitude", "LAT", "nav_lat", "y"))
             lon = self._pick_coord(ds, ("lon", "longitude", "LON", "nav_lon", "x"))
             if lat is None or lon is None:
-                return None, None, None
+                return None, None, None, None
             lat_vals = np.asarray(lat.values)
             lon_vals = np.asarray(lon.values)
 
@@ -310,12 +313,27 @@ class SWANToolDialog(QMainWindow):
             elif lat_vals.shape == lon_vals.shape:
                 lat_grid, lon_grid = lat_vals, lon_vals
             else:
-                return None, None, None
+                return None, None, None, None
 
-            land_mask = self._extract_land_mask(ds, lat_grid.shape)
-            return lat_grid, lon_grid, land_mask
+            depth_grid = self._extract_depth_grid(ds, lat_grid.shape)
+            land_mask = self._extract_land_mask(ds, lat_grid.shape, depth_grid=depth_grid)
+            return lat_grid, lon_grid, land_mask, depth_grid
 
-    def _extract_land_mask(self, ds: xr.Dataset, target_shape: tuple[int, ...]) -> np.ndarray | None:
+    def _extract_depth_grid(self, ds: xr.Dataset, target_shape: tuple[int, ...]) -> np.ndarray | None:
+        depth_candidates = ("depth", "DEPTH", "bathymetry", "h", "topo")
+        for name in depth_candidates:
+            if name in ds:
+                arr = self._to_2d_array(np.asarray(ds[name].values))
+                if arr is not None and arr.shape == target_shape:
+                    return arr.astype(float)
+        return None
+
+    def _extract_land_mask(
+        self,
+        ds: xr.Dataset,
+        target_shape: tuple[int, ...],
+        depth_grid: np.ndarray | None = None,
+    ) -> np.ndarray | None:
         mask_candidates = (
             "land_mask",
             "mask",
@@ -331,12 +349,8 @@ class SWANToolDialog(QMainWindow):
                     # Normalize to boolean land mask when possible.
                     return arr > 0.5
 
-        depth_candidates = ("depth", "DEPTH", "bathymetry", "h", "topo")
-        for name in depth_candidates:
-            if name in ds:
-                arr = self._to_2d_array(np.asarray(ds[name].values))
-                if arr is not None and arr.shape == target_shape:
-                    return ~np.isfinite(arr) | (arr <= 0)
+        if depth_grid is not None and depth_grid.shape == target_shape:
+            return ~np.isfinite(depth_grid) | (depth_grid <= 0)
 
         # Fallback: infer land from NaN coverage in Hs.
         hs = self._pick_data_var(ds, getattr(swan_post, "HS_CANDIDATES", ("hs", "swh", "Hsig")))
@@ -383,17 +397,33 @@ class SWANToolDialog(QMainWindow):
         if self._lat_grid is not None and self._lon_grid is not None:
             lat = self._lat_grid
             lon = self._lon_grid
+            depth = self._depth_grid
+
+            if depth is not None and depth.shape == lat.shape:
+                depth_plot = np.ma.masked_invalid(depth)
+                mesh = ax.pcolormesh(
+                    lon,
+                    lat,
+                    depth_plot,
+                    shading="auto",
+                    cmap="viridis",
+                    alpha=0.90,
+                )
+                self.map_fig.colorbar(mesh, ax=ax, label="Depth [m] (positive downward)")
+                if np.nanmin(depth) <= 0 <= np.nanmax(depth):
+                    ax.contour(lon, lat, depth, levels=[0.0], colors="cyan", linewidths=1.2)
+
             if self._land_mask is not None and self._land_mask.shape == lat.shape:
-                mask = self._land_mask.astype(float)
+                mask = np.ma.masked_where(~self._land_mask, self._land_mask.astype(float))
                 ax.pcolormesh(
                     lon,
                     lat,
-                    np.ma.masked_where(mask < 0.5, mask),
+                    mask,
                     shading="auto",
-                    cmap="Greys",
-                    alpha=0.35,
+                    cmap="OrRd",
+                    alpha=0.45,
                 )
-            ax.scatter(lon.ravel(), lat.ravel(), s=0.7, alpha=0.25, color="tab:blue", label="Grid")
+            ax.scatter(lon.ravel(), lat.ravel(), s=0.4, alpha=0.20, color="white", label="Grid")
             ax.set_xlim(np.nanmin(lon), np.nanmax(lon))
             ax.set_ylim(np.nanmin(lat), np.nanmax(lat))
 
@@ -452,7 +482,7 @@ class SWANToolDialog(QMainWindow):
                 swan_post.plot_timeseries(data, title=f"SWAN postprocessing — {nc_path.name} @ {poi.label}")
 
     def _nearest_point_index(self, nc_path: Path, poi: Poi) -> int | None:
-        lat, lon, _ = self._read_preview_data_from_nc(nc_path)
+        lat, lon, _, _ = self._read_preview_data_from_nc(nc_path)
         if lat is None or lon is None:
             return None
 
