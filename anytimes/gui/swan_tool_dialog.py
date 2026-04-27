@@ -484,13 +484,38 @@ class SWANToolDialog(QMainWindow):
                 swan_post.plot_timeseries(data, title=f"SWAN postprocessing — {nc_path.name} @ {poi.label}")
 
     def _nearest_point_index(self, nc_path: Path, poi: Poi) -> int | None:
-        lat, lon, _, _ = self._read_preview_data_from_nc(nc_path)
-        if lat is None or lon is None:
-            return None
+        # Build point index using the same stacked non-time dimension ordering
+        # that postprocess_dnora._to_series() uses internally.
+        with xr.open_dataset(nc_path) as ds:
+            hs = None
+            for name in getattr(swan_post, "HS_CANDIDATES", ("hs", "swh", "Hsig")):
+                if name in ds:
+                    hs = ds[name]
+                    break
+            if hs is None or "time" not in hs.dims:
+                return None
 
-        dist = np.hypot(lat - poi.lat, lon - poi.lon)
-        flat_idx = int(np.nanargmin(dist))
-        return flat_idx
+            non_time_dims = [d for d in hs.dims if d != "time"]
+            if not non_time_dims:
+                return None
+
+            lat_da = self._pick_coord(ds, ("lat", "latitude", "LAT", "nav_lat", "y"))
+            lon_da = self._pick_coord(ds, ("lon", "longitude", "LON", "nav_lon", "x"))
+            if lat_da is None or lon_da is None:
+                return None
+
+            # Align coordinate arrays to the same non-time dimensions as hs.
+            template = hs.isel(time=0)
+            lat_b, lon_b = xr.broadcast(lat_da, lon_da, template)
+            if any(dim not in lat_b.dims for dim in non_time_dims):
+                return None
+
+            lat_s = lat_b.transpose(*non_time_dims).stack(point=non_time_dims)
+            lon_s = lon_b.transpose(*non_time_dims).stack(point=non_time_dims)
+            dist = np.hypot(np.asarray(lat_s.values, dtype=float) - poi.lat, np.asarray(lon_s.values, dtype=float) - poi.lon)
+            if dist.size == 0 or not np.any(np.isfinite(dist)):
+                return None
+            return int(np.nanargmin(dist))
 
     def _log(self, message: str) -> None:
         self.log_output.appendPlainText(message)
