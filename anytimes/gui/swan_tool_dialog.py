@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMainWindow,
     QMessageBox,
     QPushButton,
     QPlainTextEdit,
@@ -43,19 +44,24 @@ class Poi:
         return f"({self.lat:.6f}, {self.lon:.6f})"
 
 
-class SWANToolDialog(QWidget):
+class SWANToolDialog(QMainWindow):
     """Interactive SWAN post-processing UI wrapper."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
+        # Create as proper top-level window (min/max/titlebar) regardless of parent.
+        super().__init__(parent, Qt.Window)
         self.setWindowTitle("SWANtool")
         self.resize(1300, 780)
 
         self._lat_grid: np.ndarray | None = None
         self._lon_grid: np.ndarray | None = None
+        self._land_mask: np.ndarray | None = None
         self._preview_nc_path: Path | None = None
+        self._is_syncing_point = False
 
-        root = QVBoxLayout(self)
+        central = QWidget(self)
+        self.setCentralWidget(central)
+        root = QVBoxLayout(central)
         split = QSplitter(Qt.Horizontal)
         root.addWidget(split)
 
@@ -123,8 +129,8 @@ class SWANToolDialog(QWidget):
         self.poi_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
         vbox.addWidget(self.poi_list)
 
-        self.poi_lat.textChanged.connect(self._refresh_map)
-        self.poi_lon.textChanged.connect(self._refresh_map)
+        self.poi_lat.textChanged.connect(self._on_manual_point_changed)
+        self.poi_lon.textChanged.connect(self._on_manual_point_changed)
         add_btn.clicked.connect(self._add_poi)
         del_btn.clicked.connect(self._delete_poi)
         self.poi_list.itemSelectionChanged.connect(self._refresh_map)
@@ -173,8 +179,10 @@ class SWANToolDialog(QWidget):
         self.map_info = QLabel("Add/select input folders to load a .nc region preview.")
         vbox.addWidget(self.map_info)
 
-        self.map_fig = Figure(figsize=(7, 6))
+        self.map_fig = Figure(figsize=(7, 6), facecolor="white")
         self.map_canvas = FigureCanvasQTAgg(self.map_fig)
+        self.map_canvas.setStyleSheet("background: white;")
+        self.map_canvas.mpl_connect("button_press_event", self._on_map_clicked)
         vbox.addWidget(self.map_canvas)
         layout.addWidget(group)
 
@@ -225,6 +233,22 @@ class SWANToolDialog(QWidget):
         self._log_current_pois()
         self._refresh_map()
 
+    def _on_manual_point_changed(self) -> None:
+        if self._is_syncing_point:
+            return
+        self._refresh_map()
+
+    def _on_map_clicked(self, event) -> None:
+        if event.xdata is None or event.ydata is None:
+            return
+        self._is_syncing_point = True
+        try:
+            self.poi_lat.setText(f"{event.ydata:.6f}")
+            self.poi_lon.setText(f"{event.xdata:.6f}")
+        finally:
+            self._is_syncing_point = False
+        self._refresh_map()
+
     def _current_manual_poi(self) -> Poi | None:
         try:
             lat = float(self.poi_lat.text().strip())
@@ -247,16 +271,18 @@ class SWANToolDialog(QWidget):
     def _load_region_preview(self) -> None:
         self._lat_grid = None
         self._lon_grid = None
+        self._land_mask = None
         self._preview_nc_path = None
 
         for folder in self._folder_paths():
             try:
                 nc = swan_post.autodetect_file(folder, ".nc", None)
-                lat, lon = self._read_lat_lon_from_nc(nc)
+                lat, lon, land_mask = self._read_preview_data_from_nc(nc)
                 if lat is None or lon is None:
                     continue
                 self._lat_grid = lat
                 self._lon_grid = lon
+                self._land_mask = land_mask
                 self._preview_nc_path = nc
                 self.map_info.setText(f"Preview from: {nc}")
                 self._log(f"Map preview source: {nc}")
@@ -268,21 +294,75 @@ class SWANToolDialog(QWidget):
             self.map_info.setText("No valid .nc file found for region preview.")
         self._refresh_map()
 
-    def _read_lat_lon_from_nc(self, nc_path: Path) -> tuple[np.ndarray | None, np.ndarray | None]:
+    def _read_preview_data_from_nc(
+        self, nc_path: Path
+    ) -> tuple[np.ndarray | None, np.ndarray | None, np.ndarray | None]:
         with xr.open_dataset(nc_path) as ds:
             lat = self._pick_coord(ds, ("lat", "latitude", "LAT", "nav_lat", "y"))
             lon = self._pick_coord(ds, ("lon", "longitude", "LON", "nav_lon", "x"))
             if lat is None or lon is None:
-                return None, None
+                return None, None, None
             lat_vals = np.asarray(lat.values)
             lon_vals = np.asarray(lon.values)
 
             if lat_vals.ndim == 1 and lon_vals.ndim == 1:
                 lon_grid, lat_grid = np.meshgrid(lon_vals, lat_vals)
-                return lat_grid, lon_grid
-            if lat_vals.shape == lon_vals.shape:
-                return lat_vals, lon_vals
-            return None, None
+            elif lat_vals.shape == lon_vals.shape:
+                lat_grid, lon_grid = lat_vals, lon_vals
+            else:
+                return None, None, None
+
+            land_mask = self._extract_land_mask(ds, lat_grid.shape)
+            return lat_grid, lon_grid, land_mask
+
+    def _extract_land_mask(self, ds: xr.Dataset, target_shape: tuple[int, ...]) -> np.ndarray | None:
+        mask_candidates = (
+            "land_mask",
+            "mask",
+            "LANDMASK",
+            "wetmask",
+            "wetdry_mask",
+            "sea_mask",
+        )
+        for name in mask_candidates:
+            if name in ds:
+                arr = self._to_2d_array(np.asarray(ds[name].values))
+                if arr is not None and arr.shape == target_shape:
+                    # Normalize to boolean land mask when possible.
+                    return arr > 0.5
+
+        depth_candidates = ("depth", "DEPTH", "bathymetry", "h", "topo")
+        for name in depth_candidates:
+            if name in ds:
+                arr = self._to_2d_array(np.asarray(ds[name].values))
+                if arr is not None and arr.shape == target_shape:
+                    return ~np.isfinite(arr) | (arr <= 0)
+
+        # Fallback: infer land from NaN coverage in Hs.
+        hs = self._pick_data_var(ds, getattr(swan_post, "HS_CANDIDATES", ("hs", "swh", "Hsig")))
+        if hs is not None:
+            arr = np.asarray(hs.values)
+            if "time" in hs.dims and arr.ndim >= 3:
+                arr2d = self._to_2d_array(arr[0])
+            else:
+                arr2d = self._to_2d_array(arr)
+            if arr2d is not None and arr2d.shape == target_shape:
+                return ~np.isfinite(arr2d)
+
+        return None
+
+    def _to_2d_array(self, arr: np.ndarray) -> np.ndarray | None:
+        if arr.ndim == 2:
+            return arr
+        if arr.ndim == 3:
+            return arr[0]
+        return None
+
+    def _pick_data_var(self, ds: xr.Dataset, names: Iterable[str]):
+        for name in names:
+            if name in ds:
+                return ds[name]
+        return None
 
     def _pick_coord(self, ds: xr.Dataset, names: Iterable[str]):
         for name in names:
@@ -298,23 +378,35 @@ class SWANToolDialog(QWidget):
         ax.set_xlabel("Longitude")
         ax.set_ylabel("Latitude")
         ax.grid(True, alpha=0.25)
+        ax.set_facecolor("#f7fbff")
 
         if self._lat_grid is not None and self._lon_grid is not None:
             lat = self._lat_grid
             lon = self._lon_grid
-            ax.scatter(lon.ravel(), lat.ravel(), s=1.0, alpha=0.15, color="tab:blue")
+            if self._land_mask is not None and self._land_mask.shape == lat.shape:
+                mask = self._land_mask.astype(float)
+                ax.pcolormesh(
+                    lon,
+                    lat,
+                    np.ma.masked_where(mask < 0.5, mask),
+                    shading="auto",
+                    cmap="Greys",
+                    alpha=0.35,
+                )
+            ax.scatter(lon.ravel(), lat.ravel(), s=0.7, alpha=0.25, color="tab:blue", label="Grid")
             ax.set_xlim(np.nanmin(lon), np.nanmax(lon))
             ax.set_ylim(np.nanmin(lat), np.nanmax(lat))
 
         manual = self._current_manual_poi()
         if manual is not None:
-            ax.scatter([manual.lon], [manual.lat], color="red", s=80, marker="x", label="Manual POI")
+            ax.scatter([manual.lon], [manual.lat], color="red", s=90, marker="x", label="Manual POI")
 
         pois = self._poi_values()
         if pois:
-            ax.scatter([p.lon for p in pois], [p.lat for p in pois], color="orange", s=40, label="POI list")
+            ax.scatter([p.lon for p in pois], [p.lat for p in pois], color="orange", s=45, label="POI list")
 
-        if manual is not None or pois:
+        handles, labels = ax.get_legend_handles_labels()
+        if handles:
             ax.legend(loc="best")
 
         self.map_canvas.draw_idle()
@@ -360,8 +452,7 @@ class SWANToolDialog(QWidget):
                 swan_post.plot_timeseries(data, title=f"SWAN postprocessing — {nc_path.name} @ {poi.label}")
 
     def _nearest_point_index(self, nc_path: Path, poi: Poi) -> int | None:
-        lat_lon = self._read_lat_lon_from_nc(nc_path)
-        lat, lon = lat_lon
+        lat, lon, _ = self._read_preview_data_from_nc(nc_path)
         if lat is None or lon is None:
             return None
 

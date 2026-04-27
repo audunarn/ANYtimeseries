@@ -7228,7 +7228,7 @@ class TimeSeriesEditorQt(QMainWindow):
         """Launch the SWAN/DNORA post-processing tool."""
 
         if not hasattr(self, "_swan_tool_window") or self._swan_tool_window is None:
-            self._swan_tool_window = SWANToolDialog(self)
+            self._swan_tool_window = SWANToolDialog()
         self._swan_tool_window.show()
         self._swan_tool_window.raise_()
         self._swan_tool_window.activateWindow()
