@@ -76,6 +76,7 @@ from .evm_window import EVMWindow
 from .rao_dialog import RAODialog
 from ..fatigue import FatigueSeries
 from .fatigue_dialog import FatigueDialog
+from .swan_tool_dialog import SWANToolDialog
 from .sortable_table_widget_item import SortableTableWidgetItem
 from .variable_tab import VariableRowWidget, VariableTab
 
@@ -640,9 +641,11 @@ class TimeSeriesEditorQt(QMainWindow):
         self.launch_qats_btn = QPushButton("Open in AnyQATS")
         self.evm_tool_btn = QPushButton("Open Extreme Value Statistics Tool")
         self.rao_tool_btn = QPushButton("Generate RAO from Selected Time Series")
+        self.swan_tool_btn = QPushButton("Open SWANtool")
         tools_layout.addWidget(self.launch_qats_btn)
         tools_layout.addWidget(self.evm_tool_btn)
         tools_layout.addWidget(self.rao_tool_btn)
+        tools_layout.addWidget(self.swan_tool_btn)
         self.controls_layout.addWidget(self.tools_group)
 
         # ---- Plot controls ----
@@ -893,6 +896,7 @@ class TimeSeriesEditorQt(QMainWindow):
         self.launch_qats_btn.clicked.connect(self.launch_qats)
         self.evm_tool_btn.clicked.connect(self.open_evm_tool)
         self.rao_tool_btn.clicked.connect(self.open_rao_tool)
+        self.swan_tool_btn.clicked.connect(self.open_swan_tool)
         self.reselect_orcaflex_btn.clicked.connect(self.reselect_orcaflex_variables)
         self.psd_btn.clicked.connect(lambda: self.plot_selected(mode="psd"))
         self.cycle_range_btn.clicked.connect(lambda: self.plot_selected(mode="cycle"))
@@ -7219,6 +7223,15 @@ class TimeSeriesEditorQt(QMainWindow):
 
         dlg = FatigueDialog(series_entries, self)
         dlg.exec()
+
+    def open_swan_tool(self) -> None:
+        """Launch the SWAN/DNORA post-processing tool."""
+
+        if not hasattr(self, "_swan_tool_window") or self._swan_tool_window is None:
+            self._swan_tool_window = SWANToolDialog()
+        self._swan_tool_window.show()
+        self._swan_tool_window.raise_()
+        self._swan_tool_window.activateWindow()
 
     def open_rao_tool(self) -> None:
         """Launch the RAO dialog for selected time series."""
