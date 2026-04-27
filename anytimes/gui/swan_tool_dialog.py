@@ -10,7 +10,6 @@ import sys
 from typing import Iterable
 
 import numpy as np
-import xarray as xr
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
 from matplotlib.figure import Figure
 from PySide6.QtCore import Qt
