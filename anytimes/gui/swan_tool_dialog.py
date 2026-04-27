@@ -593,6 +593,8 @@ class SWANToolDialog(QMainWindow):
         cmd += ["--wind-arrow-resolution", str(int(self.arrow_resolution.value()))]
         cmd += ["--spec-dir-theta-step-deg", str(self.theta_step.value())]
         cmd += ["--spec-dir-spreading-s", str(self.spreading_s.value())]
+        # Ensure report "Map overlay" tab is populated (not "No overlay available").
+        cmd += ["--export-hs-format", "geojson", "--export-time-index", "MAX"]
         cmd += ["--split-report-files" if self.split_report_cb.isChecked() else "--single-report-file"]
         cmd += ["--no-auto-open-split-files" if save_output else "--auto-open-split-files"]
         for poi in pois:
