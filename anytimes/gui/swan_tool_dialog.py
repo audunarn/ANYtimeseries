@@ -482,6 +482,9 @@ class SWANToolDialog(QMainWindow):
         return sorted(candidates, key=lambda p: (-p.stat().st_size, p.name.lower()))[0]
 
     def _read_spec_points(self, spec_path: Path) -> list[Poi]:
+        # Local import keeps this robust in packaged/runtime environments.
+        import xarray as xr
+
         with xr.open_dataset(spec_path) as ds:
             lat_da = self._pick_coord(ds, ("latitude", "lat", "LAT", "y", "Y"))
             lon_da = self._pick_coord(ds, ("longitude", "lon", "LON", "x", "X"))
