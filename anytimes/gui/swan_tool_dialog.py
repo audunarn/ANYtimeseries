@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import csv
 import os
 import subprocess
 import sys
@@ -131,8 +132,10 @@ class SWANToolDialog(QMainWindow):
 
         row = QHBoxLayout()
         add_btn = QPushButton("Add POI")
+        add_csv_btn = QPushButton("Add POI(s) from file")
         del_btn = QPushButton("Delete selected POI")
         row.addWidget(add_btn)
+        row.addWidget(add_csv_btn)
         row.addWidget(del_btn)
         vbox.addLayout(row)
 
@@ -143,6 +146,7 @@ class SWANToolDialog(QMainWindow):
         self.poi_lat.textChanged.connect(self._on_manual_point_changed)
         self.poi_lon.textChanged.connect(self._on_manual_point_changed)
         add_btn.clicked.connect(self._add_poi)
+        add_csv_btn.clicked.connect(self._add_poi_from_file)
         del_btn.clicked.connect(self._delete_poi)
         self.poi_list.itemSelectionChanged.connect(self._refresh_map)
 
@@ -245,6 +249,83 @@ class SWANToolDialog(QMainWindow):
             self.poi_list.takeItem(self.poi_list.row(item))
         self._log_current_pois()
         self._refresh_map()
+
+    def _add_poi_from_file(self) -> None:
+        filepath, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select POI file (CSV/Excel)",
+            str(Path.cwd()),
+            "POI files (*.csv *.xlsx *.xls);;CSV files (*.csv);;Excel files (*.xlsx *.xls);;All files (*)",
+        )
+        if not filepath:
+            return
+
+        path = Path(filepath)
+        if not path.exists():
+            QMessageBox.warning(self, "CSV not found", f"File does not exist:\n{path}")
+            return
+
+        try:
+            rows, lat_col, lon_col = self._load_poi_table(path)
+
+            added = 0
+            skipped = 0
+            for idx, row in enumerate(rows, start=2):
+                lat_raw = str(row.get(lat_col, "")).strip()
+                lon_raw = str(row.get(lon_col, "")).strip()
+                if not lat_raw or not lon_raw or lat_raw.lower() == "nan" or lon_raw.lower() == "nan":
+                    skipped += 1
+                    self._log(f"Skipped row {idx}: missing lat/lon.")
+                    continue
+                try:
+                    poi = Poi(lat=float(lat_raw), lon=float(lon_raw))
+                except ValueError:
+                    skipped += 1
+                    self._log(f"Skipped row {idx}: invalid numeric values lat='{lat_raw}', lon='{lon_raw}'.")
+                    continue
+
+                label = poi.label
+                if any(self.poi_list.item(i).text() == label for i in range(self.poi_list.count())):
+                    skipped += 1
+                    self._log(f"Skipped row {idx}: duplicate POI {label}.")
+                    continue
+
+                self.poi_list.addItem(QListWidgetItem(label))
+                added += 1
+
+            self._log(f"POI import complete: added={added}, skipped={skipped} from {path.name}")
+            self._log_current_pois()
+            self._refresh_map()
+        except Exception as exc:
+            QMessageBox.warning(self, "POI import failed", str(exc))
+
+    def _load_poi_table(self, path: Path) -> tuple[list[dict[str, object]], str, str]:
+        suffix = path.suffix.lower()
+        if suffix in {".xlsx", ".xls"}:
+            try:
+                import pandas as pd
+            except Exception as exc:
+                raise RuntimeError("Excel import requires pandas/openpyxl installed.") from exc
+            frame = pd.read_excel(path)
+            rows = frame.to_dict(orient="records")
+            columns = [str(c) for c in frame.columns]
+        else:
+            with path.open("r", encoding="utf-8-sig", newline="") as f:
+                reader = csv.DictReader(f)
+                if not reader.fieldnames:
+                    raise ValueError("CSV file has no header row.")
+                rows = list(reader)
+                columns = [name for name in reader.fieldnames if name is not None]
+
+        normalized = {name.strip().lower(): name for name in columns if name is not None}
+        lat_col = next((normalized[k] for k in ("lat", "latitude") if k in normalized), None)
+        lon_col = next((normalized[k] for k in ("lon", "longitude") if k in normalized), None)
+        if lat_col is None or lon_col is None:
+            raise ValueError(
+                "Could not find latitude/longitude columns. "
+                "Expected one of: lat/latitude and lon/longitude."
+            )
+        return rows, lat_col, lon_col
 
     def _on_manual_point_changed(self) -> None:
         if self._is_syncing_point:
