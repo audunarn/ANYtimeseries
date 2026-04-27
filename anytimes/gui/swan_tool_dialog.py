@@ -195,16 +195,31 @@ class SWANToolDialog(QMainWindow):
     def _build_map(self, layout: QVBoxLayout) -> None:
         group = QGroupBox("Map preview from selected .nc region")
         vbox = QVBoxLayout(group)
+
+        map_split = QSplitter(Qt.Vertical)
+        map_split.setChildrenCollapsible(False)
+        map_split.setHandleWidth(8)
+
+        top_panel = QWidget()
+        top_layout = QVBoxLayout(top_panel)
+        top_layout.setContentsMargins(0, 0, 0, 0)
         self.map_info = QLabel("Add/select input folders to load a .nc region preview.")
-        vbox.addWidget(self.map_info)
+        top_layout.addWidget(self.map_info)
 
         self.map_fig = Figure(figsize=(7, 6), facecolor="white")
         self.map_canvas = FigureCanvasQTAgg(self.map_fig)
         self.map_canvas.setStyleSheet("background: white;")
         self.map_toolbar = NavigationToolbar2QT(self.map_canvas, self)
         self.map_canvas.mpl_connect("button_press_event", self._on_map_clicked)
-        vbox.addWidget(self.map_toolbar)
-        vbox.addWidget(self.map_canvas)
+        top_layout.addWidget(self.map_toolbar)
+
+        map_split.addWidget(top_panel)
+        map_split.addWidget(self.map_canvas)
+        map_split.setStretchFactor(0, 0)
+        map_split.setStretchFactor(1, 1)
+        map_split.setSizes([120, 680])
+
+        vbox.addWidget(map_split)
         layout.addWidget(group)
 
     def _add_folders(self) -> None:
