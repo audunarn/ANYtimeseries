@@ -10,7 +10,6 @@ import webbrowser
 from typing import Iterable
 
 import numpy as np
-import xarray as xr
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
 from matplotlib.figure import Figure
 from PySide6.QtCore import Qt
@@ -35,7 +34,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-import postprocess_dnora as swan_post
+from anytimes.gui import postprocess_dnora_source as swan_post
 
 
 @dataclass(frozen=True)
@@ -305,7 +304,7 @@ class SWANToolDialog(QMainWindow):
 
         for folder in self._folder_paths():
             try:
-                nc = swan_post.autodetect_file(folder, ".nc", None)
+                nc = self._autodetect_preview_nc(folder)
                 lat, lon, land_mask, depth_grid = self._read_preview_data_from_nc(nc)
                 if lat is None or lon is None:
                     continue
@@ -323,6 +322,15 @@ class SWANToolDialog(QMainWindow):
         if self._preview_nc_path is None:
             self.map_info.setText("No valid .nc file found for region preview.")
         self._refresh_map()
+
+    def _autodetect_preview_nc(self, folder: Path) -> Path:
+        candidates = [
+            p for p in folder.iterdir()
+            if p.is_file() and p.suffix.lower() == ".nc" and "spec" not in p.name.lower()
+        ]
+        if not candidates:
+            raise FileNotFoundError(f"No non-spec .nc file found in {folder}")
+        return sorted(candidates, key=lambda p: (-p.stat().st_size, p.name.lower()))[0]
 
     def _read_preview_data_from_nc(
         self, nc_path: Path
@@ -450,6 +458,15 @@ class SWANToolDialog(QMainWindow):
                     cmap="OrRd",
                     alpha=0.45,
                 )
+                ax.contour(
+                    lon,
+                    lat,
+                    self._land_mask.astype(float),
+                    levels=[0.5],
+                    colors="black",
+                    linewidths=1.0,
+                    alpha=0.9,
+                )
             ax.scatter(lon.ravel(), lat.ravel(), s=0.4, alpha=0.20, color="white", label="Grid")
             ax.set_xlim(np.nanmin(lon), np.nanmax(lon))
             ax.set_ylim(np.nanmin(lat), np.nanmax(lat))
@@ -475,6 +492,18 @@ class SWANToolDialog(QMainWindow):
             return
 
         pois = self._poi_values()
+        if not pois:
+            manual = self._current_manual_poi()
+            if manual is not None:
+                pois = [manual]
+                self._log(f"Using manual POI without adding to list: {manual.label}")
+            else:
+                QMessageBox.warning(
+                    self,
+                    "No POI",
+                    "Please add at least one valid POI (or enter a valid manual latitude/longitude) before running.",
+                )
+                return
         self._log("Running SWANtool with parameters:")
         self._log(f"  SPLIT_REPORT_FILES={self.split_report_cb.isChecked()}")
         self._log(f"  DEFAULT_ARROW_RESOLUTION={int(self.arrow_resolution.value())}")
@@ -482,49 +511,39 @@ class SWANToolDialog(QMainWindow):
         self._log(f"  SPEC_DIR_SPREADING_S={self.spreading_s.value()}")
         self._log(f"  Save output requested: {save_output}")
 
-        if save_output:
-            QMessageBox.information(
-                self,
-                "Save output",
-                "Save output was requested. The imported postprocessor currently controls actual export behavior.",
-            )
-
-        for folder in folders:
-            try:
-                nc_path = swan_post.autodetect_file(folder, ".nc", None)
-            except Exception as exc:
-                self._log(f"Skipping folder '{folder}': {exc}")
-                continue
-
-            if not pois:
-                started_at = self._now_epoch()
-                self._log(f"Running source postprocessor for default point: {nc_path.name}")
-                self._run_source_postprocessor(folder, point_index=None)
-                self._open_new_html_outputs(folder, started_at)
-                continue
-
-            for poi in pois:
-                started_at = self._now_epoch()
-                idx = self._nearest_point_index(nc_path, poi)
-                self._log(f"Running source postprocessor for {nc_path.name} at POI {poi.label} (point_index={idx})")
-                self._run_source_postprocessor(folder, point_index=idx)
+        started_at = self._now_epoch()
+        self._run_source_postprocessor(
+            folders=folders,
+            pois=pois,
+            save_output=save_output,
+        )
+        if not save_output:
+            for folder in folders:
                 self._open_new_html_outputs(folder, started_at)
 
-    def _run_source_postprocessor(self, folder: Path, point_index: int | None) -> None:
+    def _run_source_postprocessor(self, folders: list[Path], pois: list[Poi], save_output: bool) -> None:
         script_path = Path(self.script_path_edit.text().strip() or str(Path(swan_post.__file__).resolve())).resolve()
         if not script_path.exists():
             self._log(f"Postprocessor script not found: {script_path}")
             return
-        cmd = [sys.executable, str(script_path), str(folder)]
-        if point_index is not None:
-            cmd += ["--point-index", str(int(point_index))]
+
+        cmd = [sys.executable, str(script_path), *(str(folder) for folder in folders)]
+        cmd += ["--wind-arrow-resolution", str(int(self.arrow_resolution.value()))]
+        cmd += ["--spec-dir-theta-step-deg", str(self.theta_step.value())]
+        cmd += ["--spec-dir-spreading-s", str(self.spreading_s.value())]
+        cmd += ["--split-report-files" if self.split_report_cb.isChecked() else "--single-report-file"]
+        cmd += ["--no-auto-open-split-files" if save_output else "--auto-open-split-files"]
+        for poi in pois:
+            cmd += ["--point-lat", f"{poi.lat:.6f}", "--point-lon", f"{poi.lon:.6f}"]
+        self._log(f"Executing: {' '.join(cmd)}")
         try:
             env = dict(**os.environ)
-            # Avoid opening legacy matplotlib figures when script supports HTML report output.
             env.setdefault("MPLBACKEND", "Agg")
-            subprocess.run(cmd, check=True, cwd=str(folder), env=env)
+            subprocess.run(cmd, check=True, cwd=str(folders[0]), env=env)
+            mode = "saved (no auto-open)" if save_output else "generated and auto-opened"
+            self._log(f"Postprocessor completed; outputs {mode}.")
         except subprocess.CalledProcessError as exc:
-            self._log(f"Postprocessor failed for {folder}: {exc}")
+            self._log(f"Postprocessor failed: {exc}")
 
     def _open_new_html_outputs(self, folder: Path, started_at: float) -> None:
         html_files = sorted(
@@ -541,40 +560,6 @@ class SWANToolDialog(QMainWindow):
     def _now_epoch(self) -> float:
         import time
         return time.time()
-
-    def _nearest_point_index(self, nc_path: Path, poi: Poi) -> int | None:
-        # Build point index using the same stacked non-time dimension ordering
-        # that postprocess_dnora._to_series() uses internally.
-        with xr.open_dataset(nc_path) as ds:
-            hs = None
-            for name in getattr(swan_post, "HS_CANDIDATES", ("hs", "swh", "Hsig")):
-                if name in ds:
-                    hs = ds[name]
-                    break
-            if hs is None or "time" not in hs.dims:
-                return None
-
-            non_time_dims = [d for d in hs.dims if d != "time"]
-            if not non_time_dims:
-                return None
-
-            lat_da = self._pick_coord(ds, ("lat", "latitude", "LAT", "nav_lat", "y"))
-            lon_da = self._pick_coord(ds, ("lon", "longitude", "LON", "nav_lon", "x"))
-            if lat_da is None or lon_da is None:
-                return None
-
-            # Align coordinate arrays to the same non-time dimensions as hs.
-            template = hs.isel(time=0)
-            lat_b, lon_b, _ = xr.broadcast(lat_da, lon_da, template)
-            if any(dim not in lat_b.dims for dim in non_time_dims):
-                return None
-
-            lat_s = lat_b.transpose(*non_time_dims).stack(point=non_time_dims)
-            lon_s = lon_b.transpose(*non_time_dims).stack(point=non_time_dims)
-            dist = np.hypot(np.asarray(lat_s.values, dtype=float) - poi.lat, np.asarray(lon_s.values, dtype=float) - poi.lon)
-            if dist.size == 0 or not np.any(np.isfinite(dist)):
-                return None
-            return int(np.nanargmin(dist))
 
     def _log(self, message: str) -> None:
         self.log_output.appendPlainText(message)
