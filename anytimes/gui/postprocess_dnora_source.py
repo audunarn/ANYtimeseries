@@ -901,9 +901,9 @@ def parse_args() -> Inputs:
     )
     parser.add_argument(
         "--plot-engine",
-        choices=["plotly", "default"],
+        choices=["plotly"],
         default="plotly",
-        help="Plot engine for SWAN plots. Use 'default' for matplotlib fallback plots.",
+        help="Plot engine for SWAN plots.",
     )
     parser.add_argument(
         "--split-report-files",
@@ -5722,14 +5722,6 @@ def main() -> None:
         datasets = [(path.parent.name, xr.open_dataset(path)) for path in nc_paths]
         try:
             runs = _prepare_runs_data(datasets)
-            if inputs.plot_engine == "default":
-                _run_matplotlib_fallback(
-                    runs=runs,
-                    point_coord=inputs.point_coord,
-                    output_dir=inputs.directories[0],
-                )
-                return
-
             fig_2d_outputs = build_outputs_figure(
                 datasets=datasets,
                 point_coord=inputs.point_coord,
