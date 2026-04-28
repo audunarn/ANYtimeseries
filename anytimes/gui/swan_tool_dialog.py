@@ -17,7 +17,6 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QCheckBox,
-    QComboBox,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -189,11 +188,6 @@ class SWANToolDialog(QMainWindow):
         self.spreading_s.setValue(self._DEFAULT_SPREADING_S)
         form.addRow("SPEC_DIR_SPREADING_S", self.spreading_s)
 
-        self.plot_engine = QComboBox()
-        self.plot_engine.addItems(["plotly", "default"])
-        self.plot_engine.setCurrentText(self._DEFAULT_PLOT_ENGINE)
-        self.plot_engine.setToolTip("Select 'default' to use matplotlib fallback plotting.")
-        form.addRow("Plot engine", self.plot_engine)
 
         layout.addWidget(group)
 
@@ -802,7 +796,7 @@ class SWANToolDialog(QMainWindow):
         self._log(f"  DEFAULT_ARROW_RESOLUTION={int(self.arrow_resolution.value())}")
         self._log(f"  SPEC_DIR_THETA_STEP_DEG={self.theta_step.value()}")
         self._log(f"  SPEC_DIR_SPREADING_S={self.spreading_s.value()}")
-        self._log(f"  PLOT_ENGINE={self.plot_engine.currentText()}")
+        self._log(f"  PLOT_ENGINE={self._DEFAULT_PLOT_ENGINE}")
         self._log(f"  Save output requested: {save_output}")
 
         self._set_processing_state(True, mode="Saving output…" if save_output else "Running postprocessing…")
@@ -839,7 +833,7 @@ class SWANToolDialog(QMainWindow):
         cmd += ["--wind-arrow-resolution", str(int(self.arrow_resolution.value()))]
         cmd += ["--spec-dir-theta-step-deg", str(self.theta_step.value())]
         cmd += ["--spec-dir-spreading-s", str(self.spreading_s.value())]
-        cmd += ["--plot-engine", self.plot_engine.currentText()]
+        cmd += ["--plot-engine", self._DEFAULT_PLOT_ENGINE]
         # Ensure report "Map overlay" tab is populated (not "No overlay available").
         cmd += ["--export-hs-format", "geojson", "--export-time-index", "MAX"]
         cmd += ["--split-report-files" if self.split_report_cb.isChecked() else "--single-report-file"]
@@ -866,7 +860,6 @@ class SWANToolDialog(QMainWindow):
         self.arrow_resolution.setValue(self._DEFAULT_ARROW_RESOLUTION)
         self.theta_step.setValue(self._DEFAULT_THETA_STEP)
         self.spreading_s.setValue(self._DEFAULT_SPREADING_S)
-        self.plot_engine.setCurrentText(self._DEFAULT_PLOT_ENGINE)
 
         self._preview_layers = []
         self._spec_points = []
