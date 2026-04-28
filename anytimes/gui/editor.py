@@ -5336,55 +5336,6 @@ class TimeSeriesEditorQt(QMainWindow):
                                     )
                     region_curve = next(
                         (
-                            curve
-                            for curve in curves
-                            if curve.get("region_mask") is not None
-                            and np.asarray(curve.get("region_mask")).size == len(curve["t"])
-                        ),
-                        None,
-                    )
-                    if region_curve is not None:
-                        y_vals = np.concatenate([np.asarray(curve["y"]) for curve in curves]) if curves else np.array([])
-                        if y_vals.size:
-                            y_low = float(np.nanmin(y_vals))
-                            y_high = float(np.nanmax(y_vals))
-                            if np.isfinite(y_low) and np.isfinite(y_high):
-                                if abs(y_high - y_low) < 1e-12:
-                                    y_high = y_low + 1.0
-                                for seg_start, seg_end in self._mask_segments(
-                                    np.asarray(region_curve["t"]),
-                                    np.asarray(region_curve["region_mask"], dtype=bool),
-                                ):
-                                    fig.add_trace(
-                                        go.Scatter(
-                                            x=[seg_start, seg_start, seg_end, seg_end, seg_start],
-                                            y=[y_low, y_high, y_high, y_low, y_low],
-                                            mode="lines",
-                                            line=dict(width=0),
-                                            fill="toself",
-                                            fillcolor="rgba(255,215,0,0.25)",
-                                            hoverinfo="skip",
-                                            showlegend=False,
-                                        ),
-                                        row=r,
-                                        col=c,
-                                    )
-                                mid = region_curve.get("region_midpoint")
-                                if mid is not None:
-                                    fig.add_trace(
-                                        go.Scatter(
-                                            x=[mid[0]],
-                                            y=[mid[1]],
-                                            mode="markers",
-                                            marker=dict(color="gold", size=8),
-                                            opacity=0.8,
-                                            showlegend=False,
-                                        ),
-                                        row=r,
-                                        col=c,
-                                    )
-                    region_curve = next(
-                        (
                             c
                             for c in curves
                             if c.get("region_mask") is not None
