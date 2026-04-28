@@ -45,6 +45,7 @@ SPEC_FILE_NAME: str | None = None  # Example: "Ex1_Sula500_20200120_spec.nc"
 PLOT_SPEC_DIRECTIONAL = False
 SPEC_DIR_THETA_STEP_DEG = 5.0
 SPEC_DIR_SPREADING_S = 5.0
+PLOT_ENGINE = "plotly"
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,7 @@ class Inputs:
     plot_spec_directional: bool
     spec_dir_theta_step_deg: float
     spec_dir_spreading_s: float
+    plot_engine: str
 
 
 @dataclass(frozen=True)
@@ -818,6 +820,7 @@ def _build_inputs_from_code_config() -> Inputs:
         plot_spec_directional=PLOT_SPEC_DIRECTIONAL,
         spec_dir_theta_step_deg=SPEC_DIR_THETA_STEP_DEG,
         spec_dir_spreading_s=SPEC_DIR_SPREADING_S,
+        plot_engine=PLOT_ENGINE,
     )
 
 
@@ -895,6 +898,12 @@ def parse_args() -> Inputs:
         type=float,
         default=5.0,
         help="Spreading parameter s for oceanwaves.as_directional (default: 5.0).",
+    )
+    parser.add_argument(
+        "--plot-engine",
+        choices=["plotly", "default"],
+        default="plotly",
+        help="Plot engine for SWAN plots. Use 'default' for matplotlib fallback plots.",
     )
     parser.add_argument(
         "--split-report-files",
@@ -988,6 +997,7 @@ def parse_args() -> Inputs:
         plot_spec_directional=bool(args.plot_spec_directional),
         spec_dir_theta_step_deg=float(args.spec_dir_theta_step_deg),
         spec_dir_spreading_s=float(args.spec_dir_spreading_s),
+        plot_engine=str(args.plot_engine),
     )
 
 
@@ -5647,6 +5657,53 @@ def generate_metocean_report(
         else:
             print(f"Open manually: http://127.0.0.1:{port}/{out_files[0].name}")
 
+
+def _run_matplotlib_fallback(
+    runs: list[RunData],
+    point_coord: tuple[float, float] | tuple[tuple[float, float], ...],
+    output_dir: Path,
+) -> None:
+    import matplotlib.pyplot as plt
+
+    if not runs:
+        print("No runs available for matplotlib fallback plotting.")
+        return
+
+    points = _normalize_point_coords(point_coord)
+    finest_run = runs[-1]
+    times = finest_run.grid.times
+
+    for index, (plat, plon) in enumerate(points, start=1):
+        poi = _nearest_grid_point(finest_run.grid, (plat, plon))
+        hs_series = finest_run.hs[:, poi.iy, poi.ix]
+        tp_series = finest_run.tp[:, poi.iy, poi.ix]
+        ws_series = (
+            finest_run.wind_speed[:, poi.iy, poi.ix]
+            if finest_run.wind_speed is not None
+            else np.full_like(hs_series, np.nan, dtype=float)
+        )
+
+        fig, axes = plt.subplots(3, 1, figsize=(12, 8), sharex=True)
+        axes[0].plot(times, hs_series, color="tab:blue")
+        axes[0].set_ylabel("Hs [m]")
+        axes[0].grid(alpha=0.3)
+
+        axes[1].plot(times, tp_series, color="tab:purple")
+        axes[1].set_ylabel("Tp [s]")
+        axes[1].grid(alpha=0.3)
+
+        axes[2].plot(times, ws_series, color="tab:green")
+        axes[2].set_ylabel("Wind [m/s]")
+        axes[2].set_xlabel("Time")
+        axes[2].grid(alpha=0.3)
+
+        fig.suptitle(f"SWAN matplotlib fallback - POI {index}: ({plat:.6f}, {plon:.6f})")
+        fig.tight_layout()
+        out_path = output_dir / f"swan_mpl_poi_{index:02d}.png"
+        fig.savefig(out_path, dpi=160)
+        plt.close(fig)
+        print(f"Matplotlib fallback plot written: {out_path.resolve()}")
+
 def main() -> None:
     use_code_config = USE_CODE_CONFIG and len(sys.argv) == 1
     inputs = _build_inputs_from_code_config() if use_code_config else parse_args()
@@ -5665,6 +5722,13 @@ def main() -> None:
         datasets = [(path.parent.name, xr.open_dataset(path)) for path in nc_paths]
         try:
             runs = _prepare_runs_data(datasets)
+            if inputs.plot_engine == "default":
+                _run_matplotlib_fallback(
+                    runs=runs,
+                    point_coord=inputs.point_coord,
+                    output_dir=inputs.directories[0],
+                )
+                return
 
             fig_2d_outputs = build_outputs_figure(
                 datasets=datasets,
