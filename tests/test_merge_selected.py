@@ -657,3 +657,15 @@ def test_export_selected_to_csv_keeps_per_series_time_for_different_timebases(
     assert np.allclose(df["VarA_t"].to_numpy(), np.array([0.0, 1.0, 2.0]))
     assert np.allclose(df["VarB_t"].to_numpy(), np.array([0.0, 1.5, 3.0]))
     assert not message_spy["warn"]
+
+
+def test_bokeh_axis_type_detects_datetime_traces():
+    traces = [{"t": pd.date_range("2024-01-01", periods=3, freq="h"), "y": [1.0, 2.0, 3.0]}]
+    axis_type = TimeSeriesEditorQt._bokeh_x_axis_type_from_traces(traces)
+    assert axis_type == "datetime"
+
+
+def test_bokeh_axis_type_defaults_to_linear_for_numeric_traces():
+    traces = [{"t": np.array([0.0, 1.0, 2.0]), "y": [1.0, 2.0, 3.0]}]
+    axis_type = TimeSeriesEditorQt._bokeh_x_axis_type_from_traces(traces)
+    assert axis_type == "linear"

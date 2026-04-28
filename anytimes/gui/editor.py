@@ -5274,12 +5274,14 @@ class TimeSeriesEditorQt(QMainWindow):
                 for _, data in items:
                     lbl = data["label"]
                     curves = data["curves"]
+                    x_axis_type = self._bokeh_x_axis_type_from_traces(curves)
                     p = figure(
                         width=450,
                         height=300,
                         title=lbl,
                         x_axis_label=self._x_axis_label(),
                         y_axis_label=self.yaxis_label.text() or "Value",
+                        x_axis_type=x_axis_type,
                         tools="pan,wheel_zoom,box_zoom,reset,save",
                         sizing_mode="stretch_both",
                     )
@@ -6072,6 +6074,7 @@ class TimeSeriesEditorQt(QMainWindow):
                 title=title,
                 x_axis_label=self._x_axis_label(),
                 y_axis_label=y_label,
+                x_axis_type=self._bokeh_x_axis_type_from_traces(traces),
                 tools="pan,wheel_zoom,box_zoom,reset,save",
                 sizing_mode="stretch_both",
             )
@@ -6640,6 +6643,19 @@ class TimeSeriesEditorQt(QMainWindow):
         if converted.notna().any():
             return converted
         return time_values
+
+    @staticmethod
+    def _bokeh_x_axis_type_from_traces(traces) -> str:
+        for trace in traces or []:
+            t_vals = np.asarray(trace.get("t", []))
+            if t_vals.size == 0:
+                continue
+            if np.issubdtype(t_vals.dtype, np.datetime64):
+                return "datetime"
+            first_valid = next((val for val in t_vals if pd.notna(val)), None)
+            if isinstance(first_valid, (pd.Timestamp, datetime.datetime, np.datetime64)):
+                return "datetime"
+        return "linear"
 
     def plot_mean(self):
         self.rebuild_var_lookup()
