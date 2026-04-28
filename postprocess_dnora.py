@@ -34,8 +34,8 @@ HS_CANDIDATES = ("hs", "swh", "significant_wave_height", "Hsig")
 TP_CANDIDATES = ("tp", "peak_period", "peak_wave_period", "Tm01")
 WIND_SPEED_CANDIDATES = ("wind_speed", "wspd", "ws", "windspd")
 WIND_DIR_CANDIDATES = ("wind_dir", "wdir", "wd", "winddir")
-WIND_U_CANDIDATES = ("wind_u", "u10", "uwnd", "x_wind")
-WIND_V_CANDIDATES = ("wind_v", "v10", "vwnd", "y_wind")
+WIND_U_CANDIDATES = ("wind_u", "u10", "uwnd", "x_wind", "xwnd")
+WIND_V_CANDIDATES = ("wind_v", "v10", "vwnd", "y_wind", "ywnd")
 
 
 def parse_args() -> argparse.Namespace:

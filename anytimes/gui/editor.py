@@ -76,6 +76,7 @@ from .evm_window import EVMWindow
 from .rao_dialog import RAODialog
 from ..fatigue import FatigueSeries
 from .fatigue_dialog import FatigueDialog
+from .swan_tool_dialog import SWANToolDialog
 from .sortable_table_widget_item import SortableTableWidgetItem
 from .variable_tab import VariableRowWidget, VariableTab
 
@@ -637,12 +638,14 @@ class TimeSeriesEditorQt(QMainWindow):
         self.tools_group = QGroupBox("Tools")
         self.tools_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         tools_layout = QHBoxLayout(self.tools_group)
-        self.launch_qats_btn = QPushButton("Open in AnyQATS")
-        self.evm_tool_btn = QPushButton("Open Extreme Value Statistics Tool")
-        self.rao_tool_btn = QPushButton("Generate RAO from Selected Time Series")
+        self.launch_qats_btn = QPushButton("AnyQATS")
+        self.evm_tool_btn = QPushButton("Extreme Value Statistics")
+        self.rao_tool_btn = QPushButton("RAO from Selected TS")
+        self.swan_tool_btn = QPushButton("SWANtool (standalone)")
         tools_layout.addWidget(self.launch_qats_btn)
         tools_layout.addWidget(self.evm_tool_btn)
         tools_layout.addWidget(self.rao_tool_btn)
+        tools_layout.addWidget(self.swan_tool_btn)
         self.controls_layout.addWidget(self.tools_group)
 
         # ---- Plot controls ----
@@ -893,6 +896,7 @@ class TimeSeriesEditorQt(QMainWindow):
         self.launch_qats_btn.clicked.connect(self.launch_qats)
         self.evm_tool_btn.clicked.connect(self.open_evm_tool)
         self.rao_tool_btn.clicked.connect(self.open_rao_tool)
+        self.swan_tool_btn.clicked.connect(self.open_swan_tool)
         self.reselect_orcaflex_btn.clicked.connect(self.reselect_orcaflex_variables)
         self.psd_btn.clicked.connect(lambda: self.plot_selected(mode="psd"))
         self.cycle_range_btn.clicked.connect(lambda: self.plot_selected(mode="cycle"))
@@ -5270,12 +5274,14 @@ class TimeSeriesEditorQt(QMainWindow):
                 for _, data in items:
                     lbl = data["label"]
                     curves = data["curves"]
+                    x_axis_type = self._bokeh_x_axis_type_from_traces(curves)
                     p = figure(
                         width=450,
                         height=300,
                         title=lbl,
                         x_axis_label=self._x_axis_label(),
                         y_axis_label=self.yaxis_label.text() or "Value",
+                        x_axis_type=x_axis_type,
                         tools="pan,wheel_zoom,box_zoom,reset,save",
                         sizing_mode="stretch_both",
                     )
@@ -5329,55 +5335,6 @@ class TimeSeriesEditorQt(QMainWindow):
                                         fill_color="green",
                                         fill_alpha=0.15,
                                         line_alpha=0.0,
-                                    )
-                    region_curve = next(
-                        (
-                            curve
-                            for curve in curves
-                            if curve.get("region_mask") is not None
-                            and np.asarray(curve.get("region_mask")).size == len(curve["t"])
-                        ),
-                        None,
-                    )
-                    if region_curve is not None:
-                        y_vals = np.concatenate([np.asarray(curve["y"]) for curve in curves]) if curves else np.array([])
-                        if y_vals.size:
-                            y_low = float(np.nanmin(y_vals))
-                            y_high = float(np.nanmax(y_vals))
-                            if np.isfinite(y_low) and np.isfinite(y_high):
-                                if abs(y_high - y_low) < 1e-12:
-                                    y_high = y_low + 1.0
-                                for seg_start, seg_end in self._mask_segments(
-                                    np.asarray(region_curve["t"]),
-                                    np.asarray(region_curve["region_mask"], dtype=bool),
-                                ):
-                                    fig.add_trace(
-                                        go.Scatter(
-                                            x=[seg_start, seg_start, seg_end, seg_end, seg_start],
-                                            y=[y_low, y_high, y_high, y_low, y_low],
-                                            mode="lines",
-                                            line=dict(width=0),
-                                            fill="toself",
-                                            fillcolor="rgba(255,215,0,0.25)",
-                                            hoverinfo="skip",
-                                            showlegend=False,
-                                        ),
-                                        row=r,
-                                        col=c,
-                                    )
-                                mid = region_curve.get("region_midpoint")
-                                if mid is not None:
-                                    fig.add_trace(
-                                        go.Scatter(
-                                            x=[mid[0]],
-                                            y=[mid[1]],
-                                            mode="markers",
-                                            marker=dict(color="gold", size=8),
-                                            opacity=0.8,
-                                            showlegend=False,
-                                        ),
-                                        row=r,
-                                        col=c,
                                     )
                     region_curve = next(
                         (
@@ -6068,6 +6025,7 @@ class TimeSeriesEditorQt(QMainWindow):
                 title=title,
                 x_axis_label=self._x_axis_label(),
                 y_axis_label=y_label,
+                x_axis_type=self._bokeh_x_axis_type_from_traces(traces),
                 tools="pan,wheel_zoom,box_zoom,reset,save",
                 sizing_mode="stretch_both",
             )
@@ -6636,6 +6594,19 @@ class TimeSeriesEditorQt(QMainWindow):
         if converted.notna().any():
             return converted
         return time_values
+
+    @staticmethod
+    def _bokeh_x_axis_type_from_traces(traces) -> str:
+        for trace in traces or []:
+            t_vals = np.asarray(trace.get("t", []))
+            if t_vals.size == 0:
+                continue
+            if np.issubdtype(t_vals.dtype, np.datetime64):
+                return "datetime"
+            first_valid = next((val for val in t_vals if pd.notna(val)), None)
+            if isinstance(first_valid, (pd.Timestamp, datetime.datetime, np.datetime64)):
+                return "datetime"
+        return "linear"
 
     def plot_mean(self):
         self.rebuild_var_lookup()
@@ -7219,6 +7190,15 @@ class TimeSeriesEditorQt(QMainWindow):
 
         dlg = FatigueDialog(series_entries, self)
         dlg.exec()
+
+    def open_swan_tool(self) -> None:
+        """Launch the SWAN/DNORA post-processing tool."""
+
+        if not hasattr(self, "_swan_tool_window") or self._swan_tool_window is None:
+            self._swan_tool_window = SWANToolDialog()
+        self._swan_tool_window.show()
+        self._swan_tool_window.raise_()
+        self._swan_tool_window.activateWindow()
 
     def open_rao_tool(self) -> None:
         """Launch the RAO dialog for selected time series."""
