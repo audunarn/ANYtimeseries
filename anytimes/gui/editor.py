@@ -481,7 +481,8 @@ class TimeSeriesEditorQt(QMainWindow):
         offset_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         offset_layout = QVBoxLayout(offset_group)
         offset_examples = QLabel('Examples: add "+1 / 1" substract "-1" divide "/2" multiply "*2"   '
-                                 'To plot 2D scatter input "x" and "y" in the fields. For 3D scatter also input "z".'
+                                 'To plot 2D scatter input "x" and "y" in the fields. For 3D scatter input "z" '
+                                 '(or "z,c" to use z for both axis and color coding).'
                                  ' To include color coding input "c" or "color"'
                                  '  Use Animate button to plot single points over time.')
         offset_examples.setWordWrap(True)
@@ -498,6 +499,11 @@ class TimeSeriesEditorQt(QMainWindow):
 
         self.apply_values_btn = QPushButton("Apply Values")
         self.clear_values_btn = QPushButton("Clear Values")
+        self.apply_operation_help_btn = QPushButton("i")
+        self.apply_operation_help_btn.setToolTip(
+            "Show help for Apply Values and X/Y(/Z) scatter input markers."
+        )
+        self.apply_operation_help_btn.setMaximumWidth(28)
         self.plot_marked_axes_btn = QPushButton("Plot X/Y(/Z)")
         self.animate_marked_axes_btn = QPushButton("Animate X/Y(/Z)")
         self.colormap_label = QLabel("Colormap:")
@@ -540,6 +546,7 @@ class TimeSeriesEditorQt(QMainWindow):
         apply_plot_row = QHBoxLayout()
         apply_plot_row.addWidget(self.apply_values_btn)
         apply_plot_row.addWidget(self.clear_values_btn)
+        apply_plot_row.addWidget(self.apply_operation_help_btn)
         apply_plot_row.addWidget(self.apply_value_user_var_cb)
         apply_plot_row.addWidget(self.plot_marked_axes_btn)
         apply_plot_row.addWidget(self.animate_marked_axes_btn)
@@ -866,6 +873,7 @@ class TimeSeriesEditorQt(QMainWindow):
         self.file_list.currentRowChanged.connect(self.highlight_file_tab)
         self.apply_values_btn.clicked.connect(self.apply_values)
         self.clear_values_btn.clicked.connect(self.clear_all_variable_input_values)
+        self.apply_operation_help_btn.clicked.connect(self.show_apply_operation_help)
         self.plot_marked_axes_btn.clicked.connect(self.plot_marked_axes)
         self.animate_marked_axes_btn.clicked.connect(self.animate_marked_axes)
         self.mult_by_1000_btn.clicked.connect(self.multiply_by_1000)
@@ -1978,6 +1986,48 @@ class TimeSeriesEditorQt(QMainWindow):
             ),
         )
 
+    def show_apply_operation_help(self):
+        """Show usage information for variable-input operations and scatter plotting."""
+        QMessageBox.information(
+            self,
+            "Apply operation from variable input fields",
+            "\n".join(
+                [
+                    "Apply Values:",
+                    '  • Enter a numeric operation in a variable input field, then click "Apply Values".',
+                    '  • Supported forms: "1" (adds 1), "+1", "-1", "*2", "/2".',
+                    '  • Check "Create user variable instead of overwriting?" to create new variables.',
+                    '  • Click "Clear Values" to empty all variable input fields.',
+                    "",
+                    "Scatter plot markers (Plot X/Y(/Z) and Animate X/Y(/Z)):",
+                    '  • Mark one variable with "x" and one with "y" to create a 2D scatter plot.',
+                    '  • Add "z" for 3D scatter plotting/animation.',
+                    '  • Add "c" or "color" for color coding.',
+                    '  • You can combine markers in one field, e.g. "z,c" to use the same variable',
+                    "    as z-axis and color values.",
+                    "",
+                    "Notes:",
+                    "  • Marker tokens are comma-separated (for example: z,c).",
+                    "  • Resolution percentage controls how many points are used.",
+                    "  • Color Min/Max and clipping affect plotted colors only.",
+                ]
+            ),
+        )
+
+    @staticmethod
+    def _parse_axis_roles(raw_text: str) -> set[str]:
+        """Parse marker text from variable input field into axis/color roles."""
+        txt = (raw_text or "").strip().lower()
+        if not txt:
+            return set()
+        roles: set[str] = set()
+        for token in [part.strip() for part in txt.split(",") if part.strip()]:
+            if token == "c":
+                token = "color"
+            if token in {"x", "y", "z", "color"}:
+                roles.add(token)
+        return roles
+
     @staticmethod
     def _region_segments(
         t_vals: np.ndarray,
@@ -2099,10 +2149,7 @@ class TimeSeriesEditorQt(QMainWindow):
         for key, entry in self.var_offsets.items():
             if entry is None:
                 continue
-            role = entry.text().strip().lower()
-            if role == "c":
-                role = "color"
-            if role in role_entries:
+            for role in self._parse_axis_roles(entry.text()):
                 role_entries[role].append(key)
 
         if not role_entries["x"] or not role_entries["y"]:
@@ -2568,10 +2615,7 @@ class TimeSeriesEditorQt(QMainWindow):
         for key, entry in self.var_offsets.items():
             if entry is None:
                 continue
-            role = entry.text().strip().lower()
-            if role == "c":
-                role = "color"
-            if role in role_entries:
+            for role in self._parse_axis_roles(entry.text()):
                 role_entries[role].append(key)
 
         if not role_entries["x"] or not role_entries["y"]:
