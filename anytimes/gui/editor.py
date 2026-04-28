@@ -371,6 +371,9 @@ class TimeSeriesEditorQt(QMainWindow):
         self.mult_by_2_btn = QPushButton("Multiply by 2")
         self.div_by_2_btn = QPushButton("Divide by 2")
         self.mult_by_neg1_btn = QPushButton("Multiply by -1")
+        self.quick_transform_help_btn = QPushButton("i")
+        self.quick_transform_help_btn.setToolTip("Show help for quick transformation tools.")
+        self.quick_transform_help_btn.setMaximumWidth(28)
         row1.addWidget(self.mult_by_1000_btn)
         row1.addWidget(self.div_by_1000_btn)
         row1.addWidget(self.mult_by_10_btn)
@@ -378,6 +381,7 @@ class TimeSeriesEditorQt(QMainWindow):
         row1.addWidget(self.mult_by_2_btn)
         row1.addWidget(self.div_by_2_btn)
         row1.addWidget(self.mult_by_neg1_btn)
+        row1.addWidget(self.quick_transform_help_btn)
         transform_layout.addLayout(row1)
 
         row2 = QHBoxLayout()
@@ -876,6 +880,7 @@ class TimeSeriesEditorQt(QMainWindow):
         self.apply_operation_help_btn.clicked.connect(self.show_apply_operation_help)
         self.plot_marked_axes_btn.clicked.connect(self.plot_marked_axes)
         self.animate_marked_axes_btn.clicked.connect(self.animate_marked_axes)
+        self.quick_transform_help_btn.clicked.connect(self.show_quick_transform_help)
         self.mult_by_1000_btn.clicked.connect(self.multiply_by_1000)
         self.div_by_1000_btn.clicked.connect(self.divide_by_1000)
         self.mult_by_10_btn.clicked.connect(self.multiply_by_10)
@@ -2010,6 +2015,41 @@ class TimeSeriesEditorQt(QMainWindow):
                     "  • Marker tokens are comma-separated (for example: z,c).",
                     "  • Resolution percentage controls how many points are used.",
                     "  • Color Min/Max and clipping affect plotted colors only.",
+                ]
+            ),
+        )
+
+    def show_quick_transform_help(self):
+        """Show usage information for quick transformation controls."""
+        QMessageBox.information(
+            self,
+            "Quick transformations",
+            "\n".join(
+                [
+                    "Quick transformations act on currently selected variables.",
+                    "",
+                    "Basic scaling:",
+                    "  • Multiply/Divide buttons scale the selected series.",
+                    "  • Multiply by -1 flips sign.",
+                    "",
+                    "Angle helpers:",
+                    "  • Radians / Degrees convert angle units.",
+                    "  • Trig + Angle + Calculate applies sin/cos/tan to selected data.",
+                    "",
+                    "Point reduction:",
+                    "  • Reduce Points keeps the requested percentage of points.",
+                    "  • Bias controls how representative points are chosen (Mean/Upper/Lower).",
+                    "",
+                    "Shifting & alignment:",
+                    "  • Shift Mean → 0 and Shift Min to Zero shift each selected series.",
+                    "  • Shift Min -> 0 / Common Shift Min -> 0 use tolerance/min-count controls.",
+                    "  • Shift X Start → 0 creates a new series with x-axis offset from start.",
+                    "",
+                    "Combinations & utilities:",
+                    "  • Sqrt(sum of squares), Mean, Absolute, Rolling Avg, Merge Selected.",
+                    "",
+                    "Tip:",
+                    "  • The frequency-filter section can be applied to transformations/calculations.",
                 ]
             ),
         )
