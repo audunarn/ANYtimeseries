@@ -61,6 +61,11 @@ class PreviewLayer:
 
 class SWANToolDialog(QMainWindow):
     """Interactive SWAN post-processing UI wrapper."""
+    _DEFAULT_SPLIT_REPORT = True
+    _DEFAULT_ARROW_RESOLUTION = 100
+    _DEFAULT_THETA_STEP = 5.0
+    _DEFAULT_SPREADING_S = 5.0
+    _DEFAULT_MAP_INFO = "Add/select input folders to load a .nc region preview."
 
     def __init__(self, parent: QWidget | None = None) -> None:
         # Create as proper top-level window (min/max/titlebar) regardless of parent.
@@ -163,33 +168,36 @@ class SWANToolDialog(QMainWindow):
         form = QFormLayout(group)
 
         self.split_report_cb = QCheckBox("Split report files")
-        self.split_report_cb.setChecked(True)
+        self.split_report_cb.setChecked(self._DEFAULT_SPLIT_REPORT)
         form.addRow(self.split_report_cb)
 
         self.arrow_resolution = QDoubleSpinBox()
         self.arrow_resolution.setDecimals(0)
         self.arrow_resolution.setRange(1, 10000)
-        self.arrow_resolution.setValue(100)
+        self.arrow_resolution.setValue(self._DEFAULT_ARROW_RESOLUTION)
         form.addRow("Arrow resolution", self.arrow_resolution)
 
         self.theta_step = QDoubleSpinBox()
         self.theta_step.setRange(0.1, 360)
-        self.theta_step.setValue(5.0)
+        self.theta_step.setValue(self._DEFAULT_THETA_STEP)
         form.addRow("SPEC_DIR_THETA_STEP_DEG", self.theta_step)
 
         self.spreading_s = QDoubleSpinBox()
         self.spreading_s.setRange(0.1, 1000)
-        self.spreading_s.setValue(5.0)
+        self.spreading_s.setValue(self._DEFAULT_SPREADING_S)
         form.addRow("SPEC_DIR_SPREADING_S", self.spreading_s)
 
         layout.addWidget(group)
 
     def _build_action_row(self, layout: QVBoxLayout) -> None:
         row = QHBoxLayout()
+        self.clear_btn = QPushButton("Clear all")
         self.run_btn = QPushButton("Run postprocessing (open plots)")
         self.save_btn = QPushButton("Save output")
+        row.addWidget(self.clear_btn)
         row.addWidget(self.run_btn)
         row.addWidget(self.save_btn)
+        self.clear_btn.clicked.connect(self._clear_all)
         self.run_btn.clicked.connect(lambda: self._run(save_output=False))
         self.save_btn.clicked.connect(lambda: self._run(save_output=True))
         layout.addLayout(row)
@@ -211,7 +219,7 @@ class SWANToolDialog(QMainWindow):
         top_panel = QWidget()
         top_layout = QVBoxLayout(top_panel)
         top_layout.setContentsMargins(0, 0, 0, 0)
-        self.map_info = QLabel("Add/select input folders to load a .nc region preview.")
+        self.map_info = QLabel(self._DEFAULT_MAP_INFO)
         top_layout.addWidget(self.map_info)
 
         self.map_fig = Figure(figsize=(7, 6), facecolor="white")
@@ -799,6 +807,7 @@ class SWANToolDialog(QMainWindow):
             self._set_processing_state(False)
 
     def _set_processing_state(self, is_busy: bool, mode: str = "Processing…") -> None:
+        self.clear_btn.setEnabled(not is_busy)
         self.run_btn.setEnabled(not is_busy)
         self.save_btn.setEnabled(not is_busy)
         self.progress.setVisible(is_busy)
@@ -836,6 +845,26 @@ class SWANToolDialog(QMainWindow):
             self._log(f"Postprocessor completed; outputs {mode}.")
         except subprocess.CalledProcessError as exc:
             self._log(f"Postprocessor failed: {exc}")
+
+    def _clear_all(self) -> None:
+        self.folder_list.clear()
+        self.poi_list.clear()
+        self.poi_lat.clear()
+        self.poi_lon.clear()
+
+        self.split_report_cb.setChecked(self._DEFAULT_SPLIT_REPORT)
+        self.arrow_resolution.setValue(self._DEFAULT_ARROW_RESOLUTION)
+        self.theta_step.setValue(self._DEFAULT_THETA_STEP)
+        self.spreading_s.setValue(self._DEFAULT_SPREADING_S)
+
+        self._preview_layers = []
+        self._spec_points = []
+        self._preview_nc_path = None
+        self.map_info.setText(self._DEFAULT_MAP_INFO)
+        self._refresh_map()
+
+        self.log_output.clear()
+        self._log("Cleared all inputs and reset map preview.")
 
     def _log(self, message: str) -> None:
         self.log_output.appendPlainText(message)
