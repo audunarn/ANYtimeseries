@@ -3855,7 +3855,7 @@ def run_directional_spec_plot(inputs: Inputs) -> None:
             )
 
             out_file = inputs.spec_file.parent / (
-                f"{inputs.spec_file.stem}_dirspec_2x2_sp{display_idx + 1}_specpt{spec_point_idx}.html"
+                f"{inputs.spec_file.stem}_dirspec_sp{display_idx + 1}_specpt{spec_point_idx}.html"
             )
             fig.write_html(
                 out_file,
@@ -4990,7 +4990,8 @@ def generate_metocean_report(
             background: #d7d7d7;
         }}
 
-        .subtabcontent {{
+        .subtabcontent,
+        .dirspec-subtabcontent {{
             display: none;
             flex: 1 1 auto;
             width: 100%;
@@ -4998,19 +4999,21 @@ def generate_metocean_report(
             overflow: hidden;
         }}
 
-        .subtabcontent.active {{
+        .subtabcontent.active,
+        .dirspec-subtabcontent.active {{
             display: block;
         }}
 
-        .subtabcontent > div {{
+        .subtabcontent > div,
+        .dirspec-subtabcontent > div {{
             width: 100% !important;
             height: 100% !important;
         }}
         </style>
 
         <script>
-        function openDashSubtab(name) {{
-            const nodes = document.getElementsByClassName("subtabcontent");
+        function openSubtabByClass(name, className) {{
+            const nodes = document.getElementsByClassName(className);
             for (let i = 0; i < nodes.length; i++) {{
                 nodes[i].style.display = "none";
                 nodes[i].classList.remove("active");
@@ -5030,12 +5033,27 @@ def generate_metocean_report(
             }}, 250);
         }}
 
+        function openDashSubtab(name) {{
+            openSubtabByClass(name, "subtabcontent");
+        }}
+
+        function openDirspecSubtab(name) {{
+            openSubtabByClass(name, "dirspec-subtabcontent");
+        }}
+
         document.addEventListener("DOMContentLoaded", function() {{
             setTimeout(() => {{
                 const firstDashSubtab = document.querySelector(".subtabcontent");
                 if (firstDashSubtab) {{
                     openDashSubtab(firstDashSubtab.id);
-                }} else {{
+                }}
+
+                const firstDirspecSubtab = document.querySelector(".dirspec-subtabcontent");
+                if (firstDirspecSubtab) {{
+                    openDirspecSubtab(firstDirspecSubtab.id);
+                }}
+
+                if (!firstDashSubtab && !firstDirspecSubtab) {{
                     window.dispatchEvent(new Event('resize'));
                     if (window.map) {{
                         window.map.invalidateSize();
@@ -5087,7 +5105,8 @@ def generate_metocean_report(
 
             dash_buttons_html: list[str] = []
             dash_contents_html: list[str] = []
-            dirspec_tab_html_parts: list[str] = []
+            dirspec_buttons_html: list[str] = []
+            dirspec_contents_html: list[str] = []
 
             for display_idx, spec_point_idx, selected_ds, spec_point_coord in selected_entries:
                 _, freq_name, dir_name, da = _detect_spec_axes_and_var(selected_ds)
@@ -5448,9 +5467,15 @@ def generate_metocean_report(
 
                 html_dirspec = fig2.to_html(full_html=False, config={"responsive": True}, auto_play=False)
 
-                dirspec_tab_html_parts.append(
+                dirspec_subtab_id = f"dirspec_sp_{display_idx}_spec_{spec_point_idx}"
+                dirspec_buttons_html.append(
+                    f'<button onclick="openDirspecSubtab(\'{dirspec_subtab_id}\')">Spectral point {display_idx + 1} (idx {spec_point_idx})</button>'
+                )
+                dirspec_contents_html.append(
+                    f'<div id="{dirspec_subtab_id}" class="dirspec-subtabcontent">'
                     "<div style='height:100%; overflow:auto; padding:10px; box-sizing:border-box;'>"
                     f"<div style='height:95vh; min-height:700px; margin-bottom:24px;'>{html_dirspec}</div>"
+                    "</div>"
                     "</div>"
                 )
 
@@ -5461,7 +5486,12 @@ def generate_metocean_report(
                 f'</div>'
             )
 
-            dirspec_tab_html = "".join(dirspec_tab_html_parts)
+            dirspec_tab_html = (
+                f'<div class="dashwrap">'
+                f'<div class="subtab">{"".join(dirspec_buttons_html)}</div>'
+                f'{"".join(dirspec_contents_html)}'
+                f'</div>'
+            )
 
         finally:
             ds.close()
@@ -5527,7 +5557,7 @@ def generate_metocean_report(
             }
 
             _write_html(files_to_write["dashboard"], _single_page_html("Dashboard", dashboard_html))
-            _write_html(files_to_write["dirspec"], _single_page_html("Directional spectra 2x2", dirspec_tab_html))
+            _write_html(files_to_write["dirspec"], _single_page_html("Directional spectra", dirspec_tab_html))
             _write_html(files_to_write["map2d_inputs"], _single_page_html("2D Inputs", html_2d_inputs))
             _write_html(files_to_write["map2d_outputs"], _single_page_html("2D Outputs", html_2d_outputs))
             _write_html(files_to_write["map3d"], _single_page_html("3D View", html_3d))
@@ -5542,7 +5572,7 @@ def generate_metocean_report(
 
             <div class="tab">
                 <button onclick="openTab('dash')">Dashboard</button>
-                <button onclick="openTab('dirspec')">Directional spectra 2x2</button>
+                <button onclick="openTab('dirspec')">Directional spectra</button>
                 <button onclick="openTab('map2d_outputs')">2D Outputs</button>
                 <button onclick="openTab('map2d_inputs')">2D Inputs</button>
                 <button onclick="openTab('map3d')">3D View</button>
