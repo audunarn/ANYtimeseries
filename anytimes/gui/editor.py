@@ -4287,11 +4287,19 @@ class TimeSeriesEditorQt(QMainWindow):
 
             self.tsdbs.append(tsdb)
             self.file_paths.append(path)
-            self.file_list.addItem(os.path.basename(path))
+            self._refresh_file_list_display()
             # print(f"Loaded {path}: variables = {list(tsdb.getm().keys())}")
         if errors:
             QMessageBox.warning(self, "Errors occurred", "\n".join([f"{f}: {e}" for f, e in errors]))
         self.refresh_variable_tabs()
+
+
+    def _refresh_file_list_display(self):
+        """Render loaded files with explicit file IDs used by the Calculator."""
+
+        self.file_list.clear()
+        for idx, path in enumerate(self.file_paths, start=1):
+            self.file_list.addItem(f"f{idx}: {os.path.basename(path)}")
 
     def _build_common_lookup(self):
         """Map safe common names to the corresponding variable in each file."""
@@ -4326,7 +4334,7 @@ class TimeSeriesEditorQt(QMainWindow):
             return
         del self.tsdbs[idx]
         del self.file_paths[idx]
-        self.file_list.takeItem(idx)
+        self._refresh_file_list_display()
         self.refresh_variable_tabs()
 
     def clear_all_files(self):
