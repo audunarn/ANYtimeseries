@@ -1307,11 +1307,15 @@ class Qats(QMainWindow):
             is_selected = self.db_source_model.data(source_index, Qt.CheckStateRole) != 0
 
             if is_selected:
-                # item path relative to common path in db
-                rpath = self.db_source_model.data(source_index)
-
-                # join with common path and add to list of checked items
-                selected_items.append(os.path.join(self.db.common, rpath))
+                # Prefer full unique key to avoid ambiguous wildcard matching
+                # when relative names are duplicated across different files.
+                full_key = self.db_source_model.data(source_index, Qt.UserRole)
+                if full_key:
+                    selected_items.append(full_key)
+                else:
+                    # Fallback for legacy items without explicit full-key metadata.
+                    rpath = self.db_source_model.data(source_index)
+                    selected_items.append(os.path.join(self.db.common, rpath))
 
         return selected_items
 
@@ -1438,12 +1442,14 @@ class Qats(QMainWindow):
 
         # fill item model with time series by unique id (common path is removed)
         names = self.db.list(names="*", relative=True, display=False)
+        full_names = self.db.list(names="*", relative=False, display=False)
         self.db_source_model.clear()    # clear before re-adding
-        for name in names:
+        for name, full_name in zip(names, full_names):
             # set each item as unchecked initially
             item = QStandardItem(name)
             item.setCheckState(Qt.Unchecked)
             item.setCheckable(True)
+            item.setData(full_name, Qt.UserRole)
             item.setToolTip(os.path.join(self.db.common, name))
             item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled | Qt.ItemIsUserCheckable)
             self.db_source_model.appendRow(item)
@@ -1588,5 +1594,4 @@ class SettingsDialog(QDialog):
 
 if __name__ == '__main__':
     Qats()
-
 
