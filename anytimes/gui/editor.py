@@ -4370,8 +4370,8 @@ class TimeSeriesEditorQt(QMainWindow):
 
             self.tsdbs.append(tsdb)
             self.file_paths.append(path)
-            self.file_list.addItem(os.path.basename(path))
             # print(f"Loaded {path}: variables = {list(tsdb.getm().keys())}")
+        self._refresh_loaded_files_list()
         if errors:
             QMessageBox.warning(self, "Errors occurred", "\n".join([f"{f}: {e}" for f, e in errors]))
         self.refresh_variable_tabs()
@@ -4403,13 +4403,21 @@ class TimeSeriesEditorQt(QMainWindow):
                 resolved.append(choices[0])
             self.common_lookup[safe_name] = resolved
 
+
+    def _refresh_loaded_files_list(self) -> None:
+        """Render loaded files with 1-based IDs used by the Calculator."""
+
+        self.file_list.clear()
+        for idx, path in enumerate(self.file_paths, start=1):
+            self.file_list.addItem(f"{idx}. {os.path.basename(path)}")
+
     def remove_selected_file(self):
         idx = self.file_list.currentRow()
         if idx < 0:
             return
         del self.tsdbs[idx]
         del self.file_paths[idx]
-        self.file_list.takeItem(idx)
+        self._refresh_loaded_files_list()
         self.refresh_variable_tabs()
 
     def clear_all_files(self):
@@ -4417,7 +4425,7 @@ class TimeSeriesEditorQt(QMainWindow):
         self.file_paths.clear()
         self.user_variables.clear()
         self.work_dir = None
-        self.file_list.clear()
+        self._refresh_loaded_files_list()
         self.refresh_variable_tabs()
 
     def reselect_orcaflex_variables(self):

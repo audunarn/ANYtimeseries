@@ -37,6 +37,9 @@ The application integrates with the bundled **anyqats** package and supports a b
 - Reuse selections for future `.sim` files, apply them to batches of simulations and automatically align similarly named objects via configurable stripping rules.
 - Load AnyQATS directly from the GUI for side-by-side inspection of the same datasets.
 
+### SWAN tool
+- Includes a standalone **SWANtool** workflow with support for **non-stationary NetCDF (`.nc`) files** in the current version.
+
 ### Convenience utilities
 - Switch between light and dark themes, embed plots, open external viewers and manage offsets/scaling presets via save/load dialogs.
 - Track file loading progress with an integrated progress bar and optional preloading callbacks.
