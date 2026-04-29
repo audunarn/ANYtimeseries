@@ -1494,7 +1494,7 @@ class TimeSeriesEditorQt(QMainWindow):
         for file_idx, tsdb in enumerate(self.tsdbs):
             f_no = file_idx + 1
             y = evaluated_results[file_idx]
-            must_write_here = (create_common_output and f_no == min(file_tags_used)) or (not create_common_output and f_no in file_tags_used)
+            must_write_here = f_no in file_tags_used
             if not must_write_here:
                 continue
 
@@ -1509,11 +1509,6 @@ class TimeSeriesEditorQt(QMainWindow):
             ts_new = qats.TimeSeries(out_name, time_window, y, dtg_ref=dtg_ref)
 
             tsdb.add(ts_new)
-
-            if create_common_output:
-                for other_db in self.tsdbs:
-                    if out_name not in other_db.getm():
-                        other_db.add(ts_new.copy())
 
             self.user_variables = getattr(self, "user_variables", set())
             self.user_variables.add(out_name)
