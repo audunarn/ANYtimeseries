@@ -37,6 +37,10 @@ class SWANpostDialog(QDialog):
         self._depth_source: Path | None = None
 
         root = QVBoxLayout(self)
+
+        support_note = QLabel("Current version supports non-stationary netCDF files.", self)
+        root.addWidget(support_note)
+
         controls = QGridLayout()
 
         controls.addWidget(QLabel("Folders to process:"), 0, 0)
