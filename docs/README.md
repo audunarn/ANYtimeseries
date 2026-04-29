@@ -103,7 +103,7 @@ The **Calculator** creates new variables with expressions such as:
 result_name = f1_varA + 0.5 * f2_varB
 ```
 
-where `f1`, `f2`, etc. refer to loaded file IDs. It includes autocomplete and helper guidance (`?`) for syntax.
+where `f1`, `f2`, etc. refer to loaded file IDs. In the **Loaded Files** panel, each file is shown with its number prefix (for example `1. fileA.csv`, `2. fileB.csv`) so the list is always in sync with Calculator references. It includes autocomplete and helper guidance (`?`) for syntax.
 
 ## Analysis Tools
 
@@ -165,6 +165,13 @@ When `.sim` files are loaded, ANYtimeSeries provides:
 - diffraction (`.owr`) pairing and **Extract Surface Pressures** for panel pressure time histories,
 - caching of selections/diffraction metadata for faster reloads,
 - frequency-domain fallback handling when bulk time-history extraction is unavailable.
+
+## SWANtool (standalone)
+
+Opened from **Tools → SWANtool (standalone)**.
+
+- Current version supports **non-stationary NetCDF (`.nc`) files**.
+- Load one or more SWAN output folders, preview map coverage, define POIs, and run/save post-processing outputs.
 
 ## Programmatic Utilities (non-GUI)
 
