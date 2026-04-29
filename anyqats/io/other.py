@@ -6,6 +6,30 @@ import fnmatch
 import numpy as np
 
 
+def _extract_dat_header_tokens(path):
+    """Return header tokens from .dat-like ASCII files."""
+    header_tokens = None
+    with open(path) as f:
+        for line in f:
+            stripped = line.strip()
+            if not stripped:
+                continue
+
+            candidate = stripped
+            if stripped.startswith("#"):
+                candidate = stripped.lstrip("#").strip()
+
+            if not candidate:
+                continue
+
+            tokens = candidate.split()
+            if fnmatch.filter(tokens, "[Tt]ime*"):
+                header_tokens = tokens
+                break
+
+    return header_tokens
+
+
 def read_dat_names(path):
     """
     Read time series names from an ASCII file with data arranged column-wise. The names are in the first non-commented
@@ -26,14 +50,8 @@ def read_dat_names(path):
     The names are extracted from the header row (the first non-commented row). The comment character is '#'. Time is
     assumed to be in the first column.
     """
-    names = None
-    with open(path) as f:
-        for line in f:
-            if not line.startswith("#"):
-                # names in first row that is not a comment
-                names = line.split()
-                break
-    
+    names = _extract_dat_header_tokens(path)
+
     if names is not None:
         # identify time key, check that there is only one
         timekeys = fnmatch.filter(names, '[Tt]ime*')
@@ -72,15 +90,7 @@ def read_dat_data(path, ind=None):
     ``data[1,:]``.
 
     """
-    with open(path, 'r') as f:
-        # skip commented lines at beginning of file
-        for line in f:
-            # break at first uncommented line (which is the header row and should not be read here)
-            if not line.startswith("#"):
-                break
-        
-        # load data, skipping commented lines and the header row with keys (first uncommented line)
-        data = np.loadtxt(f, skiprows=0, usecols=ind, unpack=True)
+    data = np.loadtxt(path, comments="#", usecols=ind, unpack=True)
 
     return data
 
