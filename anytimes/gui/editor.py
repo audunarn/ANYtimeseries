@@ -814,11 +814,15 @@ class TimeSeriesEditorQt(QMainWindow):
         self.cycle_range_btn = QPushButton("Cycle Range")
         self.cycle_mean_btn = QPushButton("Range-Mean")
         self.cycle_mean3d_btn = QPushButton("Range-Mean 3-D")
+        self.psd_xaxis_combo = QComboBox()
+        self.psd_xaxis_combo.addItems(["PSD: Frequency", "PSD: Period"])
+        self.psd_xaxis_combo.setToolTip("Select PSD x-axis unit for the PSD button plots.")
         analysis_btn_row.addWidget(self.show_stats_btn)
         analysis_btn_row.addWidget(self.psd_btn)
         analysis_btn_row.addWidget(self.cycle_range_btn)
         analysis_btn_row.addWidget(self.cycle_mean_btn)
         analysis_btn_row.addWidget(self.cycle_mean3d_btn)
+        analysis_btn_row.addWidget(self.psd_xaxis_combo)
         analysis_layout.addLayout(analysis_btn_row)
         self.controls_layout.addWidget(self.analysis_group)
         # Plot controls below analysis
@@ -4944,6 +4948,7 @@ class TimeSeriesEditorQt(QMainWindow):
 
         # keep a Figure per file (except for time-domain where we merge)
         fig_per_file = {}
+        psd_traces = []
 
         # =======================================================================
         #  MAIN LOOP   (file ⨯ selected key)
@@ -5247,7 +5252,33 @@ class TimeSeriesEditorQt(QMainWindow):
                             if var_ratio > 0.01:
                                 t_r, x_r = self._resample(ts_win.t, ts_win.x, dt)
                                 ts_win = TimeSeries(ts_win.name, t_r, x_r)
-                    fig = ts_win.plot_psd(show=False)  # store=False is NOT valid
+                    freqs, dens = ts_win.psd(resample=ts_win.dt)
+                    x_vals = np.asarray(freqs, dtype=float)
+                    y_vals = np.asarray(dens, dtype=float)
+                    use_period = (
+                        hasattr(self, "psd_xaxis_combo")
+                        and self.psd_xaxis_combo.currentText().lower().endswith("period")
+                    )
+                    x_label = "Frequency [Hz]"
+                    if use_period:
+                        valid = np.isfinite(x_vals) & np.isfinite(y_vals) & (x_vals > 0.0)
+                        x_vals = x_vals[valid]
+                        y_vals = y_vals[valid]
+                        if x_vals.size:
+                            x_vals = 1.0 / x_vals
+                            order = np.argsort(x_vals)
+                            x_vals = x_vals[order]
+                            y_vals = y_vals[order]
+                        x_label = "Period [s]"
+                    psd_traces.append(
+                        dict(
+                            t=x_vals,
+                            y=y_vals,
+                            label=self._trim_label(f"{fname_disp}: {var}", left, right),
+                            alpha=1.0,
+                        )
+                    )
+                    continue
                 elif mode == "cycle":
                     fig = ts_win.plot_cycle_range(show=False)
                 elif mode == "cycle_rm":
@@ -5366,7 +5397,7 @@ class TimeSeriesEditorQt(QMainWindow):
                         width=450,
                         height=300,
                         title=lbl,
-                        x_axis_label=self._x_axis_label(),
+                        x_axis_label=x_label or self._x_axis_label(),
                         y_axis_label=self.yaxis_label.text() or "Value",
                         x_axis_type=x_axis_type,
                         tools="pan,wheel_zoom,box_zoom,reset,save",
@@ -5806,6 +5837,24 @@ class TimeSeriesEditorQt(QMainWindow):
                 self._remember_plot_call(self.plot_selected, mode=mode, grid=grid)
             return
 
+        if mode == "psd":
+            if not psd_traces:
+                QMessageBox.warning(
+                    self,
+                    "Nothing to plot",
+                    "No series matched the selection.",
+                )
+                return
+            y_label = self.yaxis_label.text() or "Spectral density"
+            self._plot_lines(
+                psd_traces,
+                title="Power Spectral Density",
+                y_label=y_label,
+                mark_extrema=mark_extrema,
+                x_label=(self.psd_xaxis_combo.currentText().split(":", 1)[1].strip() + " [s]" if self.psd_xaxis_combo.currentText().lower().endswith("period") else "Frequency [Hz]"),
+            )
+            return
+
         # ----------------------------------------------------------------------
         # All non-time modes (PSD / cycle-range / …)
         # ----------------------------------------------------------------------
@@ -6069,7 +6118,7 @@ class TimeSeriesEditorQt(QMainWindow):
             fig.write_html(tmp)
             webbrowser.open(str(tmp))
 
-    def _plot_lines(self, traces, title, y_label, *, mark_extrema=False):
+    def _plot_lines(self, traces, title, y_label, *, mark_extrema=False, x_label=None):
         """
         traces → list of dicts with keys
                  't', 'y', 'label', 'alpha', 'is_mean'
@@ -6110,7 +6159,7 @@ class TimeSeriesEditorQt(QMainWindow):
                 width=900,
                 height=450,
                 title=title,
-                x_axis_label=self._x_axis_label(),
+                x_axis_label=x_label or self._x_axis_label(),
                 y_axis_label=y_label,
                 x_axis_type=self._bokeh_x_axis_type_from_traces(traces),
                 tools="pan,wheel_zoom,box_zoom,reset,save",
@@ -6447,7 +6496,7 @@ class TimeSeriesEditorQt(QMainWindow):
                     )
             fig.update_layout(
                 title=title,
-                xaxis_title=self._x_axis_label(),
+                xaxis_title=x_label or self._x_axis_label(),
                 yaxis_title=y_label,
                 showlegend=True,
                 template="plotly_dark" if self.theme_switch.isChecked() else "plotly",
