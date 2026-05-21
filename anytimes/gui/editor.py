@@ -7250,11 +7250,19 @@ class TimeSeriesEditorQt(QMainWindow):
             return
         mask = self.get_time_window(ts)
         if mask is not None and np.any(mask):
-            x = self.apply_filters(ts)[mask]
+            x_filtered = self.apply_filters(ts)
+            x = x_filtered[mask]
             t = ts.t[mask]
-            ts_for_evm = TimeSeries(ts.name, t, x)
-            local_db = TsDB()
-            local_db.add(ts_for_evm)
+            full_series_unchanged = (
+                np.array_equal(np.asarray(t), np.asarray(ts.t), equal_nan=True)
+                and np.array_equal(np.asarray(x), np.asarray(ts.x), equal_nan=True)
+            )
+            if full_series_unchanged:
+                local_db = tsdb
+            else:
+                ts_for_evm = TimeSeries(ts.name, t, x, dtg_ref=ts.dtg_ref)
+                local_db = TsDB()
+                local_db.add(ts_for_evm)
         else:
             local_db = tsdb
         dlg = EVMWindow(local_db, ts.name, self)
