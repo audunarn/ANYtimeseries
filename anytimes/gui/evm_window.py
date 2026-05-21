@@ -44,6 +44,10 @@ class EVMWindow(QDialog):
     #: Using too many points tends to bias the tail fit towards the bulk of
     #: the distribution rather than the extremes we want to model.
     _MAX_CLUSTERED_EXCEEDANCES = 120
+    #: Start automatic threshold selection from a tail sample large enough to
+    #: judge fit stability instead of stopping at the bare fitting minimum.
+    _TARGET_CLUSTERED_EXCEEDANCES = 50
+    _MIN_RECOMMENDED_EXCEEDANCES = 25
 
     _SECONDS_PER_UNIT = {
         "s": 1.0,
@@ -302,27 +306,17 @@ class EVMWindow(QDialog):
         self.update_extremes_plot(self.threshold_spin.value())
 
     def _auto_threshold(self, start_thresh, tail):
-        threshold = start_thresh
-        attempts = 0
-
         peaks, _ = self._declustered_peaks(tail)
-        comparator = np.greater if tail == "upper" else np.less
+        if peaks.size < 10:
+            return float(start_thresh)
 
-        while attempts < 10:
-            exceedances = int(np.count_nonzero(comparator(peaks, threshold)))
-            if exceedances >= 10:
-                break
-            if tail == "upper":
-                threshold *= 0.95
-            else:
-                # Move the lower-tail threshold towards less extreme values when
-                # we have too few exceedances. For negative thresholds this means
-                # moving upwards (towards zero), while for positive thresholds it
-                # means moving higher.
-                threshold *= 0.95 if threshold < 0 else 1.05
-            attempts += 1
-
-        return threshold
+        count = min(
+            int(peaks.size),
+            self._MAX_CLUSTERED_EXCEEDANCES,
+            self._TARGET_CLUSTERED_EXCEEDANCES,
+        )
+        threshold = self._threshold_for_exceedance_count(peaks, count, tail)
+        return float(start_thresh) if threshold is None else threshold
 
     def _suggest_pyextremes_window(self) -> float:
         """Return a representative declustering window in seconds."""
@@ -341,18 +335,12 @@ class EVMWindow(QDialog):
     def _collect_pyextremes_settings(self) -> tuple[dict[str, object], list[float]]:
         """Return current PyExtremes configuration and return periods."""
 
-        analysis_mode = self._current_analysis_mode()
-
         return_base = self.pyext_return_size_spin.value()
         return_unit = self.pyext_return_unit_combo.currentData() or "h"
         return_period_size = f"{return_base}{return_unit}"
 
         periods_text = self.pyext_return_periods_edit.text().strip()
-
-        if analysis_mode == "short_term":
-            default_periods = list(SHORT_TERM_STORM_DURATIONS_HOURS)
-        else:
-            default_periods = list(LONG_TERM_RETURN_PERIODS_HOURS)
+        default_periods = self._default_periods_for_current_mode()
 
         def _merge_periods(user_periods: list[float] | None) -> list[float]:
             merged: list[float] = []
@@ -401,6 +389,13 @@ class EVMWindow(QDialog):
         }
 
         return options, return_periods
+
+    def _default_periods_for_current_mode(self) -> list[float]:
+        """Return the GUI periods for the active analysis mode."""
+
+        if self._current_analysis_mode() == "short_term":
+            return list(SHORT_TERM_STORM_DURATIONS_HOURS)
+        return list(LONG_TERM_RETURN_PERIODS_HOURS)
 
     def _populate_duration_unit_combo(
         self, combo: QComboBox, *, default: str
@@ -656,6 +651,18 @@ class EVMWindow(QDialog):
 
         return max(0.0, float(value))
 
+    def _set_current_declustering_window_seconds(self, seconds: float) -> None:
+        """Update the active declustering control from a seconds value."""
+
+        value = max(0.0, float(seconds))
+        if self.engine_combo.currentData() == "pyextremes":
+            factor = self._duration_seconds_from_unit(
+                self.pyext_r_unit_combo.currentData()
+            )
+            self.pyext_r_spin.setValue(value / factor if factor else value)
+        else:
+            self.declustering_spin.setValue(value)
+
     def _is_dark_theme_active(self) -> bool:
         """Return ``True`` when the application palette corresponds to dark mode."""
 
@@ -730,13 +737,23 @@ class EVMWindow(QDialog):
         """Return a compact confidence interval table for the result panel."""
 
         rows: list[str] = []
-        for idx, target in enumerate(evm_result.return_periods):
+        periods = np.atleast_1d(np.asarray(evm_result.return_periods, dtype=float))
+        levels = np.atleast_1d(np.asarray(evm_result.return_levels, dtype=float))
+        lower_bounds = np.atleast_1d(np.asarray(evm_result.lower_bounds, dtype=float))
+        upper_bounds = np.atleast_1d(np.asarray(evm_result.upper_bounds, dtype=float))
+        for idx, target in enumerate(periods):
             period_label = escape(
                 self._format_period_label(float(target), period_kind=period_kind)
             )
-            lower = self._format_result_value(evm_result.lower_bounds[idx])
-            level = self._format_result_value(evm_result.return_levels[idx])
-            upper = self._format_result_value(evm_result.upper_bounds[idx])
+            lower = self._format_result_value(
+                lower_bounds[idx] if idx < lower_bounds.size else np.nan
+            )
+            level = self._format_result_value(
+                levels[idx] if idx < levels.size else np.nan
+            )
+            upper = self._format_result_value(
+                upper_bounds[idx] if idx < upper_bounds.size else np.nan
+            )
             rows.append(
                 "<tr>"
                 f"<td style='padding: 5px 8px; font-weight: 600;'>{period_label}</td>"
@@ -773,6 +790,96 @@ class EVMWindow(QDialog):
             "</div>"
         )
 
+    def _fit_checks_html(self, evm_result: ExtremeValueResult) -> str:
+        """Return analyst-facing fit checks for a successful result."""
+
+        checks: list[tuple[str, str]] = []
+        exceedance_count = int(len(evm_result.exceedances))
+        if exceedance_count < self._MIN_RECOMMENDED_EXCEEDANCES:
+            checks.append(
+                (
+                    "Caution",
+                    f"{exceedance_count} exceedances used; inspect threshold stability before extrapolating far.",
+                )
+            )
+        else:
+            checks.append(("Evidence", f"{exceedance_count} exceedances used in the fitted tail."))
+
+        shape = float(evm_result.shape)
+        if not np.isfinite(shape):
+            checks.append(("Caution", "Shape parameter Xi is not finite."))
+        elif abs(shape) > 1.0:
+            checks.append(
+                (
+                    "Caution",
+                    f"Large shape parameter Xi = {shape:.3f}; return levels may be unstable.",
+                )
+            )
+        elif shape < -1e-6:
+            checks.append(
+                (
+                    "Note",
+                    f"Xi = {shape:.3f} indicates a bounded fitted tail.",
+                )
+            )
+        else:
+            checks.append(("Evidence", f"Xi = {shape:.3f} is finite for this fit."))
+
+        levels = np.atleast_1d(np.asarray(evm_result.return_levels, dtype=float))
+        invalid_levels = int(np.count_nonzero(~np.isfinite(levels)))
+        if invalid_levels:
+            checks.append(
+                (
+                    "Caution",
+                    f"{invalid_levels} configured return period value(s) are outside the finite fitted result.",
+                )
+            )
+        else:
+            checks.append(("Evidence", "All configured return levels are finite."))
+
+        lower_bounds = np.atleast_1d(np.asarray(evm_result.lower_bounds, dtype=float))
+        upper_bounds = np.atleast_1d(np.asarray(evm_result.upper_bounds, dtype=float))
+        bounds_size = min(levels.size, lower_bounds.size, upper_bounds.size)
+        finite_bounds = (
+            np.isfinite(lower_bounds[:bounds_size]) & np.isfinite(upper_bounds[:bounds_size])
+        )
+        missing_bounds = levels.size - int(np.count_nonzero(finite_bounds))
+        if missing_bounds:
+            checks.append(
+                (
+                    "Caution",
+                    f"Confidence bounds are unavailable for {missing_bounds} return period value(s).",
+                )
+            )
+        else:
+            checks.append(("Evidence", "Confidence bounds are available for each return level."))
+
+        palette = self.result_text.palette()
+        border_color = palette.color(QPalette.Mid).name()
+        header_color = palette.color(QPalette.AlternateBase).name()
+        rows = "".join(
+            (
+                "<tr>"
+                f"<td style='padding: 4px 8px; font-weight: 700;'>{escape(kind)}</td>"
+                f"<td style='padding: 4px 8px;'>{escape(text)}</td>"
+                "</tr>"
+            )
+            for kind, text in checks
+        )
+        return (
+            "<div style='margin-top: 10px;'>"
+            "<p style='margin: 0 0 6px 0; font-weight: 700;'>Fit checks</p>"
+            "<table cellspacing='0' cellpadding='0' width='100%' "
+            f"style='border: 1px solid {border_color}; border-collapse: collapse;'>"
+            f"<tr style='background-color: {header_color};'>"
+            "<th align='left' style='padding: 5px 8px;'>Signal</th>"
+            "<th align='left' style='padding: 5px 8px;'>Observation</th>"
+            "</tr>"
+            f"{rows}"
+            "</table>"
+            "</div>"
+        )
+
 
     def on_manual_threshold(self):
         self.threshold_spin.interpretText()
@@ -794,8 +901,14 @@ class EVMWindow(QDialog):
         suggested = 0.8 * np.nanmax(self.x) if tail == "upper" else 0.8 * np.nanmin(self.x)
         threshold = self._auto_threshold(suggested, tail)
         self.threshold_spin.setValue(round(threshold, 4))
+        threshold = self.threshold_spin.value()
         self._last_evm_result = None
         self.update_extremes_plot(threshold)
+        peaks, _ = self._declustered_peaks(tail)
+        self.result_text.setPlainText(
+            self._threshold_quality_summary(threshold, tail, peaks)
+        )
+        self._evm_ran = False
 
     def build_inputs(self):
         layout = QGridLayout(self.inputs_widget)
@@ -826,7 +939,10 @@ class EVMWindow(QDialog):
 
         self.declustering_sweep_btn = QPushButton("Plot Declustering Sweep")
         self.declustering_sweep_btn.clicked.connect(self.on_plot_declustering_sweep)
-        layout.addWidget(self.declustering_sweep_btn, row, 0, 1, 3)
+        layout.addWidget(self.declustering_sweep_btn, row, 0)
+        self.threshold_stability_btn = QPushButton("Plot Threshold Stability")
+        self.threshold_stability_btn.clicked.connect(self.on_plot_threshold_stability)
+        layout.addWidget(self.threshold_stability_btn, row, 1, 1, 2)
         row += 1
 
         self.ci_spin = QDoubleSpinBox()
@@ -999,9 +1115,21 @@ class EVMWindow(QDialog):
         if self._evm_ran:
             self.run_evm()
 
-    def _fit_once(self, threshold: float, tail: str, *, precomputed=None):
+    def _fit_once(
+        self,
+        threshold: float,
+        tail: str,
+        *,
+        precomputed=None,
+        estimate_confidence: bool = True,
+        declustering_window_seconds: float | None = None,
+    ):
         engine = self.engine_combo.currentData()
-        declustering_window = self._current_declustering_window_seconds()
+        declustering_window = (
+            self._current_declustering_window_seconds()
+            if declustering_window_seconds is None
+            else max(0.0, float(declustering_window_seconds))
+        )
         analysis_mode = self._current_analysis_mode()
 
         if precomputed is None:
@@ -1035,6 +1163,9 @@ class EVMWindow(QDialog):
 
             pyext_options = dict(base_options)
             pyext_options["r"] = declustering_window
+            if not estimate_confidence:
+                pyext_options["diagnostic_figure"] = False
+                pyext_options["estimate_confidence"] = False
             if self._has_datetime_time:
                 pyext_options["datetime_index"] = np.asarray(
                     self._time_for_plot, dtype=object
@@ -1043,6 +1174,10 @@ class EVMWindow(QDialog):
         calc_kwargs = {}
         if engine == "pyextremes":
             calc_kwargs["return_periods_hours"] = return_periods
+        else:
+            calc_kwargs["return_periods_hours"] = self._default_periods_for_current_mode()
+            if not estimate_confidence:
+                calc_kwargs["n_bootstrap"] = 0
 
         try:
             evm_result = calculate_extreme_value_statistics(
@@ -1141,6 +1276,181 @@ class EVMWindow(QDialog):
 
         unit = "hour" if abs(hours - 1.0) < 1e-8 else "hours"
         return f"{hours:.1f} {unit}"
+
+    def _threshold_stability_points(
+        self,
+        tail: str,
+        *,
+        precomputed: tuple[np.ndarray, np.ndarray] | None = None,
+    ) -> list[dict[str, object]]:
+        """Fit candidate thresholds without changing the selected threshold."""
+
+        if precomputed is None:
+            peaks, boundaries = self._declustered_peaks(tail)
+        else:
+            peaks, boundaries = precomputed
+
+        thresholds = self._candidate_thresholds(
+            self.threshold_spin.value(),
+            tail,
+            np.asarray(peaks, dtype=float),
+        )
+        points: list[dict[str, object]] = []
+        for threshold in thresholds:
+            status, data = self._fit_once(
+                threshold,
+                tail,
+                precomputed=(peaks, boundaries),
+                estimate_confidence=False,
+            )
+            point: dict[str, object] = {
+                "threshold": float(threshold),
+                "status": status,
+                "exceedance_count": int(data.get("count", 0)),
+                "message": str(data.get("message", "")),
+            }
+            if status == "ok":
+                result = data["evm_result"]
+                point.update(
+                    {
+                        "exceedance_count": int(len(result.exceedances)),
+                        "shape": float(result.shape),
+                        "scale": float(result.scale),
+                        "return_periods": np.atleast_1d(
+                            np.asarray(result.return_periods, dtype=float)
+                        ),
+                        "return_levels": np.atleast_1d(
+                            np.asarray(result.return_levels, dtype=float)
+                        ),
+                    }
+                )
+            points.append(point)
+
+        return points
+
+    @staticmethod
+    def _threshold_point_values(
+        points: list[dict[str, object]],
+        key: str,
+    ) -> np.ndarray:
+        """Return numeric values for threshold scan plotting."""
+
+        values: list[float] = []
+        for point in points:
+            value = point.get(key, np.nan)
+            try:
+                values.append(float(value))
+            except (TypeError, ValueError):
+                values.append(float("nan"))
+        return np.asarray(values, dtype=float)
+
+    def on_plot_threshold_stability(self) -> None:
+        """Plot stability evidence for threshold choices around the active fit."""
+
+        tail = self.tail_combo.currentText()
+        peaks, boundaries = self._declustered_peaks(tail)
+        if peaks.size < 10:
+            message = (
+                "Threshold stability requires at least 10 clustered peaks. "
+                "Adjust the declustering or tail selection and try again."
+            )
+            self.result_text.setPlainText(message)
+            self.show_canvas_message(message)
+            return
+
+        points = self._threshold_stability_points(
+            tail,
+            precomputed=(peaks, boundaries),
+        )
+        ordered_points = sorted(points, key=lambda point: float(point["threshold"]))
+        valid_points = [point for point in ordered_points if point["status"] == "ok"]
+        if not valid_points:
+            message = (
+                "Threshold stability could not produce valid fits. "
+                "Try a less extreme threshold or a different declustering setting."
+            )
+            self.result_text.setPlainText(message)
+            self.show_canvas_message(message)
+            return
+
+        thresholds = self._threshold_point_values(ordered_points, "threshold")
+        counts = self._threshold_point_values(ordered_points, "exceedance_count")
+        shapes = self._threshold_point_values(ordered_points, "shape")
+        scales = self._threshold_point_values(ordered_points, "scale")
+        active_threshold = float(self.threshold_spin.value())
+
+        self._set_canvas_figure(self._base_figure)
+        self.fig.clear()
+        self.fig.set_size_inches(12, 7)
+        count_ax = self.fig.add_subplot(2, 2, 1)
+        shape_ax = self.fig.add_subplot(2, 2, 2)
+        scale_ax = self.fig.add_subplot(2, 2, 3)
+        level_ax = self.fig.add_subplot(2, 2, 4)
+
+        count_ax.plot(thresholds, counts, marker="o")
+        count_ax.set_title("Clustered exceedances")
+        count_ax.set_ylabel("Count")
+
+        shape_ax.plot(thresholds, shapes, marker="o")
+        shape_ax.axhline(0.0, color="gray", linewidth=1, alpha=0.5)
+        shape_ax.set_title("Shape stability")
+        shape_ax.set_ylabel("Xi")
+
+        scale_ax.plot(thresholds, scales, marker="o")
+        scale_ax.set_title("Scale stability")
+        scale_ax.set_ylabel("Sigma")
+
+        first_periods = np.asarray(valid_points[0]["return_periods"], dtype=float)
+        period_kind = "return_period"
+        if self._last_evm_result is not None and self._last_evm_result.metadata:
+            period_kind = str(
+                self._last_evm_result.metadata.get("period_kind", "return_period")
+            )
+        elif self._current_analysis_mode() == "short_term":
+            period_kind = "storm_duration"
+
+        for period_idx, period in enumerate(first_periods):
+            level_values: list[float] = []
+            for point in ordered_points:
+                levels = np.atleast_1d(
+                    np.asarray(point.get("return_levels", []), dtype=float)
+                )
+                value = levels[period_idx] if period_idx < levels.size else np.nan
+                level_values.append(float(value))
+
+            level_array = np.asarray(level_values, dtype=float)
+            if not np.any(np.isfinite(level_array)):
+                continue
+            level_ax.plot(
+                thresholds,
+                level_array,
+                marker="o",
+                label=self._format_period_label(float(period), period_kind=period_kind),
+            )
+
+        level_ax.set_title("Return-level stability")
+        level_ax.set_ylabel("Return level")
+        if level_ax.lines:
+            level_ax.legend(fontsize=8)
+
+        for ax in (count_ax, shape_ax, scale_ax, level_ax):
+            ax.axvline(
+                active_threshold,
+                color="red",
+                linestyle="--",
+                linewidth=1,
+                label="Selected threshold",
+            )
+            ax.set_xlabel("Threshold")
+            ax.grid(True, linestyle="--", alpha=0.4)
+
+        invalid_count = len(ordered_points) - len(valid_points)
+        title = "Threshold Stability"
+        if invalid_count:
+            title += f" - {invalid_count} candidate fit(s) shown as gaps"
+        self.fig.suptitle(title)
+        self.fig.tight_layout(rect=[0, 0, 1, 0.96])
+        self.fig_canvas.draw()
 
     def on_plot_declustering_sweep(self) -> None:
         """Plot GPD parameters against candidate declustering periods."""
@@ -1475,6 +1785,7 @@ class EVMWindow(QDialog):
             "<pre style='white-space: pre-wrap; margin: 0;'>"
             f"{escape(result_prefix)}"
             "</pre>"
+            + self._fit_checks_html(evm_result)
             + self._confidence_interval_table_html(
                 evm_result,
                 period_kind=period_kind,
@@ -1518,7 +1829,13 @@ class EVMWindow(QDialog):
         if total_available < min_required:
             return [float(base_threshold)]
 
-        counts: set[int] = {min_required, total_available, max(min_required, base_count)}
+        counts: set[int] = {
+            min_required,
+            total_available,
+            max(min_required, base_count),
+            self._MIN_RECOMMENDED_EXCEEDANCES,
+            self._TARGET_CLUSTERED_EXCEEDANCES,
+        }
 
         if total_available > min_required:
             n_points = min(25, total_available - min_required + 1)
@@ -1536,11 +1853,6 @@ class EVMWindow(QDialog):
             }
         )
 
-        if tail == "upper":
-            ordered_peaks = np.sort(peaks)[::-1]
-        else:
-            ordered_peaks = np.sort(peaks)
-
         thresholds: list[float] = []
         seen: set[float] = set()
 
@@ -1553,104 +1865,190 @@ class EVMWindow(QDialog):
         _add_threshold(float(base_threshold))
 
         for count in valid_counts:
-            idx = count - 1
-            if idx < 0 or idx >= ordered_peaks.size:
-                continue
-
-            peak_value = float(ordered_peaks[idx])
-            if tail == "upper":
-                threshold = np.nextafter(peak_value, -np.inf)
-            else:
-                threshold = np.nextafter(peak_value, np.inf)
-
-            _add_threshold(threshold)
+            threshold = self._threshold_for_exceedance_count(peaks, count, tail)
+            if threshold is not None:
+                _add_threshold(threshold)
 
         thresholds.sort(reverse=(tail == "upper"))
         return thresholds
 
+    @staticmethod
+    def _threshold_for_exceedance_count(
+        peaks: np.ndarray,
+        count: int,
+        tail: str,
+    ) -> float | None:
+        """Return a threshold that keeps approximately ``count`` tail peaks."""
+
+        peaks = np.asarray(peaks, dtype=float)
+        finite_peaks = peaks[np.isfinite(peaks)]
+        if finite_peaks.size == 0 or count <= 0:
+            return None
+
+        idx = min(int(count), int(finite_peaks.size)) - 1
+        ordered_peaks = (
+            np.sort(finite_peaks)[::-1]
+            if tail == "upper"
+            else np.sort(finite_peaks)
+        )
+        peak_value = float(ordered_peaks[idx])
+        if tail == "upper":
+            return float(np.nextafter(peak_value, -np.inf))
+        return float(np.nextafter(peak_value, np.inf))
+
+    def _threshold_quality_summary(
+        self,
+        threshold: float,
+        tail: str,
+        peaks: np.ndarray,
+    ) -> str:
+        """Summarize count-based quality control for a threshold candidate."""
+
+        peaks = np.asarray(peaks, dtype=float)
+        comparator = np.greater if tail == "upper" else np.less
+        count = int(np.count_nonzero(comparator(peaks, threshold)))
+        available = int(np.count_nonzero(np.isfinite(peaks)))
+
+        if count < 10:
+            status = "Fail"
+            note = "fewer than 10 clustered exceedances are available for fitting."
+        elif count < self._MIN_RECOMMENDED_EXCEEDANCES:
+            status = "Caution"
+            note = (
+                "the sample clears the fitting minimum but is thin for fit-quality "
+                "judgement."
+            )
+        elif count > self._MAX_CLUSTERED_EXCEEDANCES:
+            status = "Caution"
+            note = "the threshold includes more tail points than iteration will prefer."
+        else:
+            status = "Good starting point"
+            note = "the exceedance count is in the preferred starting range."
+
+        return (
+            "Calc Threshold quality control:\n"
+            f"Threshold: {float(threshold):.4f}\n"
+            f"Tail: {tail}\n"
+            f"Clustered exceedances: {count} of {available}\n"
+            f"Preferred starting range: {self._MIN_RECOMMENDED_EXCEEDANCES}"
+            f"-{self._MAX_CLUSTERED_EXCEEDANCES}\n"
+            f"Target count: {self._TARGET_CLUSTERED_EXCEEDANCES}\n"
+            f"Status: {status} - {note}\n\n"
+            "Use Plot Threshold Stability or Iterate Fit to check the fitted tail."
+        )
+
+    def _fit_quality_score(self, data: dict) -> tuple[float, ...]:
+        """Rank an iterate-fit candidate using tail-fit evidence."""
+
+        result = data["evm_result"]
+        count = int(len(result.exceedances))
+        below_preferred = max(0, self._MIN_RECOMMENDED_EXCEEDANCES - count)
+        above_preferred = max(0, count - self._MAX_CLUSTERED_EXCEEDANCES)
+        count_distance = abs(count - self._TARGET_CLUSTERED_EXCEEDANCES)
+
+        levels = np.atleast_1d(np.asarray(result.return_levels, dtype=float))
+        invalid_levels = int(np.count_nonzero(~np.isfinite(levels)))
+        shape = abs(float(result.shape)) if np.isfinite(result.shape) else np.inf
+        warnings_text = str(data.get("warnings") or "")
+        instability_warning = 1.0 if "Warning:" in warnings_text else 0.0
+
+        current_window = max(self._current_declustering_window_seconds(), 1e-9)
+        candidate_window = max(float(data.get("declustering_window", 0.0)), 1e-9)
+        declustering_distance = abs(np.log10(candidate_window / current_window))
+
+        return (
+            instability_warning,
+            float(invalid_levels),
+            float(below_preferred),
+            float(above_preferred),
+            float(count_distance),
+            min(shape, 1e6),
+            float(declustering_distance),
+        )
+
     def on_iterate_fit(self) -> None:
         tail = self.tail_combo.currentText()
         base_threshold = self.threshold_spin.value()
-
-        peaks, boundaries = self._declustered_peaks(tail)
-        if peaks.size < 10:
-            message = (
-                "Iteration requires at least 10 clustered peaks. Lower the threshold "
-                "or adjust the tail selection and try again."
-            )
-            self._latest_warning = None
-            self.result_text.setPlainText(message)
-            self.show_canvas_message(message)
-            self._evm_ran = False
-            return
 
         self.result_text.setPlainText("Iterating to find a stable fit...")
         self._evm_ran = False
         self._last_evm_result = None
         self.update_extremes_plot(self.threshold_spin.value())
 
-        best_success: dict | None = None
-        best_with_warning: dict | None = None
+        candidate_fits: list[dict] = []
         failure_messages: list[str] = []
 
-        candidate_thresholds = self._candidate_thresholds(base_threshold, tail, peaks)
-
-        for threshold in candidate_thresholds:
-            status, data = self._fit_once(
-                threshold,
+        for declustering_window in self._candidate_declustering_windows():
+            peaks, boundaries = self._declustered_peaks_for_window(
                 tail,
-                precomputed=(peaks, boundaries),
+                declustering_window,
             )
-
-            if status == "ok":
-                exceedance_count = len(data["evm_result"].exceedances)
-
-                if exceedance_count > self._MAX_CLUSTERED_EXCEEDANCES:
-                    failure_messages.append(
-                        (
-                            "Threshold {thresh:.3f} produced {count} clustered "
-                            "exceedances which is above the maximum of {max_count}."
-                        ).format(
-                            thresh=threshold,
-                            count=exceedance_count,
-                            max_count=self._MAX_CLUSTERED_EXCEEDANCES,
-                        )
-                    )
-                    continue
-
-                if data["warnings"]:
-                    if best_with_warning is None:
-                        best_with_warning = data
-                    continue
-
-                best_success = data
-                break
-
-            elif status == "insufficient":
+            if peaks.size < 10:
                 failure_messages.append(
-                    f"Threshold {threshold:.3f} resulted in only {data['count']} clustered exceedances."
+                    (
+                        f"Declustering {declustering_window:.3f} s produced "
+                        f"{peaks.size} clustered peaks."
+                    )
+                )
+                continue
+
+            for threshold in self._candidate_thresholds(base_threshold, tail, peaks):
+                status, data = self._fit_once(
+                    threshold,
+                    tail,
+                    precomputed=(peaks, boundaries),
+                    estimate_confidence=False,
+                    declustering_window_seconds=declustering_window,
+                )
+
+                if status == "ok":
+                    exceedance_count = len(data["evm_result"].exceedances)
+
+                    if exceedance_count > self._MAX_CLUSTERED_EXCEEDANCES:
+                        failure_messages.append(
+                            (
+                                "Threshold {thresh:.3f} at declustering {window:.3f} s "
+                                "produced {count} clustered exceedances which is above "
+                                "the preferred maximum of {max_count}."
+                            ).format(
+                                thresh=threshold,
+                                window=declustering_window,
+                                count=exceedance_count,
+                                max_count=self._MAX_CLUSTERED_EXCEEDANCES,
+                            )
+                        )
+                        continue
+
+                    candidate_fits.append(data)
+                elif status == "insufficient":
+                    failure_messages.append(
+                        f"Threshold {threshold:.3f} at declustering "
+                        f"{declustering_window:.3f} s resulted in only "
+                        f"{data['count']} clustered exceedances."
+                    )
+                elif status == "error":
+                    failure_messages.append(data["message"])
+
+        for candidate in sorted(candidate_fits, key=self._fit_quality_score):
+            final_threshold = float(candidate["threshold"])
+            final_window = float(candidate.get("declustering_window", 0.0) or 0.0)
+            self._set_current_declustering_window_seconds(final_window)
+            status, final_data = self._fit_once(final_threshold, tail)
+            if status == "ok":
+                self.threshold_spin.setValue(round(final_threshold, 4))
+                self._manual_threshold = final_threshold
+                self._handle_successful_fit(final_data, tail)
+                return
+            if status == "insufficient":
+                failure_messages.append(
+                    f"Final fit for threshold {final_threshold:.3f} and "
+                    f"declustering {final_window:.3f} s retained only "
+                    f"{final_data['count']} exceedances."
                 )
             elif status == "error":
-                failure_messages.append(data["message"])
+                failure_messages.append(final_data["message"])
 
-        if best_success and not best_success["warnings"]:
-            final_threshold = best_success["threshold"]
-            self.threshold_spin.setValue(round(final_threshold, 4))
-            self._manual_threshold = final_threshold
-            self._handle_successful_fit(best_success, tail)
-            return
-
-        if best_with_warning:
-            warning_details = best_with_warning.get("warnings") or ""
-            if warning_details:
-                warning_details = f"\n\n{warning_details}"
-            final_threshold = best_with_warning["threshold"]
-            self.threshold_spin.setValue(round(final_threshold, 4))
-            self._manual_threshold = final_threshold
-            self._handle_successful_fit(best_with_warning, tail)
-            return
-
-        message = "\n".join(failure_messages)
+        message = "\n".join(failure_messages[-20:])
         if not message:
             message = "Iteration failed to compute a valid extreme value fit."
         self._latest_warning = None

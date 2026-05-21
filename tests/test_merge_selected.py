@@ -200,6 +200,87 @@ def test_open_evm_user_variable_name_with_colon_uses_exact_match(qt_app, message
     assert not message_spy["warn"]
 
 
+def test_open_evm_filtered_datetime_series_preserves_reference(
+    qt_app,
+    message_spy,
+    monkeypatch,
+):
+    index = pd.date_range("2025-03-01", periods=6, freq="h")
+    ts = TimeSeries("Wind", index, np.arange(6, dtype=float))
+    tsdb = DummyDB({"Wind": ts})
+    editor = _build_editor(monkeypatch, [tsdb], ["wind.csv"])
+    editor.var_checkboxes["Wind"].setChecked(True)
+
+    launched = {}
+
+    class DummyEVMWindow:
+        def __init__(self, db, name, parent):
+            launched["db"] = db
+            launched["name"] = name
+
+        def exec(self):
+            launched["exec"] = True
+
+    mask = np.asarray([False, True, True, True, False, False])
+    monkeypatch.setattr(editor_module, "EVMWindow", DummyEVMWindow)
+    monkeypatch.setattr(editor, "get_time_window", lambda _ts: mask)
+    monkeypatch.setattr(editor, "apply_filters", lambda series: series.x)
+
+    editor.open_evm_tool()
+    qt_app.processEvents()
+
+    filtered = launched["db"].getm()["Wind"]
+    assert launched["name"] == "Wind"
+    assert launched["exec"] is True
+    assert filtered.dtg_ref == ts.dtg_ref
+    assert filtered.dtg_time[0] == ts.dtg_time[1]
+    assert filtered.dtg_time[-1] == ts.dtg_time[3]
+    assert not message_spy["crit"]
+    assert not message_spy["warn"]
+
+
+def test_show_stats_preserves_datetime_filter_and_window_payload(
+    qt_app,
+    message_spy,
+    monkeypatch,
+):
+    index = pd.date_range("2026-05-21", periods=6, freq="h")
+    ts = TimeSeries("Wind", index, np.arange(6, dtype=float))
+    tsdb = DummyDB({"Wind": ts})
+    editor = _build_editor(monkeypatch, [tsdb], ["wind.csv"])
+    editor.var_checkboxes["Wind"].setChecked(True)
+    editor.filter_lowpass_rb.setChecked(True)
+    editor.lowpass_cutoff.setText("0.2")
+
+    launched = {}
+
+    class DummyStatsDialog:
+        def __init__(self, series_info, parent, preferred_plot_engine):
+            launched["series_info"] = series_info
+            launched["parent"] = parent
+            launched["engine"] = preferred_plot_engine
+
+        def exec(self):
+            launched["exec"] = True
+
+    mask = np.asarray([False, True, True, True, False, False])
+    monkeypatch.setattr(editor_module, "StatsDialog", DummyStatsDialog)
+    monkeypatch.setattr(editor, "get_time_window", lambda _ts: mask)
+
+    editor.show_stats()
+    qt_app.processEvents()
+
+    payload = launched["series_info"][0]
+    assert launched["parent"] is editor
+    assert launched["exec"] is True
+    assert payload["dtg_time"][0] == ts.dtg_time[1]
+    assert payload["time_window"]["datetime_end"] == ts.dtg_time[3]
+    assert payload["editor_filter"]["mode"] == "lowpass"
+    assert "0.2" in payload["editor_filter"]["description"]
+    assert not message_spy["crit"]
+    assert not message_spy["warn"]
+
+
 
 
 def test_calculate_series_success_popup_includes_equation(qt_app, message_spy, monkeypatch):
