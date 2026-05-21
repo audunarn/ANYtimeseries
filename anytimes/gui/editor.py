@@ -4834,6 +4834,7 @@ class TimeSeriesEditorQt(QMainWindow):
 
         fnames = [os.path.basename(p) for p in self.file_paths]
         uniq_map = dict(zip(fnames, _uniq(self.file_paths)))
+        filter_context = self._statistics_filter_context()
 
         series_info = []
         for file_idx, (tsdb, fp) in enumerate(zip(self.tsdbs, self.file_paths), start=1):
@@ -4859,6 +4860,12 @@ class TimeSeriesEditorQt(QMainWindow):
                 mask = self.get_time_window(ts)
                 t_win = ts.t[mask]
                 x_win = ts.x[mask]
+                dtg_time = getattr(ts, "dtg_time", None)
+                dtg_win = None
+                if dtg_time is not None:
+                    dtg_arr = np.asarray(dtg_time, dtype=object)
+                    if dtg_arr.shape == np.asarray(ts.t).shape:
+                        dtg_win = dtg_arr[mask]
                 series_info.append({
                     "file": fname,
                     "uniq_file": uniq_map.get(fname, ""),
@@ -4866,6 +4873,16 @@ class TimeSeriesEditorQt(QMainWindow):
                     "var": key,
                     "t": t_win,
                     "x": x_win,
+                    "dtg_ref": getattr(ts, "dtg_ref", None),
+                    "dtg_time": dtg_win,
+                    "editor_filter": filter_context.copy(),
+                    "time_window": {
+                        "start": t_win[0] if len(t_win) else None,
+                        "end": t_win[-1] if len(t_win) else None,
+                        "datetime_start": dtg_win[0] if dtg_win is not None and len(dtg_win) else None,
+                        "datetime_end": dtg_win[-1] if dtg_win is not None and len(dtg_win) else None,
+                        "samples": len(t_win),
+                    },
                 })
 
         if not series_info:
@@ -4883,6 +4900,48 @@ class TimeSeriesEditorQt(QMainWindow):
             preferred_plot_engine=preferred_plot_engine,
         )
         dlg.exec()
+
+    def _statistics_filter_context(self) -> dict[str, str]:
+        """Return the active editor filter in a Statistics-friendly form."""
+        context = {
+            "mode": "none",
+            "cutoff_low": "",
+            "cutoff_high": "",
+            "description": "Editor filter: none",
+        }
+        if self.filter_lowpass_rb.isChecked():
+            cutoff = self.lowpass_cutoff.text().strip()
+            context.update(
+                mode="lowpass",
+                cutoff_high=cutoff,
+                description=f"Editor filter: low-pass below {cutoff or 'n/a'} Hz",
+            )
+        elif self.filter_highpass_rb.isChecked():
+            cutoff = self.highpass_cutoff.text().strip()
+            context.update(
+                mode="highpass",
+                cutoff_low=cutoff,
+                description=f"Editor filter: high-pass above {cutoff or 'n/a'} Hz",
+            )
+        elif self.filter_bandpass_rb.isChecked():
+            low = self.bandpass_low.text().strip()
+            high = self.bandpass_high.text().strip()
+            context.update(
+                mode="bandpass",
+                cutoff_low=low,
+                cutoff_high=high,
+                description=f"Editor filter: band-pass {low or 'n/a'}-{high or 'n/a'} Hz",
+            )
+        elif self.filter_bandblock_rb.isChecked():
+            low = self.bandblock_low.text().strip()
+            high = self.bandblock_high.text().strip()
+            context.update(
+                mode="bandblock",
+                cutoff_low=low,
+                cutoff_high=high,
+                description=f"Editor filter: band-block {low or 'n/a'}-{high or 'n/a'} Hz",
+            )
+        return context
 
     def plot_selected_side_by_side(self, checked: bool = False):
         """Plot all selected series in a grid of subplots.
