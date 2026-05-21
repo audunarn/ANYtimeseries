@@ -1049,7 +1049,7 @@ class TimeSeriesEditorQt(QMainWindow):
         self.right_splitter.setStretchFactor(1, 5)
 
         # Initial heights: top controls smaller, plot area larger
-        self.right_splitter.setSizes([600, 500])  # more space for controls
+        self.right_splitter.setSizes([300, 500])  # more space for controls
 
         self.top_row_splitter.setStretchFactor(0, 5)
         self.plot_view.hide()
