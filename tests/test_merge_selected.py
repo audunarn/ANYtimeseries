@@ -71,6 +71,20 @@ class DummyDB:
         self._data[ts.name] = ts
 
 
+class FakeLayoutSettings:
+    def __init__(self, values=None):
+        self.values = dict(values or {})
+
+    def value(self, key):
+        return self.values.get(key)
+
+    def setValue(self, key, value):
+        self.values[key] = value
+
+    def sync(self):
+        pass
+
+
 @pytest.fixture(scope="module")
 def qt_app():
     app = QApplication.instance()
@@ -105,6 +119,76 @@ def _build_editor(monkeypatch, tsdbs, paths):
     editor.user_variables = set()
     editor.refresh_variable_tabs()
     return editor
+
+
+def _build_layout_editor(monkeypatch, qt_app, settings):
+    monkeypatch.setattr(TimeSeriesEditorQt, "apply_dark_palette", lambda self: None)
+    monkeypatch.setattr(TimeSeriesEditorQt, "apply_light_palette", lambda self: None)
+    monkeypatch.setattr(TimeSeriesEditorQt, "_layout_settings", lambda self: settings)
+    editor = TimeSeriesEditorQt()
+    editor.resize(1900, 1040)
+    editor.show()
+    qt_app.processEvents()
+    return editor
+
+
+def test_editor_main_splitter_allows_left_pane_growth(qt_app, monkeypatch):
+    editor = _build_layout_editor(monkeypatch, qt_app, FakeLayoutSettings())
+
+    editor.main_splitter.setSizes([1200, 600])
+    qt_app.processEvents()
+    left, right = editor.main_splitter.sizes()
+
+    assert editor.main_splitter.widget(1).minimumSizeHint().width() < 900
+    assert left > editor._min_left_panel * 3
+    assert left > right
+    editor.close()
+
+
+def test_editor_invalid_layout_state_falls_back_to_defaults(qt_app, monkeypatch):
+    settings = FakeLayoutSettings(
+        {
+            "main_editor/main_splitter": b"invalid",
+            "main_editor/right_splitter": b"invalid",
+            "main_editor/top_row_splitter": b"invalid",
+        }
+    )
+    editor = _build_layout_editor(monkeypatch, qt_app, settings)
+    left, right = editor.main_splitter.sizes()
+
+    assert editor._layout_state_restored is False
+    assert left > 0
+    assert right > 0
+    editor.close()
+
+
+def test_editor_splitter_state_restores_saved_sizes(qt_app, monkeypatch):
+    settings = FakeLayoutSettings()
+    first = _build_layout_editor(monkeypatch, qt_app, settings)
+    first.main_splitter.setSizes([480, 1320])
+    qt_app.processEvents()
+    first._save_layout_state()
+    first.close()
+
+    second = _build_layout_editor(monkeypatch, qt_app, settings)
+    left, right = second.main_splitter.sizes()
+
+    assert second._layout_state_restored is True
+    assert left < right
+    second.close()
+
+
+def test_editor_resize_keeps_manual_embedded_plot_height(qt_app, monkeypatch):
+    editor = _build_layout_editor(monkeypatch, qt_app, FakeLayoutSettings())
+    editor.right_splitter.setSizes([320, 680])
+    qt_app.processEvents()
+
+    editor.resize(1880, 980)
+    qt_app.processEvents()
+    controls_height, plot_height = editor.right_splitter.sizes()
+
+    assert plot_height > controls_height
+    editor.close()
 
 
 def test_merge_common_single_series_creates_user_variables(qt_app, message_spy, monkeypatch):

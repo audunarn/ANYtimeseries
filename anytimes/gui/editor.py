@@ -24,7 +24,7 @@ from tqdm.auto import tqdm
 from anyqats import TimeSeries, TsDB
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
 from matplotlib.figure import Figure
-from PySide6.QtCore import QEvent, QTimer, Qt, QUrl, Signal, Slot
+from PySide6.QtCore import QEvent, QSettings, QTimer, Qt, QUrl, Signal, Slot
 from PySide6.QtGui import (
     QColor,
     QGuiApplication,
@@ -207,6 +207,8 @@ class TimeSeriesEditorQt(QMainWindow):
         self._splitter_ratio = 0.52
 
         self._updating_splitter = False
+        self._layout_state_restored = False
+        self._secondary_splitters_initialized = False
 
         # Palette and style for theme switching
         app = QApplication.instance()
@@ -285,7 +287,7 @@ class TimeSeriesEditorQt(QMainWindow):
 
         for idx, btn in enumerate(nav_buttons):
             btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            btn.setMinimumHeight(28)
+            btn.setMaximumHeight(24)
             btn_grid.addWidget(btn, idx // 2, idx % 2)
         left_layout.addLayout(btn_grid)
 
@@ -315,13 +317,24 @@ class TimeSeriesEditorQt(QMainWindow):
         self.controls_widget = QWidget()
         self.controls_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.controls_layout = QVBoxLayout(self.controls_widget)
+        self.controls_scroll = QScrollArea()
+        self.controls_scroll.setWidgetResizable(True)
+        self.controls_scroll.setWidget(self.controls_widget)
+        self.controls_scroll.setMinimumWidth(self._min_right_panel)
+        self.controls_scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         self.extra_widget = QWidget()
         self.extra_layout = QVBoxLayout(self.extra_widget)
         self.extra_stretch = QSpacerItem(0, 0, QSizePolicy.Minimum, QSizePolicy.Expanding)
+        self.extra_scroll = QScrollArea()
+        self.extra_scroll.setWidgetResizable(True)
+        self.extra_scroll.setWidget(self.extra_widget)
+        self.extra_scroll.setMinimumWidth(self._min_right_panel)
+        self.extra_scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         # ---- File controls ----
-        self.file_ctrls_layout = QHBoxLayout()
+        self.file_ctrls_layout = QVBoxLayout()
+        self.file_actions_layout = QGridLayout()
         self.load_btn = QPushButton("Load time series file")
         self.save_btn = QPushButton("Save Files")
         self.clear_btn = QPushButton("Clear All")
@@ -336,23 +349,36 @@ class TimeSeriesEditorQt(QMainWindow):
         # Hidden until a .sim file is loaded
         self.clear_orcaflex_btn.hide()
         self.reselect_orcaflex_btn.hide()
-        self.file_ctrls_layout.addWidget(self.load_btn)
-        self.file_ctrls_layout.addWidget(self.save_btn)
-        self.file_ctrls_layout.addWidget(self.clear_btn)
-        self.file_ctrls_layout.addWidget(self.save_values_btn)
-        self.file_ctrls_layout.addWidget(self.load_values_btn)
-        self.file_ctrls_layout.addWidget(self.export_csv_btn)
-        self.file_ctrls_layout.addWidget(self.export_dt_input)
-        self.file_ctrls_layout.addWidget(self.clear_orcaflex_btn)
-        self.file_ctrls_layout.addWidget(self.reselect_orcaflex_btn)
-        self.file_ctrls_layout.addStretch(1)
+        file_action_buttons = (
+            self.load_btn,
+            self.save_btn,
+            self.clear_btn,
+            self.save_values_btn,
+            self.load_values_btn,
+            self.export_csv_btn,
+            self.clear_orcaflex_btn,
+            self.reselect_orcaflex_btn,
+        )
+        for btn in file_action_buttons:
+            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        for idx, widget in enumerate(file_action_buttons):
+            self.file_actions_layout.addWidget(widget, idx // 4, idx % 4)
+
+        self.file_actions_layout.addWidget(QLabel("Export dt:"), 2, 0)
+        self.file_actions_layout.addWidget(self.export_dt_input, 2, 1)
+        for col in range(4):
+            self.file_actions_layout.setColumnStretch(col, 1)
+        self.file_ctrls_layout.addLayout(self.file_actions_layout)
 
         self.theme_embed_widget = QWidget()
-        self.theme_embed_layout = QVBoxLayout(self.theme_embed_widget)
+        self.theme_embed_layout = QHBoxLayout(self.theme_embed_widget)
+        self.theme_embed_layout.setContentsMargins(0, 0, 0, 0)
+        self.theme_embed_layout.setSpacing(12)
         self.theme_switch = QCheckBox("Dark Theme")
         self.embed_plot_cb = QCheckBox("Embed Plot")
         self.theme_embed_layout.addWidget(self.theme_switch)
         self.theme_embed_layout.addWidget(self.embed_plot_cb)
+        self.theme_embed_layout.addStretch(1)
         self.file_ctrls_layout.addWidget(self.theme_embed_widget)
         self.controls_layout.addLayout(self.file_ctrls_layout)
 
@@ -361,9 +387,17 @@ class TimeSeriesEditorQt(QMainWindow):
 
         # --- Transformations ---
         self.transform_group = QGroupBox("Quick transformations")
+        self.transform_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         transform_layout = QVBoxLayout(self.transform_group)
+        transform_layout.setContentsMargins(3, 3, 3, 3)
+        transform_layout.setSpacing(3)
 
-        row1 = QHBoxLayout()
+        # Row block 1: basic multiply/divide operations, 4 buttons per row.
+        row1 = QGridLayout()
+        row1.setContentsMargins(0, 0, 0, 0)
+        row1.setHorizontalSpacing(6)
+        row1.setVerticalSpacing(3)
+
         self.mult_by_1000_btn = QPushButton("Multiply by 1000")
         self.div_by_1000_btn = QPushButton("Divide by 1000")
         self.mult_by_10_btn = QPushButton("Multiply by 10")
@@ -373,131 +407,179 @@ class TimeSeriesEditorQt(QMainWindow):
         self.mult_by_neg1_btn = QPushButton("Multiply by -1")
         self.quick_transform_help_btn = QPushButton("i")
         self.quick_transform_help_btn.setToolTip("Show help for quick transformation tools.")
-        self.quick_transform_help_btn.setMaximumWidth(28)
-        row1.addWidget(self.mult_by_1000_btn)
-        row1.addWidget(self.div_by_1000_btn)
-        row1.addWidget(self.mult_by_10_btn)
-        row1.addWidget(self.div_by_10_btn)
-        row1.addWidget(self.mult_by_2_btn)
-        row1.addWidget(self.div_by_2_btn)
-        row1.addWidget(self.mult_by_neg1_btn)
-        row1.addWidget(self.quick_transform_help_btn)
+        self.quick_transform_help_btn.setFixedWidth(28)
+
+        quick_buttons = (
+            self.mult_by_1000_btn,
+            self.div_by_1000_btn,
+            self.mult_by_10_btn,
+            self.div_by_10_btn,
+            self.mult_by_2_btn,
+            self.div_by_2_btn,
+            self.mult_by_neg1_btn,
+            self.quick_transform_help_btn,
+        )
+        for btn in quick_buttons:
+            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        for idx, widget in enumerate(quick_buttons):
+            row1.addWidget(widget, idx // 4, idx % 4)
+        for col in range(4):
+            row1.setColumnStretch(col, 1)
         transform_layout.addLayout(row1)
 
-        row2 = QHBoxLayout()
+        # Row block 2: angle/shift buttons, 4 buttons on one row.
+        row2 = QGridLayout()
+        row2.setContentsMargins(0, 0, 0, 0)
+        row2.setHorizontalSpacing(6)
+        row2.setVerticalSpacing(3)
+
         self.radians_btn = QPushButton("Radians")
         self.degrees_btn = QPushButton("Degrees")
-        row2.addWidget(self.radians_btn)
-        row2.addWidget(self.degrees_btn)
+        self.shift_mean0_btn = QPushButton("Shift Mean → 0")
+        self.shift_min0_btn = QPushButton("Shift Min to Zero")
+
+        angle_shift_buttons = (
+            self.radians_btn,
+            self.degrees_btn,
+            self.shift_mean0_btn,
+            self.shift_min0_btn,
+        )
+        for idx, btn in enumerate(angle_shift_buttons):
+            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            row2.addWidget(btn, 0, idx)
+        for col in range(4):
+            row2.setColumnStretch(col, 1)
         transform_layout.addLayout(row2)
 
-        row_trig = QHBoxLayout()
-        row_trig.addWidget(QLabel("Trig:"))
+        # Row block 3: inputs with labels ABOVE the input fields.
+        trig_grid = QGridLayout()
+        trig_grid.setContentsMargins(0, 0, 0, 0)
+        trig_grid.setHorizontalSpacing(6)
+        trig_grid.setVerticalSpacing(3)
+
         self.trig_combo = QComboBox()
         self.trig_combo.addItems(["sin", "cos", "tan"])
-        row_trig.addWidget(self.trig_combo)
-        row_trig.addWidget(QLabel("Angle [deg]:"))
         self.trig_angle_entry = QLineEdit()
         self.trig_angle_entry.setPlaceholderText("0")
-        self.trig_angle_entry.setFixedWidth(80)
-        row_trig.addWidget(self.trig_angle_entry)
-        self.trig_calc_btn = QPushButton("Calculate")
-        row_trig.addWidget(self.trig_calc_btn)
         self.reduction_pct_entry = QLineEdit("100")
-        self.reduction_pct_entry.setFixedWidth(70)
         self.reduction_pct_entry.setToolTip(
             "Percentage of points to keep (0 = no points, 100 = all points)."
         )
-        row_trig.addWidget(self.reduction_pct_entry)
-        row_trig.addWidget(QLabel("Bias:"))
         self.reduction_bias_combo = QComboBox()
         self.reduction_bias_combo.addItems(["Mean", "Upper", "Lower"])
         self.reduction_bias_combo.setToolTip(
             "Mean uses local averages, Upper uses local maxima, and Lower uses local minima."
         )
-        row_trig.addWidget(self.reduction_bias_combo)
+
+        input_widgets = (
+            ("Trig", self.trig_combo),
+            ("Angle [deg]", self.trig_angle_entry),
+            ("Keep [%]", self.reduction_pct_entry),
+            ("Bias", self.reduction_bias_combo),
+        )
+        for col, (label, widget) in enumerate(input_widgets):
+            trig_grid.addWidget(QLabel(label), 0, col)
+            widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            trig_grid.addWidget(widget, 1, col)
+
+        self.trig_calc_btn = QPushButton("Calculate trig")
         self.reduce_points_btn = QPushButton("Reduce Points")
-        row_trig.addWidget(self.reduce_points_btn)
-        row_trig.addStretch(1)
-        transform_layout.addLayout(row_trig)
+        self.ignore_anomalies_cb = QCheckBox("Ignore anomalies for shifting")
+        self.ignore_anomalies_cb.setToolTip("Ignore lowest 1% for shifting operations.")
 
-        row3 = QHBoxLayout()
-        self.shift_mean0_btn = QPushButton("Shift Mean → 0")
-        self.shift_min0_btn = QPushButton("Shift Min to Zero")
-        self.ignore_anomalies_cb = QCheckBox("Ignore anomalies (lowest 1%) for shifting.")
-        row3.addWidget(self.shift_mean0_btn)
-        row3.addWidget(self.shift_min0_btn)
-        row3.addWidget(self.ignore_anomalies_cb)
-        transform_layout.addLayout(row3)
+        trig_grid.addWidget(self.trig_calc_btn, 2, 0)
+        trig_grid.addWidget(self.reduce_points_btn, 2, 1)
+        trig_grid.addWidget(self.ignore_anomalies_cb, 2, 2, 1, 2)
 
-        row4 = QHBoxLayout()
+        for col in range(4):
+            trig_grid.setColumnStretch(col, 1)
+        transform_layout.addLayout(trig_grid)
+
+        # Row block 4: derived operations, 4 buttons per row.
+        row4 = QGridLayout()
+        row4.setContentsMargins(0, 0, 0, 0)
+        row4.setHorizontalSpacing(6)
+        row4.setVerticalSpacing(3)
+
         self.sqrt_sum_btn = QPushButton("Sqrt(sum of squares)")
         self.mean_of_sel_btn = QPushButton("Mean")
         self.abs_btn = QPushButton("Absolute")
         self.rolling_avg_btn = QPushButton("Rolling Avg")
         self.merge_selected_btn = QPushButton("Merge Selected")
-        row4.addWidget(self.sqrt_sum_btn)
-        row4.addWidget(self.mean_of_sel_btn)
-        row4.addWidget(self.abs_btn)
-        row4.addWidget(self.rolling_avg_btn)
-        row4.addWidget(self.merge_selected_btn)
-        transform_layout.addLayout(row4)
-
-        row5 = QHBoxLayout()
-        row5.addWidget(QLabel("Tol [%]:"))
-        self.shift_tol_entry = QLineEdit("0.01")
-        self.shift_tol_entry.setFixedWidth(60)
-        row5.addWidget(self.shift_tol_entry)
-        row5.addWidget(QLabel("Min count:"))
-        self.shift_cnt_entry = QLineEdit("10")
-        self.shift_cnt_entry.setFixedWidth(60)
-        row5.addWidget(self.shift_cnt_entry)
-        self.shift_min_nz_btn = QPushButton(
-            "Shift Min -> 0"
-        )
-        self.shift_common_max_btn = QPushButton(
-            "Common Shift Min -> 0"
-        )
-        row5.addWidget(self.shift_min_nz_btn)
-        row5.addWidget(self.shift_common_max_btn)
-
-
-        #row6 = QHBoxLayout()
+        self.shift_min_nz_btn = QPushButton("Shift Min -> 0")
+        self.shift_common_max_btn = QPushButton("Common Shift Min -> 0")
         self.shift_x_start_zero_btn = QPushButton("Shift X Start → 0")
         self.shift_x_start_zero_btn.setToolTip(
             "Create a new series where the x-axis starts at zero by subtracting the initial x value."
         )
-        row5.addWidget(self.shift_x_start_zero_btn)
-        transform_layout.addLayout(row5)
-        #row6.addWidget(self.shift_x_start_zero_btn)
-        #row6.addStretch(1)
-        #transform_layout.addLayout(row6)
 
+        more_transform_buttons = (
+            self.sqrt_sum_btn,
+            self.mean_of_sel_btn,
+            self.abs_btn,
+            self.rolling_avg_btn,
+            self.merge_selected_btn,
+            self.shift_min_nz_btn,
+            self.shift_common_max_btn,
+            self.shift_x_start_zero_btn,
+        )
+        for btn in more_transform_buttons:
+            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        for idx, widget in enumerate(more_transform_buttons):
+            row4.addWidget(widget, idx // 4, idx % 4)
+        for col in range(4):
+            row4.setColumnStretch(col, 1)
+        transform_layout.addLayout(row4)
+
+        # Row block 5: numeric settings with labels ABOVE inputs.
+        shift_settings = QGridLayout()
+        shift_settings.setContentsMargins(0, 0, 0, 0)
+        shift_settings.setHorizontalSpacing(6)
+        shift_settings.setVerticalSpacing(3)
+
+        self.shift_tol_entry = QLineEdit("0.01")
+        self.shift_cnt_entry = QLineEdit("10")
+
+        shift_settings.addWidget(QLabel("Tol [%]"), 0, 0)
+        shift_settings.addWidget(QLabel("Min count"), 0, 1)
+        shift_settings.addWidget(self.shift_tol_entry, 1, 0)
+        shift_settings.addWidget(self.shift_cnt_entry, 1, 1)
+        shift_settings.addItem(
+            QSpacerItem(20, 0, QSizePolicy.Expanding, QSizePolicy.Minimum),
+            0, 2, 2, 2,
+        )
+
+        for col in range(4):
+            shift_settings.setColumnStretch(col, 1)
+        transform_layout.addLayout(shift_settings)
 
         # Progress bar is shown by itself unless the plot is embedded
         self.controls_layout.addWidget(self.progress)
         # Row used when embedding the plot to move transformations next to the
         # progress bar
-        self.progress_transform_row = QHBoxLayout()
+        self.progress_transform_row = QVBoxLayout()
 
         # ---- Offset Group ----
         offset_group = QGroupBox("Apply operation from variable input fields")
         offset_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         offset_layout = QVBoxLayout(offset_group)
-        offset_examples = QLabel('Examples: add "+1 / 1" substract "-1" divide "/2" multiply "*2"   '
-                                 'To plot 2D scatter input "x" and "y" in the fields. For 3D scatter input "z" '
-                                 '(or "z,c" to use z for both axis and color coding).'
-                                 ' To include color coding input "c" or "color"'
-                                 '  Use Animate button to plot single points over time.')
+        offset_layout.setContentsMargins(3, 3, 3, 3)
+        offset_layout.setSpacing(3)
+
+        offset_examples = QLabel(
+            'Examples: add "+1 / 1" subtract "-1" divide "/2" multiply "*2". '
+            'To plot 2D scatter input "x" and "y" in the fields. For 3D scatter input "z" '
+            '(or "z,c" to use z for both axis and color coding). To include color coding input "c" or "color". '
+            'Use Animate button to plot single points over time.'
+        )
         offset_examples.setWordWrap(True)
         offset_layout.addWidget(offset_examples)
+
         self.apply_value_user_var_cb = QCheckBox("Create user variable instead of overwriting?")
         self.colormap_min_label = QLabel("Color Min")
         self.colormap_max_label = QLabel("Color Max")
         self.colormap_min_input = QLineEdit()
         self.colormap_max_input = QLineEdit()
-        self.colormap_min_input.setFixedWidth(80)
-        self.colormap_max_input.setFixedWidth(80)
         self.colormap_min_input.setPlaceholderText("auto")
         self.colormap_max_input.setPlaceholderText("auto")
 
@@ -507,13 +589,16 @@ class TimeSeriesEditorQt(QMainWindow):
         self.apply_operation_help_btn.setToolTip(
             "Show help for Apply Values and X/Y(/Z) scatter input markers."
         )
-        self.apply_operation_help_btn.setMaximumWidth(28)
+        self.apply_operation_help_btn.setFixedWidth(28)
         self.plot_marked_axes_btn = QPushButton("Plot X/Y(/Z)")
         self.animate_marked_axes_btn = QPushButton("Animate X/Y(/Z)")
-        self.colormap_label = QLabel("Colormap:")
+
+        self.colormap_label = QLabel("Colormap")
         self.colormap_combo = QComboBox()
-        self.colormap_combo.addItems(["Viridis", "Plasma", "Inferno", "Magma", "Cividis", "Turbo", "hsv", "binary", "gray"])
+        self.colormap_combo.addItems(
+            ["Viridis", "Plasma", "Inferno", "Magma", "Cividis", "Turbo", "hsv", "binary", "gray"])
         self.colormap_combo.setCurrentText("Viridis")
+
         self.clip_mode_combo = QComboBox()
         self.clip_mode_combo.addItems(
             [
@@ -529,40 +614,47 @@ class TimeSeriesEditorQt(QMainWindow):
             "Clipping mode for plotting only. If Color Min/Max is blank, defaults "
             "from current data are used."
         )
-        self.plot_resolution_label = QLabel("Resolution percentage")
+
+        self.plot_resolution_label = QLabel("Resolution [%]")
         self.plot_resolution_entry = QLineEdit("100")
-        self.plot_resolution_entry.setFixedWidth(70)
         self.plot_resolution_entry.setToolTip(
             "Percent of points used for X/Y(/Z) plotting and animation (1-100)."
         )
-        colormap_layout = QVBoxLayout()
-        colormap_layout.setSpacing(2)
-        colormap_layout.addWidget(self.colormap_label)
-        colormap_layout.addWidget(self.colormap_combo)
-        colormap_min_layout = QVBoxLayout()
-        colormap_min_layout.setSpacing(2)
-        colormap_min_layout.addWidget(self.colormap_min_label)
-        colormap_min_layout.addWidget(self.colormap_min_input)
-        colormap_max_layout = QVBoxLayout()
-        colormap_max_layout.setSpacing(2)
-        colormap_max_layout.addWidget(self.colormap_max_label)
-        colormap_max_layout.addWidget(self.colormap_max_input)
-        apply_plot_row = QHBoxLayout()
-        apply_plot_row.addWidget(self.apply_values_btn)
-        apply_plot_row.addWidget(self.clear_values_btn)
-        apply_plot_row.addWidget(self.apply_operation_help_btn)
-        apply_plot_row.addWidget(self.apply_value_user_var_cb)
-        apply_plot_row.addWidget(self.plot_marked_axes_btn)
-        apply_plot_row.addWidget(self.animate_marked_axes_btn)
-        apply_plot_row.addLayout(colormap_layout)
-        apply_plot_row.addLayout(colormap_min_layout)
-        apply_plot_row.addLayout(colormap_max_layout)
-        apply_plot_row.addWidget(self.clip_mode_combo)
-        resolution_layout = QVBoxLayout()
-        resolution_layout.setSpacing(2)
-        resolution_layout.addWidget(self.plot_resolution_label)
-        resolution_layout.addWidget(self.plot_resolution_entry)
-        apply_plot_row.addLayout(resolution_layout)
+
+        apply_plot_row = QGridLayout()
+        apply_plot_row.setContentsMargins(0, 0, 0, 0)
+        apply_plot_row.setHorizontalSpacing(10)
+        apply_plot_row.setVerticalSpacing(4)
+
+        # Row 0: 4 action buttons
+        apply_plot_row.addWidget(self.apply_values_btn, 0, 0)
+        apply_plot_row.addWidget(self.clear_values_btn, 0, 1)
+        apply_plot_row.addWidget(self.plot_marked_axes_btn, 0, 2)
+        apply_plot_row.addWidget(self.animate_marked_axes_btn, 0, 3)
+
+        # Row 1: checkbox + help
+        apply_plot_row.addWidget(self.apply_value_user_var_cb, 1, 0, 1, 3)
+        apply_plot_row.addWidget(self.apply_operation_help_btn, 1, 3)
+
+        # Row 2: labels above inputs
+        apply_plot_row.addWidget(QLabel("Colormap:"), 2, 0)
+        apply_plot_row.addWidget(QLabel("Clip mode"), 2, 1)
+        apply_plot_row.addWidget(QLabel("Color Min"), 2, 2)
+        apply_plot_row.addWidget(QLabel("Color Max"), 2, 3)
+
+        # Row 3: first 4 inputs
+        apply_plot_row.addWidget(self.colormap_combo, 3, 0)
+        apply_plot_row.addWidget(self.clip_mode_combo, 3, 1)
+        apply_plot_row.addWidget(self.colormap_min_input, 3, 2)
+        apply_plot_row.addWidget(self.colormap_max_input, 3, 3)
+
+        # Row 4: move Resolution beside Color Max area
+        apply_plot_row.addWidget(QLabel("Resolution [%]"), 4, 2)
+        apply_plot_row.addWidget(self.plot_resolution_entry, 4, 3)
+
+        for col in range(4):
+            apply_plot_row.setColumnStretch(col, 1)
+
         offset_layout.addLayout(apply_plot_row)
         self.controls_layout.addWidget(offset_group)
 
@@ -582,33 +674,52 @@ class TimeSeriesEditorQt(QMainWindow):
         self.controls_layout.addWidget(self.file_group)
 
         # ---- Time window controls ----
-        time_group = QGroupBox("Time Window (for Plot/Stats/Transform)")
-        time_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        time_layout = QHBoxLayout(time_group)
-        time_layout.addWidget(QLabel("Start:"))
+        # This group is created here but added below the frequency filter.
+        # It is stored on self so the embed-layout code can move it together
+        # with the right-side control groups.
+        self.time_group = QGroupBox("Time Window (for Plot/Stats/Transform)")
+        self.time_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        time_layout = QGridLayout(self.time_group)
+        time_layout.setContentsMargins(3, 3, 3, 3)
+        time_layout.setHorizontalSpacing(6)
+        time_layout.setVerticalSpacing(3)
+
         self.time_start = QLineEdit()
-        self.time_start.setMinimumWidth(180)
         self.time_start.setPlaceholderText("YYYY-MM-DD HH:MM:SS or numeric")
-        time_layout.addWidget(self.time_start)
-        time_layout.addWidget(QLabel("End:"))
         self.time_end = QLineEdit()
-        self.time_end.setMinimumWidth(180)
         self.time_end.setPlaceholderText("YYYY-MM-DD HH:MM:SS or numeric")
-        time_layout.addWidget(self.time_end)
         self.reset_time_window_btn = QPushButton("Reset")
-        time_layout.addWidget(self.reset_time_window_btn)
-        self.controls_layout.addWidget(time_group)
+
+        time_layout.addWidget(QLabel("Start"), 0, 0)
+        time_layout.addWidget(QLabel("End"), 0, 1)
+        time_layout.addWidget(QLabel("Action"), 0, 2)
+        time_layout.addWidget(self.time_start, 1, 0)
+        time_layout.addWidget(self.time_end, 1, 1)
+        time_layout.addWidget(self.reset_time_window_btn, 1, 2)
+        time_layout.addItem(
+            QSpacerItem(20, 0, QSizePolicy.Expanding, QSizePolicy.Minimum),
+            0, 3, 2, 1,
+        )
+        for col in range(4):
+            time_layout.setColumnStretch(col, 1 if col < 3 else 2)
+
+        # Do not add the time window here. It is added after the frequency filter.
 
         # ---- Frequency filtering controls ----
-        self.freq_group = QGroupBox("Apply frequency filter to transformations and calculations")
+        self.freq_group = QGroupBox("Frequency filter for operations")
         self.freq_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         freq_layout = QGridLayout(self.freq_group)
+        freq_layout.setContentsMargins(3, 3, 3, 3)
+        freq_layout.setHorizontalSpacing(6)
+        freq_layout.setVerticalSpacing(3)
+
         self.filter_none_rb = QRadioButton("None")
         self.filter_lowpass_rb = QRadioButton("Low-pass")
         self.filter_highpass_rb = QRadioButton("High-pass")
         self.filter_bandpass_rb = QRadioButton("Band-pass")
         self.filter_bandblock_rb = QRadioButton("Band-block")
         self.filter_none_rb.setChecked(True)
+
         self.lowpass_cutoff = QLineEdit("0.04")
         self.highpass_cutoff = QLineEdit("0.04")
         self.bandpass_low = QLineEdit("0.0")
@@ -616,162 +727,272 @@ class TimeSeriesEditorQt(QMainWindow):
         self.bandblock_low = QLineEdit("0.0")
         self.bandblock_high = QLineEdit("0.0")
 
-        row = 0
-        freq_layout.addWidget(self.filter_none_rb, row, 0, 1, 2)
-        row += 1
-        freq_layout.addWidget(self.filter_lowpass_rb, row, 0)
-        freq_layout.addWidget(QLabel("below"), row, 1)
-        freq_layout.addWidget(self.lowpass_cutoff, row, 2)
-        freq_layout.addWidget(QLabel("Hz"), row, 3)
-        row += 1
-        freq_layout.addWidget(self.filter_highpass_rb, row, 0)
-        freq_layout.addWidget(QLabel("above"), row, 1)
-        freq_layout.addWidget(self.highpass_cutoff, row, 2)
-        freq_layout.addWidget(QLabel("Hz"), row, 3)
-        row += 1
-        freq_layout.addWidget(self.filter_bandpass_rb, row, 0)
-        freq_layout.addWidget(QLabel("between"), row, 1)
-        freq_layout.addWidget(self.bandpass_low, row, 2)
-        freq_layout.addWidget(QLabel("Hz and"), row, 3)
-        freq_layout.addWidget(self.bandpass_high, row, 4)
-        freq_layout.addWidget(QLabel("Hz"), row, 5)
-        row += 1
-        freq_layout.addWidget(self.filter_bandblock_rb, row, 0)
-        freq_layout.addWidget(QLabel("between"), row, 1)
-        freq_layout.addWidget(self.bandblock_low, row, 2)
-        freq_layout.addWidget(QLabel("Hz and"), row, 3)
-        freq_layout.addWidget(self.bandblock_high, row, 4)
-        freq_layout.addWidget(QLabel("Hz"), row, 5)
+        # Checkboxes/radio buttons beside each other.
+        filter_buttons = (
+            self.filter_none_rb,
+            self.filter_lowpass_rb,
+            self.filter_highpass_rb,
+            self.filter_bandpass_rb,
+            self.filter_bandblock_rb,
+        )
+        for idx, rb in enumerate(filter_buttons):
+            freq_layout.addWidget(rb, idx // 4, idx % 4)
+
+        # Labels above input fields. Low/high values are side-by-side.
+        freq_inputs = (
+            ("Low-pass below [Hz]", self.lowpass_cutoff),
+            ("High-pass above [Hz]", self.highpass_cutoff),
+            ("Band-pass low [Hz]", self.bandpass_low),
+            ("Band-pass high [Hz]", self.bandpass_high),
+            ("Band-block low [Hz]", self.bandblock_low),
+            ("Band-block high [Hz]", self.bandblock_high),
+        )
+        base_row = 2
+        for idx, (label, widget) in enumerate(freq_inputs):
+            col = idx % 4
+            row_pair = idx // 4
+            freq_layout.addWidget(QLabel(label), base_row + row_pair * 2, col)
+            widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            freq_layout.addWidget(widget, base_row + row_pair * 2 + 1, col)
+
+        for col in range(4):
+            freq_layout.setColumnStretch(col, 1)
 
         self.controls_layout.addWidget(self.freq_group)
+        self.controls_layout.addWidget(self.time_group)
 
-        # ---- Tools (EVA + QATS) ----
-        self.tools_group = QGroupBox("Tools")
+        # ---- Analysis and Tools ----
+        # Merged group placed where the Tools pane was before.
+        # This keeps analysis controls together with external tools in the
+        # right-side/extra pane when embedded plotting is enabled.
+        self.tools_group = QGroupBox("Analysis and Tools")
         self.tools_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        tools_layout = QHBoxLayout(self.tools_group)
+        tools_layout = QGridLayout(self.tools_group)
+        tools_layout.setContentsMargins(3, 3, 3, 3)
+        tools_layout.setHorizontalSpacing(6)
+        tools_layout.setVerticalSpacing(3)
+
+        # Analysis controls
+        self.show_stats_btn = QPushButton("Statistics")
+        self.psd_btn = QPushButton("PSD")
+        self.psd_xaxis_combo = QComboBox()
+        self.psd_xaxis_combo.addItems(["PSD: Frequency", "PSD: Period"])
+        self.psd_xaxis_combo.setToolTip("Select PSD x-axis unit for the PSD button plots.")
+        self.cycle_range_btn = QPushButton("Cycle Range")
+        self.cycle_mean_btn = QPushButton("Range-Mean")
+        self.cycle_mean3d_btn = QPushButton("Range-Mean 3-D")
+
+        # Tool controls
         self.launch_qats_btn = QPushButton("AnyQATS")
         self.evm_tool_btn = QPushButton("Extreme Value Statistics")
         self.rao_tool_btn = QPushButton("RAO from Selected TS")
         self.swan_tool_btn = QPushButton("SWANtool (standalone)")
-        tools_layout.addWidget(self.launch_qats_btn)
-        tools_layout.addWidget(self.evm_tool_btn)
-        tools_layout.addWidget(self.rao_tool_btn)
-        tools_layout.addWidget(self.swan_tool_btn)
+
+        analysis_tool_widgets = (
+            self.show_stats_btn,
+            self.psd_btn,
+            self.psd_xaxis_combo,
+            self.cycle_range_btn,
+            self.cycle_mean_btn,
+            self.cycle_mean3d_btn,
+            self.launch_qats_btn,
+            self.evm_tool_btn,
+            self.rao_tool_btn,
+            self.swan_tool_btn,
+        )
+        for widget in analysis_tool_widgets:
+            widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        # Row 0: analysis actions
+        tools_layout.addWidget(self.show_stats_btn, 0, 0)
+        tools_layout.addWidget(self.psd_btn, 0, 1)
+        tools_layout.addWidget(self.psd_xaxis_combo, 0, 2)
+        tools_layout.addWidget(self.cycle_range_btn, 0, 3)
+
+        # Row 1: more analysis + tools
+        tools_layout.addWidget(self.cycle_mean_btn, 1, 0)
+        tools_layout.addWidget(self.cycle_mean3d_btn, 1, 1)
+        tools_layout.addWidget(self.launch_qats_btn, 1, 2)
+        tools_layout.addWidget(self.evm_tool_btn, 1, 3)
+
+        # Row 2: remaining tools
+        tools_layout.addWidget(self.rao_tool_btn, 2, 0)
+        tools_layout.addWidget(self.swan_tool_btn, 2, 1)
+        tools_layout.addItem(
+            QSpacerItem(20, 0, QSizePolicy.Expanding, QSizePolicy.Minimum),
+            2, 2, 1, 2,
+        )
+
+        for col in range(4):
+            tools_layout.setColumnStretch(col, 1)
+
         self.controls_layout.addWidget(self.tools_group)
 
+        # Backward compatibility for toggle_embed_layout(), which still refers
+        # to self.analysis_group from the older separate Analysis pane.
+        # The visible analysis controls are now merged into self.tools_group.
+        # This hidden placeholder prevents AttributeError without adding a
+        # second visible Analysis group.
+        self.analysis_group = QWidget()
+        self.analysis_group.hide()
+
         # ---- Plot controls ----
+
         self.plot_group = QGroupBox("Plot Controls")
         self.plot_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
-        plot_group = self.plot_group  # backward compatibility for older refs
-
         plot_layout = QVBoxLayout(self.plot_group)
-        plot_btn_row = QHBoxLayout()
+        plot_layout.setContentsMargins(3, 3, 3, 3)
+        plot_layout.setSpacing(4)
+
+        # --- Main plot action buttons: 4 across ---
+        plot_btn_row = QGridLayout()
+        plot_btn_row.setContentsMargins(0, 0, 0, 0)
+        plot_btn_row.setHorizontalSpacing(6)
+        plot_btn_row.setVerticalSpacing(4)
+
         self.plot_selected_btn = QPushButton("Plot Selected (one graph)")
         self.plot_side_by_side_btn = QPushButton("Plot Selected (side-by-side)")
-        self.plot_same_axes_cb = QCheckBox("Same axes")
         self.plot_mean_btn = QPushButton("Plot Mean")
         self.plot_rolling_btn = QPushButton("Rolling Mean")
         self.animate_xyz_btn = QPushButton("Animate XYZ scatter (all points)")
 
+        self.plot_same_axes_cb = QCheckBox("Same axes")
         self.plot_extrema_cb = QCheckBox("Mark max/min")
+        self.plot_raw_cb = QCheckBox("Raw")
+        self.plot_raw_cb.setChecked(True)
+        self.plot_lowpass_cb = QCheckBox("Low-pass")
+        self.plot_highpass_cb = QCheckBox("High-pass")
+        self.plot_datetime_x_cb = QCheckBox("Datetime x-axis (if possible)")
+        self.include_raw_mean_cb = QCheckBox("Show components (used in mean)")
+
         self.plot_scatter_alpha_label = QLabel("Plot/scatter alpha:")
         self.plot_scatter_alpha_input = QDoubleSpinBox()
         self.plot_scatter_alpha_input.setRange(0.0, 1.0)
         self.plot_scatter_alpha_input.setSingleStep(0.05)
         self.plot_scatter_alpha_input.setDecimals(2)
         self.plot_scatter_alpha_input.setValue(1.0)
+        self.plot_scatter_alpha_input.setMaximumWidth(90)
+
         self.plot_range_mode_combo = QComboBox()
         self.plot_range_mode_combo.addItems(["Nautical degrees", "Cartesian"])
         self.plot_range_mode_combo.setToolTip(
             "Controls how wrapped ranges like (320,10) are interpreted for "
             "range-selected plotting."
         )
-        plot_btn_row.addWidget(self.plot_selected_btn)
-        plot_btn_row.addWidget(self.plot_side_by_side_btn)
-        plot_btn_row.addWidget(self.plot_mean_btn)
-        plot_btn_row.addWidget(self.plot_rolling_btn)
-        plot_btn_row.addWidget(self.animate_xyz_btn)
-        self.plot_selected_btn.clicked.connect(self.plot_selected)
-        # Use an explicit slot for side-by-side plotting so that the optional
-        # ``checked`` argument emitted by QPushButton.clicked() is ignored and
-        # the ``grid`` flag is always forwarded correctly.
-        self.plot_side_by_side_btn.clicked.connect(self.plot_selected_side_by_side)
-        self.plot_mean_btn.clicked.connect(self.plot_mean)
-        self.plot_rolling_btn.clicked.connect(lambda: self.plot_selected(mode="rolling"))
-        self.animate_xyz_btn.clicked.connect(self.animate_xyz_scatter_many)
-        self.plot_raw_cb = QCheckBox("Raw")
-        self.plot_raw_cb.setChecked(True)
-        self.plot_lowpass_cb = QCheckBox("Low-pass")
-        self.plot_highpass_cb = QCheckBox("High-pass")
-        self.plot_datetime_x_cb = QCheckBox("Datetime x-axis (if possible)")
-        plot_btn_row.addWidget(self.plot_raw_cb)
-        plot_btn_row.addWidget(self.plot_lowpass_cb)
-        plot_btn_row.addWidget(self.plot_highpass_cb)
-        plot_btn_row.addWidget(self.plot_datetime_x_cb)
-        plot_btn_row.addWidget(QLabel("Engine:"))
+        self.plot_range_mode_combo.setMaximumWidth(180)
+
         self.plot_engine_combo = QComboBox()
         self.plot_engine_combo.addItems(["plotly", "bokeh", "default"])
-        plot_btn_row.addWidget(self.plot_engine_combo)
-        self.include_raw_mean_cb = QCheckBox("Show components (used in mean)")
-        plot_btn_row.addWidget(self.include_raw_mean_cb)
-        plot_layout.addLayout(plot_btn_row)
-        # Label trimming controls
-        trim_row = QHBoxLayout()
-        trim_row.addWidget(self.plot_scatter_alpha_label)
-        trim_row.addWidget(self.plot_scatter_alpha_input)
-        trim_row.addWidget(self.plot_extrema_cb)
-        trim_row.addWidget(QLabel("Range mode:"))
-        trim_row.addWidget(self.plot_range_mode_combo)
+        self.plot_engine_combo.setMaximumWidth(180)
+
         self.plot_range_help_btn = QPushButton("ℹ")
         self.plot_range_help_btn.setToolTip("Show help for green and yellow region/range markings.")
-        self.plot_range_help_btn.setMaximumWidth(28)
+        self.plot_range_help_btn.setFixedWidth(28)
         self.plot_range_help_btn.clicked.connect(self.show_plot_range_help)
-        trim_row.addWidget(self.plot_range_help_btn)
-        trim_row.addWidget(self.plot_same_axes_cb)
-        trim_row.addWidget(QLabel("Trim label to keep:"))
-        trim_row.addWidget(QLabel("Left:"))
+
+
+        # Row 0: 4 main action buttons
+        plot_btn_row.addWidget(self.plot_selected_btn, 0, 0)
+        plot_btn_row.addWidget(self.plot_side_by_side_btn, 0, 1)
+        plot_btn_row.addWidget(self.plot_mean_btn, 0, 2)
+        plot_btn_row.addWidget(self.plot_rolling_btn, 0, 3)
+
+        # Row 1: animate + 3 checkboxes
+        plot_btn_row.addWidget(self.animate_xyz_btn, 1, 0)
+        plot_btn_row.addWidget(self.plot_raw_cb, 1, 1)
+        plot_btn_row.addWidget(self.plot_lowpass_cb, 1, 2)
+        plot_btn_row.addWidget(self.plot_highpass_cb, 1, 3)
+
+        # Row 2: remaining checkboxes / engine
+        plot_btn_row.addWidget(self.plot_datetime_x_cb, 2, 0)
+        plot_btn_row.addWidget(self.include_raw_mean_cb, 2, 1)
+        plot_btn_row.addWidget(QLabel("Engine:"), 2, 2)
+        plot_btn_row.addWidget(self.plot_engine_combo, 2, 3)
+
+        # Row 3: alpha / extrema / same axes / range mode
+        plot_btn_row.addWidget(self.plot_scatter_alpha_label, 3, 0)
+        plot_btn_row.addWidget(self.plot_scatter_alpha_input, 3, 1)
+        plot_btn_row.addWidget(self.plot_extrema_cb, 3, 2)
+        plot_btn_row.addWidget(self.plot_same_axes_cb, 3, 3)
+
+        # Row 4: range mode + help
+        plot_btn_row.addWidget(QLabel("Range mode:"), 4, 0)
+        plot_btn_row.addWidget(self.plot_range_mode_combo, 4, 1)
+        plot_btn_row.addWidget(self.plot_range_help_btn, 4, 2)
+
+        for col in range(4):
+            plot_btn_row.setColumnStretch(col, 1)
+
+        plot_layout.addLayout(plot_btn_row)
+
+        # --- Trim / label / rolling / marker fields ---
         self.label_trim_left = QSpinBox()
         self.label_trim_left.setMaximum(1000)
         self.label_trim_left.setValue(10)
-        trim_row.addWidget(self.label_trim_left)
-        trim_row.addWidget(QLabel("Right:"))
+        self.label_trim_left.setMaximumWidth(90)
+
         self.label_trim_right = QSpinBox()
         self.label_trim_right.setMaximum(1000)
         self.label_trim_right.setValue(60)
-        trim_row.addWidget(self.label_trim_right)
-        plot_layout.addLayout(trim_row)
-        # Y-axis label
-        yaxis_row = QHBoxLayout()
-        yaxis_row.addWidget(QLabel("Y-axis label (optional):"))
-        self.yaxis_label = QLineEdit("Value")
-        yaxis_row.addWidget(self.yaxis_label)
-        plot_layout.addLayout(yaxis_row)
+        self.label_trim_right.setMaximumWidth(90)
 
-        # Rolling mean window + x-axis marker
-        rolling_row = QHBoxLayout()
-        rolling_row.addWidget(QLabel("Rolling mean window:"))
+        self.yaxis_label = QLineEdit("Value")
         self.rolling_window = QSpinBox()
         self.rolling_window.setMinimum(1)
         self.rolling_window.setMaximum(1000000)
-
         self.rolling_window.setValue(1)
-        rolling_row.addWidget(self.rolling_window)
-        rolling_row.addWidget(QLabel("X-axis marker:"))
+        self.rolling_window.setMaximumWidth(90)
+
         self.x_axis_marker_input = QLineEdit()
-        rolling_row.addWidget(self.x_axis_marker_input)
-        plot_layout.addLayout(rolling_row)
+
+        bottom_plot_grid = QGridLayout()
+        bottom_plot_grid.setContentsMargins(0, 0, 0, 0)
+        bottom_plot_grid.setHorizontalSpacing(10)
+        bottom_plot_grid.setVerticalSpacing(3)
+
+        # Bottom fields: compact 6-wide layout.
+        # X-axis marker is beside Rolling mean window.
+        bottom_fields = (
+            ("Trim label left", self.label_trim_left),
+            ("Trim label right", self.label_trim_right),
+            ("Y-axis label", self.yaxis_label),
+            ("Rolling mean window", self.rolling_window),
+            ("X-axis marker", self.x_axis_marker_input),
+        )
+
+        for col, (label, widget) in enumerate(bottom_fields):
+            bottom_plot_grid.addWidget(QLabel(label), 0, col)
+            widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            bottom_plot_grid.addWidget(widget, 1, col)
+
+        # Spare sixth column gives the row breathing room and leaves room for future controls.
+        bottom_plot_grid.addItem(
+            QSpacerItem(20, 0, QSizePolicy.Expanding, QSizePolicy.Minimum),
+            0, 5, 2, 1,
+        )
+
+        for col in range(6):
+            bottom_plot_grid.setColumnStretch(col, 1)
+
+        plot_layout.addLayout(bottom_plot_grid)
 
         self.controls_layout.addWidget(self.plot_group)
+
+
         self.controls_layout.addWidget(self.transform_group)
 
         # ---- Calculator ----
         self.calc_group = QGroupBox("Calculator")
         self.calc_group.setMaximumHeight(top_input_group_max_height)
         calc_layout = QVBoxLayout(self.calc_group)
-        calc_layout.addWidget(QLabel(
-            "Define a new variable (e.g., result_name = f1_var1 + f2_var2) where f1 and f2 refer to file IDs in the loaded list (c_ common var, u_ user var)."
-        ))
+        calc_help_label = QLabel(
+            "Define a new variable (e.g., result_name = f1_var1 + f2_var2) "
+            "where f1 and f2 refer to file IDs in the loaded list "
+            "(c_ common var, u_ user var)."
+        )
+        calc_help_label.setWordWrap(True)
+        calc_layout.addWidget(calc_help_label)
         self.calc_entry = QTextEdit()
         self.calc_entry.setMaximumHeight(top_input_max_height)
         calc_layout.addWidget(self.calc_entry)
@@ -802,32 +1023,6 @@ class TimeSeriesEditorQt(QMainWindow):
         self.calc_entry.installEventFilter(self)
         self.autocomplete_popup.installEventFilter(self)
 
-        # ---- Analysis ----
-        self.analysis_group = QGroupBox("Analysis for selected varables")
-        self.analysis_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        analysis_layout = QVBoxLayout(self.analysis_group)
-        self.show_stats_btn = QPushButton("Statistics")
-        self.show_stats_btn.clicked.connect(self.show_stats)
-        #analysis_layout.addWidget(self.show_stats_btn)
-        analysis_btn_row = QHBoxLayout()
-        self.psd_btn = QPushButton("PSD")
-        self.cycle_range_btn = QPushButton("Cycle Range")
-        self.cycle_mean_btn = QPushButton("Range-Mean")
-        self.cycle_mean3d_btn = QPushButton("Range-Mean 3-D")
-        self.psd_xaxis_combo = QComboBox()
-        self.psd_xaxis_combo.addItems(["PSD: Frequency", "PSD: Period"])
-        self.psd_xaxis_combo.setToolTip("Select PSD x-axis unit for the PSD button plots.")
-        analysis_btn_row.addWidget(self.show_stats_btn)
-        analysis_btn_row.addWidget(self.psd_btn)
-        analysis_btn_row.addWidget(self.cycle_range_btn)
-        analysis_btn_row.addWidget(self.cycle_mean_btn)
-        analysis_btn_row.addWidget(self.cycle_mean3d_btn)
-        analysis_btn_row.addWidget(self.psd_xaxis_combo)
-        analysis_layout.addLayout(analysis_btn_row)
-        self.controls_layout.addWidget(self.analysis_group)
-        # Plot controls below analysis
-        self.controls_layout.addWidget(plot_group)
-
         self.plot_view = QWebEngineView()
         self.plot_view.setMinimumHeight(300)
         self.plot_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -845,12 +1040,17 @@ class TimeSeriesEditorQt(QMainWindow):
         self.controls_layout.addStretch(1)
         self.extra_layout.addItem(self.extra_stretch)
 
-        self.top_row_splitter.addWidget(self.controls_widget)
+        self.top_row_splitter.addWidget(self.controls_scroll)
         # extra_widget is inserted in toggle_embed_layout when embed is enabled
         self.right_splitter.addWidget(self.top_row_splitter)
         self.right_splitter.addWidget(self.plot_view)
-        self.right_splitter.setStretchFactor(0, 4)
-        self.right_splitter.setStretchFactor(1, 3)
+
+        self.right_splitter.setStretchFactor(0, 3)
+        self.right_splitter.setStretchFactor(1, 5)
+
+        # Initial heights: top controls smaller, plot area larger
+        self.right_splitter.setSizes([600, 500])  # more space for controls
+
         self.top_row_splitter.setStretchFactor(0, 5)
         self.plot_view.hide()
         self.main_splitter.addWidget(right_widget)
@@ -862,6 +1062,33 @@ class TimeSeriesEditorQt(QMainWindow):
         container.setAutoFillBackground(True)
         container_layout = QHBoxLayout(container)
         container_layout.addWidget(self.main_splitter)
+
+        # ---- Compact UI spacing ----
+        for layout in (
+                left_layout,
+                self.right_outer_layout,
+                self.controls_layout,
+                self.extra_layout,
+                self.file_ctrls_layout,
+        ):
+            self._compact_layout(layout, margin=3, spacing=3)
+
+        self._compact_widget_tree(container)
+
+        # Optional: globally reduce button/control padding
+        self.setStyleSheet(self.styleSheet() + """
+            QPushButton {
+                padding: 2px 6px;
+            }
+            QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {
+                padding: 1px 4px;
+            }
+            QLabel {
+                margin: 0px;
+                padding: 0px;
+            }
+        """)
+
         self.setCentralWidget(container)
         self.setAutoFillBackground(True)
 
@@ -915,6 +1142,11 @@ class TimeSeriesEditorQt(QMainWindow):
         self.rao_tool_btn.clicked.connect(self.open_rao_tool)
         self.swan_tool_btn.clicked.connect(self.open_swan_tool)
         self.reselect_orcaflex_btn.clicked.connect(self.reselect_orcaflex_variables)
+        self.show_stats_btn.clicked.connect(self.show_stats)
+        self.plot_selected_btn.clicked.connect(self.plot_selected)
+        self.plot_side_by_side_btn.clicked.connect(self.plot_selected_side_by_side)
+        self.plot_mean_btn.clicked.connect(self.plot_mean)
+        self.animate_xyz_btn.clicked.connect(self.animate_xyz_scatter_many)
         self.psd_btn.clicked.connect(lambda: self.plot_selected(mode="psd"))
         self.cycle_range_btn.clicked.connect(lambda: self.plot_selected(mode="cycle"))
         self.cycle_mean_btn.clicked.connect(lambda: self.plot_selected(mode="cycle_rm"))
@@ -929,14 +1161,161 @@ class TimeSeriesEditorQt(QMainWindow):
         self.time_end.textChanged.connect(self._refresh_marker_input_defaults)
 
         # ==== Populate variable tabs on startup ====
+
         self.refresh_variable_tabs()
         self._refresh_marker_input_defaults()
         # Apply the light palette by default
         self.apply_light_palette()
-        #self.apply_dark_palette()
-        #self.theme_switch.setChecked(True)
+        self._apply_compact_stylesheet()
+
         self.toggle_embed_layout('')
         self.embed_plot_cb.setChecked(True)
+
+        # If embedding moves the frequency/tools groups into the right-side
+        # extra pane, move the time window with them and place it immediately
+        # below the Frequency filter, before Tools. This keeps the visual order
+        # requested even if toggle_embed_layout only knows about older groups.
+        if self.embed_plot_cb.isChecked() and hasattr(self, "time_group"):
+            self.controls_layout.removeWidget(self.time_group)
+            self.extra_layout.removeWidget(self.time_group)
+            tools_index = self.extra_layout.indexOf(self.tools_group)
+            if tools_index >= 0:
+                self.extra_layout.insertWidget(tools_index, self.time_group)
+            else:
+                stretch_index = self.extra_layout.indexOf(self.extra_stretch)
+                if stretch_index >= 0:
+                    self.extra_layout.insertWidget(stretch_index, self.time_group)
+                else:
+                    self.extra_layout.addWidget(self.time_group)
+
+        # self.apply_dark_palette()
+        # self.theme_switch.setChecked(True)
+        self._set_compact_widths()
+
+    def _apply_compact_stylesheet(self):
+        self.setStyleSheet(self.styleSheet() + """
+            QGroupBox {
+                margin-top: 8px;
+                padding-top: 8px;
+            }
+
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 6px;
+                padding: 0px 3px;
+            }
+
+            QPushButton {
+                padding: 1px 5px;
+                min-height: 20px;
+                max-height: 22px;
+            }
+
+            QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {
+                padding: 1px 4px;
+                min-height: 20px;
+                max-height: 22px;
+            }
+
+            QCheckBox, QLabel, QRadioButton {
+                padding: 0px;
+                margin: 0px;
+            }
+        """)
+
+    def _set_compact_widths(self):
+        """Prevent controls from stretching unnecessarily across the full pane."""
+
+        # General input widths
+        for edit in self.findChildren(QLineEdit):
+            edit.setMaximumWidth(220)
+
+        for combo in self.findChildren(QComboBox):
+            combo.setMaximumWidth(220)
+
+        for spin in self.findChildren(QSpinBox):
+            spin.setMaximumWidth(90)
+
+        for spin in self.findChildren(QDoubleSpinBox):
+            spin.setMaximumWidth(90)
+
+        # Buttons should not become huge unless explicitly allowed
+        for btn in self.findChildren(QPushButton):
+            btn.setMaximumWidth(220)
+
+        # Wide action buttons that may still be allowed a bit more width
+        wide_buttons = [
+            self.plot_selected_btn,
+            self.plot_side_by_side_btn,
+            self.animate_xyz_btn,
+            self.reset_time_window_btn,
+        ]
+
+        for btn in wide_buttons:
+            btn.setMaximumWidth(360)
+
+        # Very small help buttons
+        for btn in [
+            self.quick_transform_help_btn,
+            self.apply_operation_help_btn,
+            self.plot_range_help_btn,
+            self.calc_help_btn,
+        ]:
+            btn.setFixedWidth(28)
+
+        # Specific text fields
+        self.time_start.setMaximumWidth(260)
+        self.time_end.setMaximumWidth(260)
+        self.yaxis_label.setMaximumWidth(260)
+        self.x_axis_marker_input.setMaximumWidth(260)
+        self.calc_entry.setMaximumHeight(120)
+
+    def _compact_layout(self, layout, margin=3, spacing=3):
+        """Apply compact margins/spacing recursively to Qt layouts."""
+        if layout is None:
+            return
+
+        layout.setContentsMargins(margin, margin, margin, margin)
+        layout.setSpacing(spacing)
+
+        for i in range(layout.count()):
+            item = layout.itemAt(i)
+            child_layout = item.layout()
+            if child_layout is not None:
+                self._compact_layout(child_layout, margin, spacing)
+
+    def _compact_widget_tree(self, widget):
+        """Reduce default widget heights/padding in a widget tree."""
+        for btn in widget.findChildren(QPushButton):
+            btn.setMinimumHeight(0)
+            btn.setMaximumHeight(24)
+            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        for edit in widget.findChildren(QLineEdit):
+            edit.setMaximumHeight(24)
+
+        for combo in widget.findChildren(QComboBox):
+            combo.setMaximumHeight(24)
+
+        for spin_cls in (QSpinBox, QDoubleSpinBox):
+            for spin in widget.findChildren(spin_cls):
+                spin.setMaximumHeight(24)
+
+        for cb in widget.findChildren(QCheckBox):
+            cb.setMaximumHeight(24)
+
+        for gb in widget.findChildren(QGroupBox):
+            gb.setStyleSheet("""
+                QGroupBox {
+                    margin-top: 8px;
+                    padding-top: 8px;
+                }
+                QGroupBox::title {
+                    subcontrol-origin: margin;
+                    left: 6px;
+                    padding: 0 3px;
+                }
+            """)
 
     def _configure_initial_geometry(self) -> None:
         """Size the window and splitter based on the current screen."""
@@ -951,12 +1330,55 @@ class TimeSeriesEditorQt(QMainWindow):
             height_ratio=0.9,
         )
 
-        self._apply_splitter_ratio()
-        QTimer.singleShot(0, self._apply_splitter_ratio)
-        QTimer.singleShot(0, self._apply_secondary_splitters)
+        QTimer.singleShot(0, self._restore_layout_or_defaults)
+
+    def _layout_settings(self) -> QSettings:
+        """Return persistent settings for editor window layout state."""
+        return QSettings("ANYtimeseries", "TimeSeriesEditor")
+
+    def _restore_layout_or_defaults(self) -> None:
+        """Restore saved splitter state, falling back to readable defaults."""
+        settings = self._layout_settings()
+        geometry = settings.value("main_editor/geometry")
+        if geometry is not None:
+            self.restoreGeometry(geometry)
+
+        main_restored = self._restore_splitter_state(
+            settings, "main_editor/main_splitter", self.main_splitter
+        )
+        right_restored = self._restore_splitter_state(
+            settings, "main_editor/right_splitter", self.right_splitter
+        )
+        top_restored = self._restore_splitter_state(
+            settings, "main_editor/top_row_splitter", self.top_row_splitter
+        )
+
+        self._layout_state_restored = main_restored or right_restored or top_restored
+        if not main_restored:
+            self._apply_splitter_ratio()
+        if not right_restored or not top_restored:
+            self._apply_secondary_splitters(force=True)
+
+    @staticmethod
+    def _restore_splitter_state(
+        settings: QSettings,
+        key: str,
+        splitter: QSplitter,
+    ) -> bool:
+        state = settings.value(key)
+        return bool(state is not None and splitter.restoreState(state))
+
+    def _save_layout_state(self) -> None:
+        """Persist the editor geometry and current splitter positions."""
+        settings = self._layout_settings()
+        settings.setValue("main_editor/geometry", self.saveGeometry())
+        settings.setValue("main_editor/main_splitter", self.main_splitter.saveState())
+        settings.setValue("main_editor/right_splitter", self.right_splitter.saveState())
+        settings.setValue("main_editor/top_row_splitter", self.top_row_splitter.saveState())
+        settings.sync()
 
     def _apply_splitter_ratio(self) -> None:
-        """Keep the main splitter proportions responsive when resizing."""
+        """Apply the startup fallback ratio for the main splitter."""
 
         if not hasattr(self, "main_splitter"):
             return
@@ -992,47 +1414,19 @@ class TimeSeriesEditorQt(QMainWindow):
         ratio = sizes[0] / total
         self._splitter_ratio = max(0.15, min(0.85, ratio))
 
-    def _apply_secondary_splitters(self) -> None:
+    def _apply_secondary_splitters(self, *, force: bool = False) -> None:
         """Set startup sizes for nested splitters used in the right panel."""
+        if self._secondary_splitters_initialized and not force:
+            return
         if hasattr(self, "right_splitter"):
             self.right_splitter.setSizes([520, 280])
         if hasattr(self, "top_row_splitter"):
             self.top_row_splitter.setSizes([920, 440])
-        self._fit_embedded_plot_height()
+        self._secondary_splitters_initialized = True
 
-    def _fit_embedded_plot_height(self) -> None:
-        """Keep the embedded plot directly below controls when resizing.
-
-        Without this adjustment, maximizing the window can leave extra blank
-        space between the bottom of the control groups and the embedded plot.
-        """
-        if not (
-            hasattr(self, "right_splitter")
-            and hasattr(self, "top_row_splitter")
-            and hasattr(self, "embed_plot_cb")
-            and self.embed_plot_cb.isChecked()
-        ):
-            return
-
-        total_height = self.right_splitter.size().height()
-        if total_height <= 1:
-            return
-
-        controls_height = max(
-            self.top_row_splitter.minimumSizeHint().height(),
-            self.top_row_splitter.sizeHint().height(),
-        )
-        plot_min_height = max(1, self.plot_view.minimumHeight())
-
-        max_controls_height = max(1, total_height - plot_min_height)
-        controls_height = max(1, min(controls_height, max_controls_height))
-        plot_height = max(1, total_height - controls_height)
-        self.right_splitter.setSizes([controls_height, plot_height])
-
-    def resizeEvent(self, event):  # type: ignore[override]
-        super().resizeEvent(event)
-        self._apply_splitter_ratio()
-        self._fit_embedded_plot_height()
+    def closeEvent(self, event):  # type: ignore[override]
+        self._save_layout_state()
+        super().closeEvent(event)
 
     def eventFilter(self, obj, event):
 
@@ -7593,6 +7987,7 @@ class TimeSeriesEditorQt(QMainWindow):
             self.apply_dark_palette()
         else:
             self.apply_light_palette()
+        self._apply_compact_stylesheet()
         # Refresh any open Matplotlib canvases so the new palette is used
         for canvas in self.findChildren(FigureCanvasQTAgg):
             # ``draw_idle`` schedules a redraw without blocking the UI thread,
@@ -7750,8 +8145,8 @@ class TimeSeriesEditorQt(QMainWindow):
         ]
 
         if checked:
-            if self.extra_widget.parent() is None:
-                self.top_row_splitter.addWidget(self.extra_widget)
+            if self.top_row_splitter.indexOf(self.extra_scroll) == -1:
+                self.top_row_splitter.addWidget(self.extra_scroll)
                 self.top_row_splitter.setStretchFactor(1, 3)
                 self._apply_secondary_splitters()
 
@@ -7816,9 +8211,8 @@ class TimeSeriesEditorQt(QMainWindow):
                 self._mpl_toolbar.hide()
             if self._mpl_canvas is not None:
                 self._mpl_canvas.hide()
-            if self.extra_widget.parent() is not None:
-                self.top_row_splitter.widget(1).setParent(None)
-                self.extra_widget.setParent(None)
+            if self.top_row_splitter.indexOf(self.extra_scroll) != -1:
+                self.extra_scroll.setParent(None)
 
             if self.extra_layout.indexOf(self.progress_transform_row) != -1:
                 self.extra_layout.removeItem(self.progress_transform_row)
@@ -7841,7 +8235,6 @@ class TimeSeriesEditorQt(QMainWindow):
 
             if self.controls_layout.indexOf(self.plot_group) != -1:
                 self.controls_layout.removeWidget(self.plot_group)
-            self.controls_layout.addWidget(self.plot_group)
 
             if self.extra_layout.indexOf(self.extra_stretch) != -1:
                 self.extra_layout.removeItem(self.extra_stretch)
