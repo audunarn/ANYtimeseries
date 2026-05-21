@@ -1,6 +1,8 @@
 """Extreme value analysis dialog."""
 from __future__ import annotations
 
+from html import escape
+
 import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
@@ -710,6 +712,67 @@ class EVMWindow(QDialog):
 
         return peaks[mask], boundaries
 
+    @staticmethod
+    def _format_result_value(value: float, *, decimals: int = 3) -> str:
+        """Format result values while keeping missing values readable."""
+
+        if not np.isfinite(value):
+            return "n/a"
+        return f"{float(value):.{decimals}f}"
+
+    def _confidence_interval_table_html(
+        self,
+        evm_result: ExtremeValueResult,
+        *,
+        period_kind: str,
+        units: str,
+    ) -> str:
+        """Return a compact confidence interval table for the result panel."""
+
+        rows: list[str] = []
+        for idx, target in enumerate(evm_result.return_periods):
+            period_label = escape(
+                self._format_period_label(float(target), period_kind=period_kind)
+            )
+            lower = self._format_result_value(evm_result.lower_bounds[idx])
+            level = self._format_result_value(evm_result.return_levels[idx])
+            upper = self._format_result_value(evm_result.upper_bounds[idx])
+            rows.append(
+                "<tr>"
+                f"<td style='padding: 5px 8px; font-weight: 600;'>{period_label}</td>"
+                f"<td align='right' style='padding: 5px 8px;'>{lower}</td>"
+                f"<td align='center' style='padding: 5px 8px; font-weight: 700;'>"
+                f"{level}</td>"
+                f"<td align='right' style='padding: 5px 8px;'>{upper}</td>"
+                "</tr>"
+            )
+
+        palette = self.result_text.palette()
+        border_color = palette.color(QPalette.Mid).name()
+        header_color = palette.color(QPalette.AlternateBase).name()
+        level_color = palette.color(QPalette.Highlight).name()
+        level_text_color = palette.color(QPalette.HighlightedText).name()
+        unit_label = escape(units or "same as input")
+        return (
+            "<div style='margin-top: 10px;'>"
+            f"<p style='margin: 0 0 6px 0; font-weight: 700;'>"
+            f"{self.ci_spin.value():.0f}% Confidence Interval</p>"
+            "<table cellspacing='0' cellpadding='0' width='100%' "
+            f"style='border: 1px solid {border_color}; border-collapse: collapse;'>"
+            "<thead>"
+            f"<tr style='background-color: {header_color};'>"
+            "<th align='left' style='padding: 6px 8px;'>Period</th>"
+            "<th align='right' style='padding: 6px 8px;'>Lower</th>"
+            f"<th align='center' style='padding: 6px 8px; background-color: {level_color}; "
+            f"color: {level_text_color};'>Return level ({unit_label})</th>"
+            "<th align='right' style='padding: 6px 8px;'>Upper</th>"
+            "</tr>"
+            "</thead>"
+            f"<tbody>{''.join(rows)}</tbody>"
+            "</table>"
+            "</div>"
+        )
+
 
     def on_manual_threshold(self):
         self.threshold_spin.interpretText()
@@ -1404,7 +1467,21 @@ class EVMWindow(QDialog):
                 f"{interval_text}\n"
             )
 
-        self.result_text.setPlainText(result)
+        result_prefix = result.split(
+            f"{self.ci_spin.value():.0f}% Confidence Interval:\n",
+            maxsplit=1,
+        )[0]
+        result_html = (
+            "<pre style='white-space: pre-wrap; margin: 0;'>"
+            f"{escape(result_prefix)}"
+            "</pre>"
+            + self._confidence_interval_table_html(
+                evm_result,
+                period_kind=period_kind,
+                units=units,
+            )
+        )
+        self.result_text.setHtml(result_html)
 
         self._last_evm_result = evm_result
         self.update_extremes_plot(threshold, evm_result)
