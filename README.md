@@ -6,7 +6,7 @@
 
 ANYtimeSeries provides a Qt-based interface for exploring, editing and analysing time-series data. The goal is efficient processing and a clear understanding of the loaded signals, whether they originate from laboratory tests, numerical simulations or OrcaFlex studies.
 
-The application integrates with the bundled **anyqats** package and supports a broad range of formats for loading and visualising time-series information. For a comprehensive walkthrough—covering the full workflow, control reference and screenshots—see the [documentation](docs/README.md).
+The application supports a broad range of formats for loading and visualising time-series information. For a comprehensive walkthrough—covering the full workflow, control reference and screenshots—see the [documentation](docs/README.md).
 
 ## Key features
 
@@ -35,7 +35,6 @@ The application integrates with the bundled **anyqats** package and supports a b
 ### OrcaFlex integration
 - Search objects and variables with live filtering, strip redundant substrings from labels and specify arc-length/extras directly in the selector.
 - Reuse selections for future `.sim` files, apply them to batches of simulations and automatically align similarly named objects via configurable stripping rules.
-- Load AnyQATS directly from the GUI for side-by-side inspection of the same datasets.
 
 ### SWAN tool
 - Includes a standalone **SWANtool** workflow with support for **non-stationary NetCDF (`.nc`) files** in the current version.

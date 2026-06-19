@@ -34,7 +34,7 @@ python -m anytimes
 2. **Select and inspect variables** – tick variables of interest, apply offsets/scales, rename user variables and browse values.
 3. **Transform or calculate** – run quick transforms, equation-based updates or full calculator expressions.
 4. **Analyse and visualise** – create time plots, PSD/cycle plots, statistics tables, RAO estimates, fatigue summaries and extreme-value estimates.
-5. **Export** – save whole files, export selected channels to CSV, or open selected data in AnyQATS.
+5. **Export** - save whole files or export selected channels to CSV.
 
 ## Supported File Types
 

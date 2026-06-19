@@ -2,6 +2,7 @@ import pytest
 import numpy as np
 
 from anytimes.rao import compute_rao, compute_rao_from_timeseries
+from anytimes.gui.rao_dialog import RAODialog
 
 
 def test_compute_rao_tracks_gain_and_phase_near_target_frequency():
@@ -43,3 +44,25 @@ def test_compute_rao_from_timeseries_recovers_signal_amplitude():
     assert amp[idx] == pytest.approx(amp0, rel=0.03)
     assert phase[idx] == pytest.approx(phase0_deg - 90.0, abs=4.0)
     assert np.isnan(coh[idx])
+
+
+def test_rao_dialog_parse_xyz_text():
+    assert RAODialog._parse_xyz_text("1, 2.5, -3") == (1.0, 2.5, -3.0)
+
+    with pytest.raises(ValueError, match="x,y,z"):
+        RAODialog._parse_xyz_text("1,2")
+
+
+def test_rao_dialog_line_points_includes_stop():
+    points = RAODialog._line_points(
+        (0.0, 0.0, 0.0),
+        (1.0, 0.0, 0.0),
+        0.4,
+    )
+
+    assert points == [
+        (0.0, 0.0, 0.0),
+        (0.4, 0.0, 0.0),
+        (0.8, 0.0, 0.0),
+        (1.0, 0.0, 0.0),
+    ]

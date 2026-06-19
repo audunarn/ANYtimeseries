@@ -1,6 +1,6 @@
 PyInstaller call for ANYtimeSeries:
 
-pyinstaller --onefile --windowed --name ANYtimeSeries --collect-data anyqats.app anytimes/__main__.py
+pyinstaller --onefile --windowed --name ANYtimeSeries anytimes/__main__.py
 
 Alternative (when using the tracked spec file):
 

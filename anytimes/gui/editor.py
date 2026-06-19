@@ -6,8 +6,6 @@ import json
 import multiprocessing
 import os
 import re
-import subprocess
-import sys
 import traceback
 import warnings
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -783,7 +781,6 @@ class TimeSeriesEditorQt(QMainWindow):
         self.cycle_mean3d_btn = QPushButton("Range-Mean 3-D")
 
         # Tool controls
-        self.launch_qats_btn = QPushButton("AnyQATS")
         self.evm_tool_btn = QPushButton("Extreme Value Statistics")
         self.rao_tool_btn = QPushButton("RAO from Selected TS")
         self.swan_tool_btn = QPushButton("SWANtool (standalone)")
@@ -795,7 +792,6 @@ class TimeSeriesEditorQt(QMainWindow):
             self.cycle_range_btn,
             self.cycle_mean_btn,
             self.cycle_mean3d_btn,
-            self.launch_qats_btn,
             self.evm_tool_btn,
             self.rao_tool_btn,
             self.swan_tool_btn,
@@ -812,15 +808,14 @@ class TimeSeriesEditorQt(QMainWindow):
         # Row 1: more analysis + tools
         tools_layout.addWidget(self.cycle_mean_btn, 1, 0)
         tools_layout.addWidget(self.cycle_mean3d_btn, 1, 1)
-        tools_layout.addWidget(self.launch_qats_btn, 1, 2)
-        tools_layout.addWidget(self.evm_tool_btn, 1, 3)
+        tools_layout.addWidget(self.evm_tool_btn, 1, 2)
+        tools_layout.addWidget(self.rao_tool_btn, 1, 3)
 
         # Row 2: remaining tools
-        tools_layout.addWidget(self.rao_tool_btn, 2, 0)
-        tools_layout.addWidget(self.swan_tool_btn, 2, 1)
+        tools_layout.addWidget(self.swan_tool_btn, 2, 0)
         tools_layout.addItem(
             QSpacerItem(20, 0, QSizePolicy.Expanding, QSizePolicy.Minimum),
-            2, 2, 1, 2,
+            2, 1, 1, 3,
         )
 
         for col in range(4):
@@ -1137,7 +1132,6 @@ class TimeSeriesEditorQt(QMainWindow):
         self.shift_min_nz_btn.clicked.connect(self.shift_repeated_neg_min)
         self.shift_common_max_btn.clicked.connect(self.shift_common_max)
         self.shift_x_start_zero_btn.clicked.connect(self.shift_x_start_to_zero)
-        self.launch_qats_btn.clicked.connect(self.launch_qats)
         self.evm_tool_btn.clicked.connect(self.open_evm_tool)
         self.rao_tool_btn.clicked.connect(self.open_rao_tool)
         self.swan_tool_btn.clicked.connect(self.open_swan_tool)
@@ -2585,17 +2579,6 @@ class TimeSeriesEditorQt(QMainWindow):
             for role in self._parse_axis_roles(entry.text()):
                 role_entries[role].append(key)
 
-        if not role_entries["x"] or not role_entries["y"]:
-            QMessageBox.warning(
-                self,
-                "Plot X/Y(/Z)",
-                'Mark one variable as "x" and one as "y" in the input fields.',
-            )
-            return
-        resolution_pct = self._plot_resolution_percent()
-        if resolution_pct is None:
-            return
-
         def _expand_key(series_key: str):
             expanded = []
             if "::" in series_key:
@@ -2613,6 +2596,64 @@ class TimeSeriesEditorQt(QMainWindow):
                     if series_key in tsdb.getm():
                         expanded.append((file_idx, series_key))
             return expanded
+
+        def _entry_key_for(file_idx: int, var_name: str) -> str:
+            for candidate in self.var_offsets:
+                if (file_idx, var_name) in _expand_key(candidate):
+                    return candidate
+            return var_name
+
+        def _same_scatter_group(candidate, selected) -> bool:
+            attrs = ("source", "orcaflex_object", "orcaflex_variable")
+            return all(
+                getattr(candidate, attr, None) == getattr(selected, attr, None)
+                for attr in attrs
+            )
+
+        if (not role_entries["x"] or not role_entries["y"]) and hasattr(self, "var_checkboxes"):
+            checked_keys = [
+                key for key, cb in self.var_checkboxes.items()
+                if cb is not None and cb.isChecked()
+            ]
+            for checked_key in checked_keys:
+                matched = False
+                for file_idx, var_name in _expand_key(checked_key):
+                    if file_idx >= len(self.tsdbs):
+                        continue
+                    tsdb_map = self.tsdbs[file_idx].getm()
+                    selected_ts = tsdb_map.get(var_name)
+                    if selected_ts is None:
+                        continue
+                    if getattr(selected_ts, "scatter_role", None) not in ("color", "c"):
+                        continue
+                    companions = {"color": _entry_key_for(file_idx, var_name)}
+                    for candidate_name, candidate_ts in tsdb_map.items():
+                        role = getattr(candidate_ts, "scatter_role", None)
+                        if role not in ("x", "y"):
+                            continue
+                        if not _same_scatter_group(candidate_ts, selected_ts):
+                            continue
+                        companions[role] = _entry_key_for(file_idx, candidate_name)
+                    if "x" in companions and "y" in companions:
+                        for role, key in companions.items():
+                            if key not in role_entries[role]:
+                                role_entries[role].append(key)
+                        matched = True
+                        break
+                if matched:
+                    break
+
+        if not role_entries["x"] or not role_entries["y"]:
+            QMessageBox.warning(
+                self,
+                "Plot X/Y(/Z)",
+                'Mark one variable as "x" and one as "y" in the input fields, '
+                "or select an OrcaFlex sea-surface grid Value series.",
+            )
+            return
+        resolution_pct = self._plot_resolution_percent()
+        if resolution_pct is None:
+            return
 
         role_per_file: dict[int, dict[str, str]] = {}
         conflicts = []
@@ -6436,9 +6477,40 @@ class TimeSeriesEditorQt(QMainWindow):
         rows = []
         skipped_any = False
 
+        def _is_orcaflex_grid_series(ts) -> bool:
+            return getattr(ts, "source", None) == "OrcaFlex sea surface point grid"
+
+        def _same_orcaflex_grid_group(candidate, selected) -> bool:
+            attrs = ("source", "orcaflex_object", "orcaflex_variable")
+            return all(
+                getattr(candidate, attr, None) == getattr(selected, attr, None)
+                for attr in attrs
+            )
+
+        def _include_orcaflex_grid_triplet(candidates, tsdb_map):
+            expanded = list(candidates)
+            for name in list(candidates):
+                selected_ts = tsdb_map.get(name)
+                if selected_ts is None or not _is_orcaflex_grid_series(selected_ts):
+                    continue
+                roles = {}
+                for candidate_name, candidate_ts in tsdb_map.items():
+                    if not _same_orcaflex_grid_group(candidate_ts, selected_ts):
+                        continue
+                    role = getattr(candidate_ts, "scatter_role", None)
+                    if role in ("x", "y", "z"):
+                        roles[role] = candidate_name
+                if {"x", "y", "z"} <= set(roles):
+                    for role in ("x", "y", "z"):
+                        if roles[role] not in expanded:
+                            expanded.append(roles[role])
+            return expanded
+
         for fp, tsdb in zip(self.file_paths, self.tsdbs):
             fname = os.path.basename(fp)
             cand = list(dict.fromkeys(per_file[fname]))  # keep unique order
+            tsdb_m = tsdb.getm()
+            cand = _include_orcaflex_grid_triplet(cand, tsdb_m)
             if len(cand) < 3:
                 continue
 
@@ -6446,8 +6518,6 @@ class TimeSeriesEditorQt(QMainWindow):
             if not triplets:
                 skipped_any = True
                 continue
-
-            tsdb_m = tsdb.getm()
 
             for tri in triplets:  # tri = (x_key, y_key, z_key)
                 ts_x = tsdb_m.get(tri[0])
@@ -7603,52 +7673,6 @@ class TimeSeriesEditorQt(QMainWindow):
         df.to_csv(path, index=False)
         QMessageBox.information(self, "Exported", f"Exported {len(sel_keys)} series to\n{os.path.basename(path)}")
 
-    def launch_qats(self):
-        if not getattr(self, "work_dir", None):
-            self.work_dir = QFileDialog.getExistingDirectory(self, "Select Work Folder for AnyQATS Export")
-            if not self.work_dir:
-                return
-        ts_paths = []
-        for i, (tsdb, original_path) in enumerate(zip(self.tsdbs, self.file_paths), start=1):
-            groups = self._group_series_by_timebase(tsdb)
-            if not groups:
-                continue
-
-            base_label = os.path.splitext(os.path.basename(original_path))[0] or f"file_{i}"
-
-            for group_idx, names in enumerate(groups, start=1):
-                temp_db = TsDB()
-                copied = []
-                for key in names:
-                    ts_obj = tsdb.get(name=key)
-                    if ts_obj is None:
-                        continue
-                    clone = ts_obj.__copy__()
-                    temp_db.add(clone)
-                    copied.append(clone)
-
-                if not copied:
-                    continue
-
-                is_user_group = all(ts.name in getattr(self, "user_variables", set()) for ts in copied)
-
-                if len(groups) == 1:
-                    filename = f"temp_{i}.ts"
-                else:
-                    suffix = "_user" if is_user_group else f"_part{group_idx}"
-                    filename = f"temp_{i}_{base_label}{suffix}.ts"
-
-                ts_path = os.path.join(self.work_dir, filename)
-
-                # Group members share the same time base – enforce a shared grid per file only.
-                temp_db.export(ts_path, names=list(temp_db.getm().keys()), force_common_time=True)
-                ts_paths.append(ts_path)
-        try:
-            cmd = [sys.executable, "-m", "anyqats.cli", "app", "-f"] + ts_paths
-            subprocess.Popen(cmd)
-        except FileNotFoundError:
-            QMessageBox.critical(self, "Error", "AnyQATS could not be launched using the current Python environment.")
-
     def open_evm_tool(self):
         """Launch the Extreme Value Analysis tool for the first checked variable."""
 
@@ -7812,6 +7836,7 @@ class TimeSeriesEditorQt(QMainWindow):
 
         series_data: dict[str, tuple[np.ndarray, np.ndarray]] = {}
         spectral_data: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+        rao_point_sources: dict[str, dict] = {}
         for tsdb, fp in zip(self.tsdbs, self.file_paths):
             fname = os.path.basename(fp)
             tsdb_map = tsdb.getm()
@@ -7854,6 +7879,18 @@ class TimeSeriesEditorQt(QMainWindow):
                     rao_amp_arr = np.asarray(rao_amp, dtype=float)
                     if freq_hz_arr.size and freq_hz_arr.size == rao_amp_arr.size:
                         spectral_data[key] = (freq_hz_arr, rao_amp_arr)
+                        object_name = getattr(ts, "orcaflex_object", None)
+                        variable_name = getattr(ts, "orcaflex_variable", None)
+                        if object_name and variable_name:
+                            model = getattr(self.file_loader, "loaded_sim_models", {}).get(fp)
+                            if model is not None:
+                                rao_point_sources[key] = {
+                                    "model": model,
+                                    "object_name": object_name,
+                                    "object_type": getattr(ts, "orcaflex_object_type", None),
+                                    "variable": variable_name,
+                                    "file_path": fp,
+                                }
 
         if len(series_data) < 1:
             QMessageBox.warning(
@@ -7868,6 +7905,7 @@ class TimeSeriesEditorQt(QMainWindow):
             labels=labels,
             series_data=series_data,
             spectral_data=spectral_data,
+            rao_point_sources=rao_point_sources,
             parent=self,
         )
         dlg.exec()

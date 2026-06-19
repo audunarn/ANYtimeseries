@@ -1,8 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 """PyInstaller build specification for ANYtimeSeries."""
 
-from PyInstaller.utils.hooks import collect_data_files
-
 block_cipher = None
 
 
@@ -10,7 +8,7 @@ a = Analysis(
     ['anytimes/__main__.py'],
     pathex=[],
     binaries=[],
-    datas=collect_data_files('anyqats.app'),
+    datas=[],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

@@ -14,7 +14,6 @@ pyinstaller \
   --onefile \
   --windowed \
   --name ANYtimeSeries \
-  --collect-data anyqats.app \
   anytimes/__main__.py
 ```
 
@@ -22,8 +21,6 @@ Key options:
 
 - `--onefile` creates a single self-extracting `ANYtimeSeries.exe`.
 - `--windowed` hides the console window when the GUI is launched.
-- `--collect-data anyqats.app` ensures the bundled AnyQATS resources (such as
-  the application icon) are copied into the executable.
 - `anytimes/__main__.py` is the entry point that starts the GUI.
 
 After the command completes, the executable is available at
@@ -36,7 +33,6 @@ runtime, list them with extra `--collect-data` options, e.g.
 
 ```bash
 pyinstaller --onefile --windowed \
-  --collect-data anyqats.app \
   --collect-data mypackage.resources \
   anytimes/__main__.py
 ```

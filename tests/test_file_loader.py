@@ -412,6 +412,172 @@ def test_auto_extract_surface_pressures_from_specs_calls_panel_pressure(monkeypa
     assert out["info"]["name"].tolist() == ["BodyA", "BodyB"]
 
 
+def test_build_orcaflex_sea_surface_grid_formats_vessel_positions(monkeypatch):
+    file_loader = _load_file_loader(monkeypatch)
+    loader = file_loader.FileLoader()
+
+    coords = loader._build_orcaflex_sea_surface_grid(
+        x_min=-10.0,
+        x_max=10.0,
+        nx=3,
+        y_min=0.0,
+        y_max=5.0,
+        ny=2,
+        z=0.0,
+    )
+
+    assert coords == [
+        (-10.0, 0.0, 0.0),
+        (0.0, 0.0, 0.0),
+        (10.0, 0.0, 0.0),
+        (-10.0, 5.0, 0.0),
+        (0.0, 5.0, 0.0),
+        (10.0, 5.0, 0.0),
+    ]
+    assert loader._format_orcaflex_position_grid(coords) == (
+        "-10,0,0; 0,0,0; 10,0,0; -10,5,0; 0,5,0; 10,5,0"
+    )
+
+
+def test_build_orcaflex_sea_surface_grid_rejects_invalid_size(monkeypatch):
+    file_loader = _load_file_loader(monkeypatch)
+    loader = file_loader.FileLoader()
+
+    with pytest.raises(ValueError, match="Nx and Ny"):
+        loader._build_orcaflex_sea_surface_grid(0.0, 1.0, 0, 0.0, 1.0, 1, 0.0)
+
+    with pytest.raises(ValueError, match="too large"):
+        loader._build_orcaflex_sea_surface_grid(0.0, 1.0, 101, 0.0, 1.0, 100, 0.0)
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("Sea surface Z", True),
+        ("Sea X velocity", True),
+        ("Disturbed sea surface clearance", True),
+        ("Air gap", True),
+        ("X", False),
+        ("Surface Pressures", False),
+    ],
+)
+def test_is_orcaflex_sea_surface_grid_variable(monkeypatch, name, expected):
+    file_loader = _load_file_loader(monkeypatch)
+    loader = file_loader.FileLoader()
+
+    assert loader._is_orcaflex_sea_surface_grid_variable(name) is expected
+
+
+def test_load_orcaflex_data_from_specs_adds_sea_surface_scatter_series(monkeypatch):
+    file_loader = _load_file_loader(monkeypatch)
+
+    class _StubTimeSeries:
+        def __init__(self, name, t, x):
+            self.name = name
+            self.t = np.asarray(t, dtype=float)
+            self.x = np.asarray(x, dtype=float)
+
+    class _StubTsDB:
+        def __init__(self):
+            self.register = {}
+
+        def add(self, ts):
+            if ts.name in self.register:
+                raise KeyError(ts.name)
+            self.register[ts.name] = ts
+
+    class _ObjectExtra:
+        def __init__(self, x, y, z):
+            self.X = x
+            self.Y = y
+            self.Z = z
+
+    class _FakeGeneral:
+        DynamicsSolutionMethod = "Time domain"
+
+        def TimeHistory(self, name, _time_spec):
+            assert name == "Time"
+            return np.array([0.0, 1.0])
+
+    class _FakeVessel:
+        typeName = "Vessel"
+        Name = "VesselA"
+
+    class _FakeModel:
+        simulationStartTime = 0.0
+        simulationStopTime = 1.0
+
+        def __init__(self):
+            self.objects = [_FakeVessel()]
+            self._general = _FakeGeneral()
+            self._vessel = self.objects[0]
+
+        def __getitem__(self, key):
+            if key == "General":
+                return self._general
+            if key == "VesselA":
+                return self._vessel
+            raise KeyError(key)
+
+    fake_module = types.SimpleNamespace(
+        ObjectExtra=_ObjectExtra,
+        SpecifiedPeriod=lambda start, stop: ("period", start, stop),
+        TimeHistorySpecification=lambda obj, var, extra=None: ("spec", obj.Name, var, extra),
+        GetMultipleTimeHistories=lambda _specs, _time_spec: np.array(
+            [
+                [10.0, 20.0],
+                [11.0, 21.0],
+            ]
+        ),
+    )
+
+    monkeypatch.setitem(sys.modules, "OrcFxAPI", fake_module)
+    monkeypatch.setattr(file_loader, "OrcFxAPI", fake_module)
+    monkeypatch.setattr(file_loader, "TsDB", _StubTsDB)
+    monkeypatch.setattr(file_loader, "TimeSeries", _StubTimeSeries)
+
+    loader = file_loader.FileLoader()
+    tsdb = loader._load_orcaflex_data_from_specs(
+        _FakeModel(),
+        [
+            ("VesselA", "Sea surface Z", _ObjectExtra(0.0, 10.0, 0.0), "P1"),
+            ("VesselA", "Sea surface Z", _ObjectExtra(5.0, 10.0, 0.0), "P2"),
+        ],
+    )
+
+    x_series = tsdb.register["VesselA:Sea surface Z Sea Surface Grid X"]
+    y_series = tsdb.register["VesselA:Sea surface Z Sea Surface Grid Y"]
+    z_series = tsdb.register["VesselA:Sea surface Z Sea Surface Grid Z"]
+    value_series = tsdb.register["VesselA:Sea surface Z Sea Surface Grid Value"]
+
+    np.testing.assert_array_equal(x_series.t, np.array([0.0, 0.0, 1.0, 1.0]))
+    np.testing.assert_array_equal(x_series.x, np.array([0.0, 5.0, 0.0, 5.0]))
+    np.testing.assert_array_equal(y_series.x, np.array([10.0, 10.0, 10.0, 10.0]))
+    np.testing.assert_array_equal(z_series.x, np.array([10.0, 20.0, 11.0, 21.0]))
+    np.testing.assert_array_equal(value_series.x, np.array([10.0, 20.0, 11.0, 21.0]))
+    assert getattr(x_series, "scatter_role") == "x"
+    assert getattr(y_series, "scatter_role") == "y"
+    assert getattr(z_series, "scatter_role") == "z"
+    assert getattr(value_series, "scatter_role") == "color"
+
+    from anytimes.gui.utils import _find_xyz_triples
+
+    assert _find_xyz_triples(
+        [
+            "VesselA:Sea surface Z Sea Surface Grid X",
+            "VesselA:Sea surface Z Sea Surface Grid Y",
+            "VesselA:Sea surface Z Sea Surface Grid Z",
+        ],
+        warn_if_fallback=False,
+    ) == [
+        (
+            "VesselA:Sea surface Z Sea Surface Grid X",
+            "VesselA:Sea surface Z Sea Surface Grid Y",
+            "VesselA:Sea surface Z Sea Surface Grid Z",
+        )
+    ]
+
+
 
 def test_extract_model_time_uses_sample_times_for_frequency_domain(monkeypatch):
     file_loader = _load_file_loader(monkeypatch)

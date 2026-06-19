@@ -32,6 +32,7 @@ from matplotlib.backends.backend_qtagg import NavigationToolbar2QT
 from matplotlib.figure import Figure
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -39,10 +40,13 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPushButton,
     QSizePolicy,
     QSpinBox,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
 )
 
@@ -74,6 +78,7 @@ class RAODialog(QDialog):
         labels: list[str],
         series_data: dict[str, tuple[np.ndarray, np.ndarray]],
         spectral_data: dict[str, tuple[np.ndarray, np.ndarray]] | None = None,
+        rao_point_sources: dict[str, dict] | None = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -91,6 +96,7 @@ class RAODialog(QDialog):
 
         self._series_data = series_data
         self._spectral_data = spectral_data or {}
+        self._rao_point_sources = rao_point_sources or {}
 
         response_labels = self._unique_preserve_order(
             list(labels) + list(self._series_data.keys()) + list(self._spectral_data.keys())
@@ -226,6 +232,58 @@ class RAODialog(QDialog):
 
         main_layout.addWidget(input_group)
 
+        points_group = QGroupBox("OrcaFlex RAO points")
+        points_layout = QVBoxLayout(points_group)
+
+        points_help = QLabel(
+            "For OrcaFlex Vessel RAOs, add coordinates to plot RAO curves at defined points. "
+            "Line generation uses start/stop coordinates and spacing delta along the line."
+        )
+        points_help.setWordWrap(True)
+        points_layout.addWidget(points_help)
+
+        add_row = QHBoxLayout()
+        self.point_coord_entry = QLineEdit()
+        self.point_coord_entry.setPlaceholderText("x,y,z")
+        self.add_point_btn = QPushButton("Add Point")
+        self.remove_point_btn = QPushButton("Remove Selected")
+        self.clear_points_btn = QPushButton("Clear Points")
+        add_row.addWidget(QLabel("Point"))
+        add_row.addWidget(self.point_coord_entry)
+        add_row.addWidget(self.add_point_btn)
+        add_row.addWidget(self.remove_point_btn)
+        add_row.addWidget(self.clear_points_btn)
+        points_layout.addLayout(add_row)
+
+        line_row = QHBoxLayout()
+        self.line_start_entry = QLineEdit()
+        self.line_start_entry.setPlaceholderText("start x,y,z")
+        self.line_stop_entry = QLineEdit()
+        self.line_stop_entry.setPlaceholderText("stop x,y,z")
+        self.line_delta_entry = QLineEdit()
+        self.line_delta_entry.setPlaceholderText("delta")
+        self.add_line_btn = QPushButton("Add Line Points")
+        line_row.addWidget(QLabel("Line"))
+        line_row.addWidget(self.line_start_entry)
+        line_row.addWidget(self.line_stop_entry)
+        line_row.addWidget(QLabel("Delta"))
+        line_row.addWidget(self.line_delta_entry)
+        line_row.addWidget(self.add_line_btn)
+        points_layout.addLayout(line_row)
+
+        self.points_table = QTableWidget()
+        self.points_table.setColumnCount(3)
+        self.points_table.setHorizontalHeaderLabels(["X", "Y", "Z"])
+        self.points_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.points_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        points_layout.addWidget(self.points_table)
+
+        self.points_status_label = QLabel()
+        self.points_status_label.setWordWrap(True)
+        points_layout.addWidget(self.points_status_label)
+
+        main_layout.addWidget(points_group)
+
         btn_row = QHBoxLayout()
         self.compute_btn = QPushButton("Compute / Plot RAO")
         self.compute_btn.setToolTip("Compute or plot the selected RAO based on the selected mode.")
@@ -250,6 +308,10 @@ class RAODialog(QDialog):
         main_layout.addWidget(self.canvas, stretch=1)
 
         self.compute_btn.clicked.connect(self._compute)
+        self.add_point_btn.clicked.connect(self._add_point_from_entry)
+        self.remove_point_btn.clicked.connect(self._remove_selected_points)
+        self.clear_points_btn.clicked.connect(self._clear_points)
+        self.add_line_btn.clicked.connect(self._add_line_points_from_entries)
         self.mode_combo.currentTextChanged.connect(self._update_control_state)
         self.response_combo.currentTextChanged.connect(self._update_control_state)
         self.excitation_combo.currentTextChanged.connect(self._update_control_state)
@@ -274,6 +336,129 @@ class RAODialog(QDialog):
             unique.append(value)
 
         return unique
+
+    @staticmethod
+    def _parse_xyz_text(text: str) -> tuple[float, float, float]:
+        """Parse an ``x,y,z`` coordinate string."""
+
+        parts = [part.strip() for part in str(text).replace(";", ",").split(",") if part.strip()]
+        if len(parts) != 3:
+            raise ValueError("Enter coordinates as x,y,z.")
+        try:
+            coord = tuple(float(part) for part in parts)
+        except ValueError as exc:
+            raise ValueError("Coordinate values must be numeric.") from exc
+        if not all(np.isfinite(coord)):
+            raise ValueError("Coordinate values must be finite.")
+        return coord
+
+    @staticmethod
+    def _line_points(
+        start: tuple[float, float, float],
+        stop: tuple[float, float, float],
+        delta: float,
+    ) -> list[tuple[float, float, float]]:
+        """Return inclusive coordinates along a line segment."""
+
+        if not np.isfinite(delta) or delta <= 0.0:
+            raise ValueError("Line delta must be a positive number.")
+
+        start_arr = np.asarray(start, dtype=float)
+        stop_arr = np.asarray(stop, dtype=float)
+        if start_arr.shape != (3,) or stop_arr.shape != (3,):
+            raise ValueError("Line start and stop must be x,y,z coordinates.")
+
+        vector = stop_arr - start_arr
+        length = float(np.linalg.norm(vector))
+        if length == 0.0:
+            return [tuple(float(v) for v in start_arr)]
+
+        n_steps = int(np.floor(length / float(delta)))
+        distances = [i * float(delta) for i in range(n_steps + 1)]
+        if not np.isclose(distances[-1], length):
+            distances.append(length)
+
+        direction = vector / length
+        return [
+            tuple(float(v) for v in (start_arr + direction * distance))
+            for distance in distances
+        ]
+
+    def _point_rows(self) -> list[tuple[float, float, float]]:
+        """Return the currently listed RAO coordinates."""
+
+        points = []
+        for row in range(self.points_table.rowCount()):
+            values = []
+            for col in range(3):
+                item = self.points_table.item(row, col)
+                if item is None:
+                    break
+                try:
+                    values.append(float(item.text()))
+                except ValueError:
+                    break
+            if len(values) == 3 and all(np.isfinite(values)):
+                points.append(tuple(values))
+        return points
+
+    def _set_points_status(self) -> None:
+        count = self.points_table.rowCount()
+        response_key = self.response_combo.currentText()
+        source = self._rao_point_sources.get(response_key)
+        if source:
+            object_name = source.get("object_name", "")
+            variable = source.get("variable", "")
+            self.points_status_label.setText(
+                f"{count} point(s). Source: {object_name} / {variable}."
+            )
+        else:
+            self.points_status_label.setText(
+                f"{count} point(s). Select an OrcaFlex Vessel precomputed RAO response to use point curves."
+            )
+
+    def _append_point(self, coord: tuple[float, float, float]) -> None:
+        """Append one coordinate to the table."""
+
+        row = self.points_table.rowCount()
+        self.points_table.insertRow(row)
+        for col, value in enumerate(coord):
+            self.points_table.setItem(row, col, QTableWidgetItem(f"{value:.6g}"))
+        self.points_table.resizeColumnsToContents()
+        self._set_points_status()
+
+    def _add_point_from_entry(self) -> None:
+        try:
+            coord = self._parse_xyz_text(self.point_coord_entry.text())
+        except ValueError as exc:
+            QMessageBox.warning(self, "Invalid point", str(exc))
+            return
+        self._append_point(coord)
+        self.point_coord_entry.clear()
+
+    def _remove_selected_points(self) -> None:
+        rows = sorted({idx.row() for idx in self.points_table.selectedIndexes()}, reverse=True)
+        for row in rows:
+            self.points_table.removeRow(row)
+        self._set_points_status()
+
+    def _clear_points(self) -> None:
+        self.points_table.setRowCount(0)
+        self._set_points_status()
+
+    def _add_line_points_from_entries(self) -> None:
+        try:
+            start = self._parse_xyz_text(self.line_start_entry.text())
+            stop = self._parse_xyz_text(self.line_stop_entry.text())
+            delta = float(self.line_delta_entry.text().strip())
+            points = self._line_points(start, stop, delta)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Invalid line", str(exc))
+            return
+
+        for coord in points:
+            self._append_point(coord)
+        self._set_points_status()
 
     def _rolling_mean_same(
         self,
@@ -386,6 +571,24 @@ class RAODialog(QDialog):
 
         self.excitation_combo.setEnabled(using_paired)
         self.nperseg_spin.setEnabled(using_paired)
+        point_source = self._rao_point_sources.get(response_key)
+        point_controls_enabled = (
+            using_precomputed
+            and point_source is not None
+            and point_source.get("object_type") == "Vessel"
+        )
+        for widget in (
+            self.point_coord_entry,
+            self.add_point_btn,
+            self.remove_point_btn,
+            self.clear_points_btn,
+            self.line_start_entry,
+            self.line_stop_entry,
+            self.line_delta_entry,
+            self.add_line_btn,
+            self.points_table,
+        ):
+            widget.setEnabled(point_controls_enabled)
 
         # Keep this enabled so the user can select the expected precomputed
         # source x-data unit before plotting.
@@ -461,10 +664,13 @@ class RAODialog(QDialog):
 
         if using_precomputed:
             if has_precomputed:
+                point_msg = ""
+                if point_controls_enabled:
+                    point_msg = " Add coordinates to overlay OrcaFlex Vessel point RAO curves."
                 self.summary_label.setText(
                     f"Ready to plot precomputed OrcaFlex/spectral RAO for '{response_key}'. "
                     f"Source x-data will be interpreted as {self.x_source_unit_combo.currentText()}. "
-                    "Excitation selection is ignored."
+                    f"Excitation selection is ignored.{point_msg}"
                 )
             else:
                 self.summary_label.setText(
@@ -481,6 +687,8 @@ class RAODialog(QDialog):
                 "Paired RAO mode selected. The response and excitation must have the same time vector. "
                 "The output frequency axis from rao.py is converted to Period [s]."
             )
+
+        self._set_points_status()
 
     def _compute(self) -> None:
         """Compute or plot the selected RAO."""
@@ -884,38 +1092,125 @@ class RAODialog(QDialog):
         The plot x-axis is always Period [s].
         """
 
+        converted = self._convert_precomputed_rao(spectral_resp)
+        if converted is None:
+            return
+        period, freq_hz, rao_amp = converted
+
+        use_smoothing = self._smoothing_enabled()
+        smoothing_window = self._smoothing_window()
+        x_source_unit = self._selected_x_source_unit()
+        point_curves = self._orcaflex_point_rao_curves(response_key)
+
+        if use_smoothing:
+            rao_amp_plot = self._rolling_mean_same(rao_amp, smoothing_window)
+            title = (
+                f"Precomputed OrcaFlex / spectral RAO: {response_key} "
+                f"— amplitude rolling mean window {smoothing_window}"
+            )
+        else:
+            rao_amp_plot = rao_amp
+            title = f"Precomputed OrcaFlex / spectral RAO: {response_key}"
+
+        self.figure.clear()
+
+        ax = self.figure.add_subplot(111)
+
+        if use_smoothing:
+            ax.plot(period, rao_amp, alpha=0.25, label="Raw amplitude")
+            ax.plot(period, rao_amp_plot, label=f"Selected rolling mean ({smoothing_window})")
+        else:
+            ax.plot(period, rao_amp_plot, label="Selected")
+
+        for label, curve_resp in point_curves:
+            converted_curve = self._convert_precomputed_rao(curve_resp, show_errors=False)
+            if converted_curve is None:
+                continue
+            point_period, _point_freq, point_amp = converted_curve
+            point_amp_plot = (
+                self._rolling_mean_same(point_amp, smoothing_window)
+                if use_smoothing
+                else point_amp
+            )
+            ax.plot(point_period, point_amp_plot, label=label)
+
+        if point_curves or use_smoothing:
+            ax.legend(loc="best")
+
+        ax.set_xlabel("Period [s]")
+        ax.set_ylabel("|RAO|")
+        ax.set_title(title)
+        ax.grid(True, alpha=0.3)
+
+        self.canvas.draw_idle()
+
+        if not np.any(np.isfinite(rao_amp_plot)):
+            QMessageBox.warning(
+                self,
+                "RAO error",
+                "No finite RAO amplitudes are available after smoothing.",
+            )
+            return
+
+        peak_idx = int(np.nanargmax(rao_amp_plot))
+        peak_label = "Smoothed peak" if use_smoothing else "Precomputed RAO peak"
+
+        point_text = (
+            f" Plotted {len(point_curves)} coordinate RAO curve(s)."
+            if point_curves
+            else ""
+        )
+        self.summary_label.setText(
+            f"{peak_label} {rao_amp_plot[peak_idx]:.4g} "
+            f"at period {period[peak_idx]:.4g} s "
+            f"({freq_hz[peak_idx]:.4g} Hz). "
+            f"Source x-data interpreted as {x_source_unit.value}. "
+            f"Excitation selection is ignored because the RAO is already available.{point_text}"
+        )
+
+    def _convert_precomputed_rao(
+        self,
+        spectral_resp: tuple[np.ndarray, np.ndarray],
+        *,
+        show_errors: bool = True,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+        """Return period, frequency and amplitude arrays for precomputed RAO data."""
+
         x_input, rao_amp = spectral_resp
 
         x_input = np.asarray(x_input, dtype=float)
         rao_amp = np.asarray(rao_amp, dtype=float)
 
         if x_input.ndim != 1 or rao_amp.ndim != 1:
-            QMessageBox.warning(
-                self,
-                "Invalid spectral RAO",
-                "Precomputed RAO x-data and amplitude arrays must be 1-D.",
-            )
-            return
+            if show_errors:
+                QMessageBox.warning(
+                    self,
+                    "Invalid spectral RAO",
+                    "Precomputed RAO x-data and amplitude arrays must be 1-D.",
+                )
+            return None
 
         if x_input.size != rao_amp.size:
-            QMessageBox.warning(
-                self,
-                "Invalid spectral RAO",
-                "Precomputed RAO x-data and amplitude arrays must have the same length.",
-            )
-            return
+            if show_errors:
+                QMessageBox.warning(
+                    self,
+                    "Invalid spectral RAO",
+                    "Precomputed RAO x-data and amplitude arrays must have the same length.",
+                )
+            return None
 
         valid = np.isfinite(x_input) & np.isfinite(rao_amp) & (x_input > 0.0)
         x_input = x_input[valid]
         rao_amp = rao_amp[valid]
 
         if x_input.size == 0:
-            QMessageBox.warning(
-                self,
-                "RAO error",
-                "No positive x-data values are available in the precomputed RAO.",
-            )
-            return
+            if show_errors:
+                QMessageBox.warning(
+                    self,
+                    "RAO error",
+                    "No positive x-data values are available in the precomputed RAO.",
+                )
+            return None
 
         x_source_unit = self._selected_x_source_unit()
 
@@ -941,64 +1236,87 @@ class RAODialog(QDialog):
         rao_amp = rao_amp[valid_period]
 
         if period.size == 0:
-            QMessageBox.warning(
-                self,
-                "RAO error",
-                "No positive period values are available after x-data conversion.",
-            )
-            return
+            if show_errors:
+                QMessageBox.warning(
+                    self,
+                    "RAO error",
+                    "No positive period values are available after x-data conversion.",
+                )
+            return None
 
         order = np.argsort(period)
-        period = period[order]
-        freq_hz = freq_hz[order]
-        rao_amp = rao_amp[order]
+        return period[order], freq_hz[order], rao_amp[order]
 
-        use_smoothing = self._smoothing_enabled()
-        smoothing_window = self._smoothing_window()
+    def _orcaflex_point_rao_curves(
+        self,
+        response_key: str,
+    ) -> list[tuple[str, tuple[np.ndarray, np.ndarray]]]:
+        """Read OrcaFlex Vessel RAO curves for the coordinates in the point list."""
 
-        if use_smoothing:
-            rao_amp_plot = self._rolling_mean_same(rao_amp, smoothing_window)
-            title = (
-                f"Precomputed OrcaFlex / spectral RAO: {response_key} "
-                f"— amplitude rolling mean window {smoothing_window}"
-            )
-        else:
-            rao_amp_plot = rao_amp
-            title = f"Precomputed OrcaFlex / spectral RAO: {response_key}"
+        points = self._point_rows()
+        if not points:
+            return []
 
-        self.figure.clear()
-
-        ax = self.figure.add_subplot(111)
-
-        if use_smoothing:
-            ax.plot(period, rao_amp, alpha=0.25, label="Raw amplitude")
-            ax.plot(period, rao_amp_plot, label=f"Rolling mean ({smoothing_window})")
-            ax.legend(loc="best")
-        else:
-            ax.plot(period, rao_amp_plot)
-
-        ax.set_xlabel("Period [s]")
-        ax.set_ylabel("|RAO|")
-        ax.set_title(title)
-        ax.grid(True, alpha=0.3)
-
-        self.canvas.draw_idle()
-
-        if not np.any(np.isfinite(rao_amp_plot)):
+        source = self._rao_point_sources.get(response_key)
+        if not source:
             QMessageBox.warning(
                 self,
-                "RAO error",
-                "No finite RAO amplitudes are available after smoothing.",
+                "No OrcaFlex RAO source",
+                "The selected response does not include OrcaFlex object metadata for point RAO curves.",
             )
-            return
+            return []
 
-        peak_idx = int(np.nanargmax(rao_amp_plot))
-        peak_label = "Smoothed peak" if use_smoothing else "Precomputed RAO peak"
+        if source.get("object_type") != "Vessel":
+            QMessageBox.warning(
+                self,
+                "Vessel required",
+                "Point RAO curves are currently available for OrcaFlex Vessel objects.",
+            )
+            return []
 
-        self.summary_label.setText(
-            f"{peak_label} {rao_amp_plot[peak_idx]:.4g} "
-            f"at period {period[peak_idx]:.4g} s "
-            f"({freq_hz[peak_idx]:.4g} Hz). "
-            f"Source x-data interpreted as {x_source_unit.value}. "
-            "Excitation selection is ignored because the RAO is already available."
-        )
+        try:
+            import OrcFxAPI  # type: ignore
+        except ImportError:
+            QMessageBox.warning(
+                self,
+                "OrcaFlex not available",
+                "OrcFxAPI is required to extract point RAO curves.",
+            )
+            return []
+
+        model = source.get("model")
+        object_name = source.get("object_name")
+        variable = source.get("variable")
+        if model is None or not object_name or not variable:
+            return []
+
+        curves = []
+        try:
+            obj = model[object_name]
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                "OrcaFlex RAO error",
+                f"Could not access OrcaFlex object '{object_name}':\n{exc}",
+            )
+            return []
+
+        for coord in points:
+            try:
+                rao = obj.SpectralResponseRAO(
+                    variable,
+                    objectExtra=OrcFxAPI.oeVessel(list(coord)),
+                )
+                x_data = np.asarray(rao.X, dtype=float)
+                amp = np.asarray(rao.Y, dtype=float)
+            except Exception as exc:
+                QMessageBox.warning(
+                    self,
+                    "OrcaFlex RAO error",
+                    f"Failed to read RAO at ({coord[0]:.3g}, {coord[1]:.3g}, {coord[2]:.3g}):\n{exc}",
+                )
+                continue
+            label = f"({coord[0]:.3g}, {coord[1]:.3g}, {coord[2]:.3g})"
+            curves.append((label, (x_data, amp)))
+
+        return curves

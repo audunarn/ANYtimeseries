@@ -336,6 +336,35 @@ class FileLoader:
             extra_layout.addWidget(find_all_btn)
             pressure_btn = QPushButton("Extract Surface Pressures")
             extra_layout.addWidget(pressure_btn)
+
+            sea_grid_group = QGroupBox("Sea Surface Point Grid (Vessel)")
+            sea_grid_layout = QGridLayout(sea_grid_group)
+            sea_grid_layout.addWidget(QLabel("X min"), 0, 0)
+            sea_x_min = QLineEdit("-50")
+            sea_grid_layout.addWidget(sea_x_min, 0, 1)
+            sea_grid_layout.addWidget(QLabel("X max"), 0, 2)
+            sea_x_max = QLineEdit("50")
+            sea_grid_layout.addWidget(sea_x_max, 0, 3)
+            sea_grid_layout.addWidget(QLabel("Nx"), 0, 4)
+            sea_nx = QLineEdit("11")
+            sea_nx.setFixedWidth(48)
+            sea_grid_layout.addWidget(sea_nx, 0, 5)
+            sea_grid_layout.addWidget(QLabel("Y min"), 1, 0)
+            sea_y_min = QLineEdit("-50")
+            sea_grid_layout.addWidget(sea_y_min, 1, 1)
+            sea_grid_layout.addWidget(QLabel("Y max"), 1, 2)
+            sea_y_max = QLineEdit("50")
+            sea_grid_layout.addWidget(sea_y_max, 1, 3)
+            sea_grid_layout.addWidget(QLabel("Ny"), 1, 4)
+            sea_ny = QLineEdit("11")
+            sea_ny.setFixedWidth(48)
+            sea_grid_layout.addWidget(sea_ny, 1, 5)
+            sea_grid_layout.addWidget(QLabel("Z"), 2, 0)
+            sea_z = QLineEdit("0")
+            sea_grid_layout.addWidget(sea_z, 2, 1)
+            sea_grid_btn = QPushButton("Use Grid for Selected Vessels")
+            sea_grid_layout.addWidget(sea_grid_btn, 2, 2, 1, 4)
+            extra_layout.addWidget(sea_grid_group)
             result_table = QTableWidget()
             result_table.setColumnCount(4)
             result_table.setHorizontalHeaderLabels(
@@ -379,6 +408,7 @@ class FileLoader:
                 var_vars=var_vars,
                 obj_map=obj_map,
                 extra_entry=extra_entry,
+                sea_grid_group=sea_grid_group,
                 default_inputs=default_inputs,
 
                 obj_show_cb=obj_show_cb,
@@ -431,6 +461,7 @@ class FileLoader:
 
                 if selected and same_type:
                     otype = first_type
+                    sea_grid_group.setEnabled(otype == "Vessel")
                     terms_var = _parse_search_terms(var_filter.text())
                     for vname in self.orcaflex_varmap.get(otype, []):
 
@@ -454,6 +485,7 @@ class FileLoader:
                         default_val = default_inputs.get(otype).text().strip()
                         extra_entry.setText(default_val or "0,0,0")
                 else:
+                    sea_grid_group.setEnabled(False)
                     if not selected:
                         msg = "Select object(s) to see variables"
                     elif not same_type:
@@ -880,6 +912,75 @@ class FileLoader:
                     )
 
             pressure_btn.clicked.connect(extract_surface_pressures)
+
+            def use_sea_surface_grid(
+                *_,
+                obj_vars=obj_vars,
+                obj_map=obj_map,
+                var_vars=var_vars,
+                extra_entry=extra_entry,
+                x_min_entry=sea_x_min,
+                x_max_entry=sea_x_max,
+                nx_entry=sea_nx,
+                y_min_entry=sea_y_min,
+                y_max_entry=sea_y_max,
+                ny_entry=sea_ny,
+                z_entry=sea_z,
+            ):
+                selected_objs = [n for n, cb in obj_vars.items() if cb.isChecked()]
+                if not selected_objs:
+                    QMessageBox.warning(dialog, "No Vessel", "Select at least one Vessel object first.")
+                    return
+                if any(obj_map.get(name) != "Vessel" for name in selected_objs):
+                    QMessageBox.warning(
+                        dialog,
+                        "Vessel Required",
+                        "Sea surface point grids can only be extracted for Vessel objects.",
+                    )
+                    return
+
+                try:
+                    coords = self._build_orcaflex_sea_surface_grid(
+                        float(x_min_entry.text().strip()),
+                        float(x_max_entry.text().strip()),
+                        int(nx_entry.text().strip()),
+                        float(y_min_entry.text().strip()),
+                        float(y_max_entry.text().strip()),
+                        int(ny_entry.text().strip()),
+                        float(z_entry.text().strip()),
+                    )
+                except ValueError as exc:
+                    QMessageBox.warning(dialog, "Invalid Grid", str(exc))
+                    return
+
+                selected_vars = [v for v, cb in var_vars.items() if cb.isChecked()]
+                invalid = [
+                    v for v in selected_vars
+                    if not self._is_orcaflex_sea_surface_grid_variable(v)
+                ]
+                if invalid:
+                    QMessageBox.warning(
+                        dialog,
+                        "Sea Surface Variables Only",
+                        "Only sea-surface related variables can be used with the point grid.",
+                    )
+                    return
+
+                if not selected_vars:
+                    default_var = "Sea surface Z"
+                    cb = var_vars.get(default_var)
+                    if cb is None:
+                        QMessageBox.warning(
+                            dialog,
+                            "No Sea Surface Variable",
+                            "Select at least one sea-surface related Vessel variable.",
+                        )
+                        return
+                    cb.setChecked(True)
+
+                extra_entry.setText(self._format_orcaflex_position_grid(coords))
+
+            sea_grid_btn.clicked.connect(use_sea_surface_grid)
 
             per_file_state[fp] = {
                 "obj_vars": obj_vars,
@@ -1390,6 +1491,164 @@ class FileLoader:
             except ValueError:
                 pass
         return coords
+
+    def _build_orcaflex_sea_surface_grid(
+        self,
+        x_min,
+        x_max,
+        nx,
+        y_min,
+        y_max,
+        ny,
+        z,
+    ):
+        """Return xyz tuples for an OrcaFlex Vessel sea-surface sampling grid."""
+
+        if nx < 1 or ny < 1:
+            raise ValueError("Nx and Ny must be at least 1.")
+        if nx * ny > 10000:
+            raise ValueError("The sea surface grid is too large. Use 10000 points or fewer.")
+
+        values = [x_min, x_max, y_min, y_max, z]
+        if not all(np.isfinite(float(v)) for v in values):
+            raise ValueError("Grid coordinates must be finite numeric values.")
+
+        xs = np.linspace(float(x_min), float(x_max), int(nx))
+        ys = np.linspace(float(y_min), float(y_max), int(ny))
+        return [
+            (float(x), float(y), float(z))
+            for y in ys
+            for x in xs
+        ]
+
+    def _format_orcaflex_position_grid(self, coords):
+        """Format xyz tuples for the semicolon-separated Vessel extra input."""
+
+        return "; ".join(
+            f"{x:.6g},{y:.6g},{z:.6g}" for x, y, z in coords
+        )
+
+    def _is_orcaflex_sea_surface_grid_variable(self, name):
+        """Return whether *name* is suitable for Vessel point-grid extraction."""
+
+        if not isinstance(name, str):
+            return False
+        normalized = name.strip().lower()
+        return (
+            normalized.startswith("sea ")
+            or normalized.startswith("disturbed sea ")
+            or normalized == "air gap"
+        )
+
+    def _orcaflex_extra_xyz(self, extra):
+        """Return xyz coordinates from an OrcaFlex ObjectExtra-like value."""
+
+        if isinstance(extra, (tuple, list, np.ndarray)) and len(extra) == 3:
+            try:
+                return tuple(float(v) for v in extra)
+            except (TypeError, ValueError):
+                return None
+        if extra is None:
+            return None
+        xyz = (
+            getattr(extra, "X", None),
+            getattr(extra, "Y", None),
+            getattr(extra, "Z", None),
+        )
+        if not all(v is not None for v in xyz):
+            return None
+        try:
+            return tuple(float(v) for v in xyz)
+        except (TypeError, ValueError):
+            return None
+
+    def _add_orcaflex_sea_surface_scatter_series(
+        self,
+        tsdb,
+        model,
+        fallback_specs,
+        names,
+        time,
+        results,
+    ):
+        """Add flattened X/Y/Z/value series for Vessel sea-surface point grids."""
+
+        time_arr = np.asarray(time)
+        data_arr = np.asarray(results, dtype=float)
+        if time_arr.ndim != 1 or data_arr.ndim != 2 or data_arr.shape[0] != time_arr.size:
+            return
+
+        groups = {}
+        for col_idx, fallback_spec in enumerate(fallback_specs):
+            try:
+                obj_name, var_name, object_extra = fallback_spec
+            except ValueError:
+                continue
+            if not self._is_orcaflex_sea_surface_grid_variable(var_name):
+                continue
+            try:
+                obj = model[obj_name]
+            except Exception:
+                continue
+            if getattr(obj, "typeName", None) != "Vessel":
+                continue
+            coord = self._orcaflex_extra_xyz(object_extra)
+            if coord is None:
+                continue
+            key = (obj_name, var_name)
+            groups.setdefault(key, []).append((col_idx, coord))
+
+        redundant = getattr(self, "orcaflex_redundant_subs", [])
+        for (obj_name, var_name), columns in groups.items():
+            if not columns:
+                continue
+            col_indices = [col for col, _coord in columns]
+            coords = np.asarray([coord for _col, coord in columns], dtype=float)
+            values = data_arr[:, col_indices]
+            n_times, n_points = values.shape
+            if n_times == 0 or n_points == 0:
+                continue
+
+            short_obj = self._strip_redundant(obj_name, redundant)
+            short_var = self._strip_redundant(var_name, redundant)
+            base = f"{short_obj}:{short_var} Sea Surface Grid"
+            flat_time = np.repeat(time_arr, n_points)
+            flat_x = np.tile(coords[:, 0], n_times)
+            flat_y = np.tile(coords[:, 1], n_times)
+            flat_values = values.reshape(-1)
+            metadata_base = {
+                "source": "OrcaFlex sea surface point grid",
+                "orcaflex_object": obj_name,
+                "orcaflex_variable": var_name,
+            }
+            self._add_unique_timeseries(
+                tsdb,
+                f"{base} X",
+                flat_time,
+                flat_x,
+                metadata={**metadata_base, "scatter_role": "x"},
+            )
+            self._add_unique_timeseries(
+                tsdb,
+                f"{base} Y",
+                flat_time,
+                flat_y,
+                metadata={**metadata_base, "scatter_role": "y"},
+            )
+            self._add_unique_timeseries(
+                tsdb,
+                f"{base} Z",
+                flat_time,
+                flat_values,
+                metadata={**metadata_base, "scatter_role": "z"},
+            )
+            self._add_unique_timeseries(
+                tsdb,
+                f"{base} Value",
+                flat_time,
+                flat_values,
+                metadata={**metadata_base, "scatter_role": "color"},
+            )
 
     def _get_closest_objects(self, coords, objects):
         """Return info on closest objects for each coordinate."""
@@ -1960,6 +2219,10 @@ class FileLoader:
 
                             # Helpful for debugging/inspection.
                             "source": "OrcaFlex SpectralResponseRAO",
+                            "orcaflex_object": obj_name,
+                            "orcaflex_object_type": getattr(obj_for_rao, "typeName", None),
+                            "orcaflex_variable": var_name,
+                            "orcaflex_object_extra_xyz": self._orcaflex_extra_xyz(object_extra),
                         }
 
                 except Exception:
@@ -1971,6 +2234,14 @@ class FileLoader:
             for i, name in enumerate(names):
                 metadata = spectral_lookup.get(name)
                 self._add_unique_timeseries(tsdb, name, time, results[:, i], metadata=metadata)
+            self._add_orcaflex_sea_surface_scatter_series(
+                tsdb,
+                model,
+                fallback_specs,
+                names,
+                time,
+                results,
+            )
             return tsdb
         except Exception as e:
             if self._is_frequency_domain_model(model):
