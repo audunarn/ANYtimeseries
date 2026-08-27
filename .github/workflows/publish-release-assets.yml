@@ -22,24 +22,37 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release download '${{ github.event.release.tag_name }}' --repo '${{ github.repository }}' --dir release --pattern '*.whl' --pattern '*.tar.gz' --pattern 'SHA256SUMS'
       - name: Verify immutable asset hashes
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           python - <<'PY'
-          import hashlib, re
+          import hashlib
+          import os
+          import re
           from pathlib import Path
+          version = "1.0.1"
+          if os.environ["RELEASE_TAG"] != f"v{version}":
+              raise SystemExit("release tag does not match anytimes 1.0.1")
           root = Path("release")
-          artifacts = sorted(path for path in root.iterdir() if path.name != "SHA256SUMS")
-          if len(artifacts) != 2 or sum(path.suffix == ".whl" for path in artifacts) != 1 or sum(path.name.endswith(".tar.gz") for path in artifacts) != 1:
-              raise SystemExit("release must contain exactly one wheel and one sdist")
+          checksum_path = root / "SHA256SUMS"
+          if not checksum_path.is_file() or checksum_path.is_symlink():
+              raise SystemExit("SHA256SUMS must be a regular non-symlink file")
+          expected_names = {f"anytimes-{version}-py3-none-any.whl", f"anytimes-{version}.tar.gz"}
+          artifacts = sorted(path for path in root.iterdir() if path.name != checksum_path.name)
+          if {path.name for path in artifacts} != expected_names:
+              raise SystemExit("release does not contain the exact anytimes 1.0.1 artifact set")
           entries = {}
-          for line in (root / "SHA256SUMS").read_text(encoding="ascii").splitlines():
+          for line in checksum_path.read_text(encoding="ascii").splitlines():
               match = re.fullmatch(r"([0-9a-fA-F]{64})  ([^/\\]+)", line)
               if match is None or match.group(2) in entries:
                   raise SystemExit("malformed SHA256SUMS")
               entries[match.group(2)] = match.group(1).lower()
-          if set(entries) != {path.name for path in artifacts}:
+          if set(entries) != expected_names:
               raise SystemExit("SHA256SUMS does not bind the exact artifact set")
           for path in artifacts:
-              if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != entries[path.name]:
+              if not path.is_file() or path.is_symlink():
+                  raise SystemExit(f"release asset is not a regular non-symlink file: {path.name}")
+              if hashlib.sha256(path.read_bytes()).hexdigest() != entries[path.name]:
                   raise SystemExit(f"hash mismatch for {path.name}")
           Path("dist").mkdir()
           for path in artifacts:
