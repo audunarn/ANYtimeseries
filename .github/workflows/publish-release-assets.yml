@@ -1,0 +1,51 @@
+name: Publish verified release assets to PyPI
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/anytimes
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Download prebuilt release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download '${{ github.event.release.tag_name }}' --repo '${{ github.repository }}' --dir release --pattern '*.whl' --pattern '*.tar.gz' --pattern 'SHA256SUMS'
+      - name: Verify immutable asset hashes
+        run: |
+          python - <<'PY'
+          import hashlib, re
+          from pathlib import Path
+          root = Path("release")
+          artifacts = sorted(path for path in root.iterdir() if path.name != "SHA256SUMS")
+          if len(artifacts) != 2 or sum(path.suffix == ".whl" for path in artifacts) != 1 or sum(path.name.endswith(".tar.gz") for path in artifacts) != 1:
+              raise SystemExit("release must contain exactly one wheel and one sdist")
+          entries = {}
+          for line in (root / "SHA256SUMS").read_text(encoding="ascii").splitlines():
+              match = re.fullmatch(r"([0-9a-fA-F]{64})  ([^/\\]+)", line)
+              if match is None or match.group(2) in entries:
+                  raise SystemExit("malformed SHA256SUMS")
+              entries[match.group(2)] = match.group(1).lower()
+          if set(entries) != {path.name for path in artifacts}:
+              raise SystemExit("SHA256SUMS does not bind the exact artifact set")
+          for path in artifacts:
+              if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != entries[path.name]:
+                  raise SystemExit(f"hash mismatch for {path.name}")
+          Path("dist").mkdir()
+          for path in artifacts:
+              Path("dist", path.name).write_bytes(path.read_bytes())
+          PY
+      - name: Trusted publish exact verified artifacts
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/

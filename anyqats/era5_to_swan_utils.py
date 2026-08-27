@@ -66,7 +66,7 @@ def _write_report(report_path: Path, lines: Sequence[str]) -> None:
     """Persist a human-readable report, creating parent folders if needed."""
 
     report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.write_text("\n".join(lines))
+    report_path.write_text("\n".join(lines), encoding="utf-8")
 
 
 def validate_boundary_alignment(

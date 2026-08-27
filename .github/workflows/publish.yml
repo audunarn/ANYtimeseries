@@ -1,9 +1,6 @@
 name: Publish to PyPI
 
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
 
 permissions:
@@ -49,6 +46,8 @@ jobs:
         run: python -m build --outdir dist
       - name: Check distribution metadata
         run: python -m twine check dist/*
+      - name: Generate release checksums
+        run: cd dist && sha256sum *.whl *.tar.gz > SHA256SUMS
       - name: Store distributions for the publishing job
         uses: actions/upload-artifact@v5
         with:

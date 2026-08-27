@@ -403,7 +403,9 @@ def test_calculate_series_without_assignment_auto_creates_name(qt_app, message_s
     editor.calculate_series()
     qt_app.processEvents()
 
-    auto_name = "calc_sin_rad_60_f1_VarA_x_2_f1"
+    # Preserve the plus token just like the adjacent plus/minus collision test;
+    # otherwise distinct expressions can be assigned the same automatic name.
+    auto_name = "calc_sin_rad_60_p_f1_VarA_x_2_f1"
     assert auto_name in tsdb.getm()
     assert message_spy["info"]
     title, text = message_spy["info"][-1]
@@ -683,12 +685,10 @@ def test_merge_preserves_irregular_time_steps(qt_app, message_spy, monkeypatch):
     t1 = np.array([0.0, 1.0, 11.0, 21.0])
     x1 = np.arange(t1.size, dtype=float)
     ts1 = TimeSeries("VarA", t1, x1)
-    ts1.dt = None
 
     t2 = np.array([0.0, 2.0, 5.0])
     x2 = np.arange(t2.size, dtype=float) + 100.0
     ts2 = TimeSeries("VarB", t2, x2)
-    ts2.dt = None
 
     tsdb = DummyDB({"VarA": ts1, "VarB": ts2})
 
