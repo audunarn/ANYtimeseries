@@ -27,7 +27,7 @@ dependencies = [
 anytimes = "anytimes.anytimes_gui:main"
 
 [project.urls]
-Homepage = "https://github.com/example/anytimes"
+Homepage = "https://github.com/audunarn/ANYtimeseries"
 
 [tool.setuptools.packages.find]
 where = ["."]
