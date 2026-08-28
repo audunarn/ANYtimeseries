@@ -5,6 +5,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import subprocess
 import sys
@@ -30,6 +31,15 @@ SETUP_ACTION = "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97"
 PUBLISH_ACTION = (
     "pypa/gh-action-pypi-publish@"
     "dc37677b2e1c63e2034f94d8a5b11f265b73ba33"
+)
+MANUAL_CHECKOUT_ACTION = (
+    "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803"
+)
+MANUAL_SETUP_ACTION = (
+    "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1"
+)
+MANUAL_UPLOAD_ACTION = (
+    "actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4"
 )
 
 
@@ -384,6 +394,26 @@ def test_manual_workflow_builds_but_cannot_publish() -> None:
     assert "release:" not in workflow
     assert "sha256sum *.whl *.tar.gz > SHA256SUMS" in workflow
     assert "gh-action-pypi-publish" not in workflow
+
+
+def test_all_workflow_actions_are_exactly_pinned() -> None:
+    uses = []
+    for path in sorted((ROOT / ".github/workflows").glob("*.yml")):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            match = re.match(r"^\s*(?:-\s*)?uses:\s*(\S+)", line)
+            if match:
+                uses.append(match.group(1))
+
+    assert uses
+    assert all(re.fullmatch(r"[^@\s]+@[0-9a-f]{40}", value) for value in uses)
+    assert set(uses) == {
+        CHECKOUT_ACTION,
+        SETUP_ACTION,
+        PUBLISH_ACTION,
+        MANUAL_CHECKOUT_ACTION,
+        MANUAL_SETUP_ACTION,
+        MANUAL_UPLOAD_ACTION,
+    }
 
 
 def test_release_authority_accepts_exact_ledger_bound_artifacts(tmp_path: Path) -> None:
