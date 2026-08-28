@@ -1,4 +1,4 @@
-name: Publish verified release assets to PyPI
+name: Publish ledger-authorized release assets to PyPI
 
 on:
   release:
@@ -7,8 +7,13 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: pypi-${{ github.repository }}-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
 jobs:
   publish:
+    if: github.event.release.draft == false && github.event.release.prerelease == false
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -17,48 +22,39 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - name: Download prebuilt release assets
+      - name: Check out the ledger-only release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - name: Download the complete prebuilt release asset set
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release download '${{ github.event.release.tag_name }}' --repo '${{ github.repository }}' --dir release --pattern '*.whl' --pattern '*.tar.gz' --pattern 'SHA256SUMS'
-      - name: Verify immutable asset hashes
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          mkdir release-assets
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir release-assets
+      - name: Verify sole-child ledger authority and exact distributions
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
-          python - <<'PY'
-          import hashlib
-          import os
-          import re
-          from pathlib import Path
-          version = "1.0.1"
-          if os.environ["RELEASE_TAG"] != f"v{version}":
-              raise SystemExit("release tag does not match anytimes 1.0.1")
-          root = Path("release")
-          checksum_path = root / "SHA256SUMS"
-          if not checksum_path.is_file() or checksum_path.is_symlink():
-              raise SystemExit("SHA256SUMS must be a regular non-symlink file")
-          expected_names = {f"anytimes-{version}-py3-none-any.whl", f"anytimes-{version}.tar.gz"}
-          artifacts = sorted(path for path in root.iterdir() if path.name != checksum_path.name)
-          if {path.name for path in artifacts} != expected_names:
-              raise SystemExit("release does not contain the exact anytimes 1.0.1 artifact set")
-          entries = {}
-          for line in checksum_path.read_text(encoding="ascii").splitlines():
-              match = re.fullmatch(r"([0-9a-fA-F]{64})  ([^/\\]+)", line)
-              if match is None or match.group(2) in entries:
-                  raise SystemExit("malformed SHA256SUMS")
-              entries[match.group(2)] = match.group(1).lower()
-          if set(entries) != expected_names:
-              raise SystemExit("SHA256SUMS does not bind the exact artifact set")
-          for path in artifacts:
-              if not path.is_file() or path.is_symlink():
-                  raise SystemExit(f"release asset is not a regular non-symlink file: {path.name}")
-              if hashlib.sha256(path.read_bytes()).hexdigest() != entries[path.name]:
-                  raise SystemExit(f"hash mismatch for {path.name}")
-          Path("dist").mkdir()
-          for path in artifacts:
-              Path("dist", path.name).write_bytes(path.read_bytes())
-          PY
-      - name: Trusted publish exact verified artifacts
-        uses: pypa/gh-action-pypi-publish@release/v1
+          python tools/verify_release_authority.py \
+            --ledger docs/release/anytimes-1.0.1-ledger.json \
+            --assets release-assets \
+            --output dist \
+            --tag "$RELEASE_TAG" \
+            --protected-ref refs/remotes/origin/main \
+            --expected-terminal ACCEPTED_ANYTIMES_1_0_1_RELEASE \
+            --distribution anytimes \
+            --version 1.0.1 \
+            --artifact anytimes-1.0.1-py3-none-any.whl \
+            --artifact anytimes-1.0.1.tar.gz
+      - name: Publish exact ledger-authorized distributions
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
         with:
           packages-dir: dist/
