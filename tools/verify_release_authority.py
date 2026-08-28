@@ -36,6 +36,7 @@ def _git_environment() -> dict[str, str]:
     environment = os.environ.copy()
     forbidden = {
         "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_ATTR_SOURCE",
         "GIT_COMMON_DIR",
         "GIT_CONFIG",
         "GIT_CONFIG_COUNT",
@@ -227,6 +228,45 @@ def verify(arguments: argparse.Namespace) -> None:
     if ledger["tag"] != arguments.tag or ledger["publication_authorized"] is not True:
         _fail("release tag or publication authority differs")
 
+    if (
+        arguments.tag != f"v{arguments.version}"
+        or re.fullmatch(
+            r"v(?:0|[1-9][0-9]*)\."
+            r"(?:0|[1-9][0-9]*)\."
+            r"(?:0|[1-9][0-9]*)",
+            arguments.tag,
+        )
+        is None
+    ):
+        _fail("release tag is not canonical")
+    tag_ref = f"refs/tags/{arguments.tag}"
+    if (
+        _git_run(root, "check-ref-format", "--allow-onelevel", tag_ref).returncode
+        != 0
+    ):
+        _fail("release tag ref is malformed")
+    tag_result = _git_run(
+        root,
+        "rev-parse",
+        "--verify",
+        f"{tag_ref}^{{commit}}",
+    )
+    if tag_result.returncode != 0:
+        _fail("release tag ref does not resolve to a commit")
+    tag_commit = tag_result.stdout.decode().strip()
+    head_commit = _git(
+        root,
+        "rev-parse",
+        "--verify",
+        "HEAD^{commit}",
+    ).decode().strip()
+    if (
+        COMMIT_RE.fullmatch(tag_commit) is None
+        or COMMIT_RE.fullmatch(head_commit) is None
+        or tag_commit != head_commit
+    ):
+        _fail("release tag ref does not identify the ledger HEAD")
+
     qualification = _exact_keys(
         ledger["qualification"],
         {
@@ -312,6 +352,7 @@ def verify(arguments: argparse.Namespace) -> None:
         root,
         "diff",
         "--no-ext-diff",
+        "--no-textconv",
         "--name-status",
         "--no-renames",
         source_commit,

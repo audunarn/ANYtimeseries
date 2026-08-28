@@ -25,6 +25,7 @@ def test_release_verifier_scrubs_inherited_git_configuration(
 ) -> None:
     module = _load_verifier()
     for key in (
+        "GIT_ATTR_SOURCE",
         "GIT_CONFIG",
         "GIT_CONFIG_COUNT",
         "GIT_CONFIG_PARAMETERS",
@@ -34,6 +35,7 @@ def test_release_verifier_scrubs_inherited_git_configuration(
         monkeypatch.setenv(key, "attacker-controlled")
     environment = module._git_environment()
     assert not {
+        "GIT_ATTR_SOURCE",
         "GIT_CONFIG",
         "GIT_CONFIG_COUNT",
         "GIT_CONFIG_PARAMETERS",
@@ -44,19 +46,3 @@ def test_release_verifier_scrubs_inherited_git_configuration(
     assert environment["GIT_CONFIG_GLOBAL"]
     assert environment["GIT_ATTR_NOSYSTEM"] == "1"
     assert environment["GIT_NO_REPLACE_OBJECTS"] == "1"
-
-
-def test_release_verifier_closes_external_git_authority() -> None:
-    source = VERIFIER.read_text(encoding="utf-8")
-    for token in (
-        '"core.attributesFile="',
-        '"--no-ext-diff"',
-        '"refs/replace"',
-        '"info/grafts"',
-        '"info/attributes"',
-        "Git replacement objects are forbidden",
-        "Git grafts are forbidden",
-        "Git info attributes are forbidden",
-    ):
-        assert token in source
-

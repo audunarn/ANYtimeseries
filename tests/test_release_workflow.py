@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import tarfile
@@ -99,13 +101,32 @@ def _run_verifier(tmp_path: Path, mutation: str = "") -> subprocess.CompletedPro
     _git(repository, "init", "--quiet")
     _git(remote, "init", "--bare", "--quiet")
     (repository / "source.txt").write_text("frozen artifact source\n", encoding="utf-8")
-    _git(repository, "add", "source.txt")
+    source_paths = ["source.txt"]
+    if mutation == "textconv-diff-driver":
+        (repository / ".gitattributes").write_text(
+            "* diff=release-bypass\n",
+            encoding="utf-8",
+        )
+        source_paths.append(".gitattributes")
+    _git(repository, "add", *source_paths)
     _git(repository, "commit", "--quiet", "-m", "freeze artifact source")
     source_commit = _git(repository, "rev-parse", "HEAD")
     source_tree = _git(repository, "rev-parse", "HEAD^{tree}")
     _git(repository, "branch", "-M", "main")
     _git(repository, "remote", "add", "origin", str(remote))
     _git(repository, "push", "--quiet", "-u", "origin", "main")
+
+    attribute_source_commit = ""
+    if mutation == "git-attr-source":
+        _git(repository, "checkout", "--quiet", "-b", "attack-attributes")
+        (repository / ".gitattributes").write_text(
+            "* diff=release-bypass\n",
+            encoding="utf-8",
+        )
+        _git(repository, "add", ".gitattributes")
+        _git(repository, "commit", "--quiet", "-m", "attacker attributes")
+        attribute_source_commit = _git(repository, "rev-parse", "HEAD")
+        _git(repository, "checkout", "--quiet", "main")
 
     _write_wheel(assets / WHEEL, b"accepted build\n")
     if mutation == "wrong-metadata":
@@ -147,6 +168,8 @@ def _run_verifier(tmp_path: Path, mutation: str = "") -> subprocess.CompletedPro
         ledger["qualification"]["evidence_sha256"] = "0" * 64
     elif mutation == "review-hash":
         ledger["qualification"]["independent_review_sha256"] = "A" * 64
+    elif mutation == "noncanonical-tag-ref":
+        ledger["tag"] = f"{TAG}^{{commit}}"
     if mutation == "wrong-source":
         ledger["artifact_source"]["tree"] = "0" * 40
 
@@ -169,8 +192,119 @@ def _run_verifier(tmp_path: Path, mutation: str = "") -> subprocess.CompletedPro
     if mutation != "unmerged-tag-child":
         _git(repository, "push", "--quiet", "origin", "HEAD:main")
 
+    git_directory = Path(_git(repository, "rev-parse", "--git-dir"))
+    if not git_directory.is_absolute():
+        git_directory = repository / git_directory
+    git_info = git_directory / "info"
+    git_info.mkdir(exist_ok=True)
+    if mutation == "moved-tag-ref":
+        _git(repository, "tag", "--force", TAG, source_commit)
+    elif mutation == "missing-tag-ref":
+        _git(repository, "tag", "--delete", TAG)
+    elif mutation == "replacement-ref":
+        _git(
+            repository,
+            "replace",
+            source_commit,
+            _git(repository, "rev-parse", "HEAD"),
+        )
+    elif mutation == "graft-file":
+        (git_info / "grafts").write_text(
+            _git(repository, "rev-parse", "HEAD") + "\n",
+            encoding="ascii",
+        )
+    elif mutation == "info-attributes":
+        (git_info / "attributes").write_text(
+            "* diff=release-bypass\n",
+            encoding="utf-8",
+        )
+
     _write_checksums(assets)
-    invoked_tag = TAG
+    invoked_tag = f"{TAG}^{{commit}}" if mutation == "noncanonical-tag-ref" else TAG
+    verifier_environment = os.environ.copy()
+    attacker_marker = tmp_path / "attacker.marker"
+    attacker = tmp_path / "attacker.py"
+    attacker.write_text(
+        "from pathlib import Path\n"
+        f"Path({str(attacker_marker)!r}).write_text("
+        "'invoked\\n', encoding='utf-8')\n"
+        "raise SystemExit(97)\n",
+        encoding="utf-8",
+    )
+    attacker_command = shlex.join((sys.executable, str(attacker)))
+    external_attributes = tmp_path / "external.attributes"
+    external_attributes.write_text(
+        "* diff=release-bypass\n",
+        encoding="utf-8",
+    )
+    external_config = tmp_path / "external.gitconfig"
+    external_config.write_text("", encoding="utf-8")
+    _git(
+        repository,
+        "config",
+        "--file",
+        str(external_config),
+        "core.attributesFile",
+        str(external_attributes),
+    )
+    _git(
+        repository,
+        "config",
+        "--file",
+        str(external_config),
+        "diff.external",
+        attacker_command,
+    )
+    _git(
+        repository,
+        "config",
+        "--file",
+        str(external_config),
+        "diff.release-bypass.textconv",
+        attacker_command,
+    )
+    assert (
+        _git(
+            repository,
+            "config",
+            "--file",
+            str(external_config),
+            "--get",
+            "diff.external",
+        )
+        == attacker_command
+    )
+    if mutation == "global-attributes-config":
+        verifier_environment["GIT_CONFIG_GLOBAL"] = str(external_config)
+    elif mutation == "system-attributes-config":
+        verifier_environment["GIT_CONFIG_SYSTEM"] = str(external_config)
+    elif mutation == "core-attributes-config":
+        _git(repository, "config", "core.attributesFile", str(external_attributes))
+        _git(
+            repository,
+            "config",
+            "diff.release-bypass.textconv",
+            attacker_command,
+        )
+    elif mutation == "environment-external-diff":
+        verifier_environment["GIT_EXTERNAL_DIFF"] = attacker_command
+    elif mutation == "local-external-diff":
+        _git(repository, "config", "diff.external", attacker_command)
+    elif mutation == "textconv-diff-driver":
+        _git(
+            repository,
+            "config",
+            "diff.release-bypass.textconv",
+            attacker_command,
+        )
+    elif mutation == "git-attr-source":
+        verifier_environment["GIT_ATTR_SOURCE"] = attribute_source_commit
+        _git(
+            repository,
+            "config",
+            "diff.release-bypass.textconv",
+            attacker_command,
+        )
     if mutation == "paired-replacement":
         _write_wheel(assets / WHEEL, b"replacement build\n")
         _write_checksums(assets)
@@ -218,6 +352,7 @@ def _run_verifier(tmp_path: Path, mutation: str = "") -> subprocess.CompletedPro
         check=False,
         capture_output=True,
         text=True,
+        env=verifier_environment,
     )
 
 
@@ -272,11 +407,50 @@ def test_release_authority_accepts_exact_ledger_bound_artifacts(tmp_path: Path) 
         "wrong-metadata",
         "extra-child-path",
         "noncanonical",
+        "moved-tag-ref",
+        "missing-tag-ref",
+        "noncanonical-tag-ref",
+        "replacement-ref",
+        "graft-file",
+        "info-attributes",
     ],
 )
 def test_release_authority_rejects_mutation(tmp_path: Path, mutation: str) -> None:
     completed = _run_verifier(tmp_path / mutation, mutation)
     assert completed.returncode != 0, mutation
+    expected_errors = {
+        "graft-file": "Git grafts are forbidden",
+        "info-attributes": "Git info attributes are forbidden",
+        "missing-tag-ref": "release tag ref does not resolve to a commit",
+        "moved-tag-ref": "release tag ref does not identify the ledger HEAD",
+        "noncanonical-tag-ref": "release tag is not canonical",
+        "replacement-ref": "Git replacement objects are forbidden",
+    }
+    if mutation in expected_errors:
+        assert expected_errors[mutation] in completed.stderr
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "core-attributes-config",
+        "environment-external-diff",
+        "git-attr-source",
+        "global-attributes-config",
+        "local-external-diff",
+        "system-attributes-config",
+        "textconv-diff-driver",
+    ],
+)
+def test_release_authority_neutralizes_external_git_configuration(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    case = tmp_path / mutation
+    completed = _run_verifier(case, mutation)
+
+    assert completed.returncode == 0, completed.stderr
+    assert not (case / "attacker.marker").exists()
 
 
 def test_paired_asset_and_checksum_replacement_is_not_authority(tmp_path: Path) -> None:
