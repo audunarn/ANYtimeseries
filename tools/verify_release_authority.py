@@ -39,6 +39,7 @@ def _git_environment() -> dict[str, str]:
         "GIT_COMMON_DIR",
         "GIT_CONFIG",
         "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_PARAMETERS",
         "GIT_DIFF_OPTS",
         "GIT_DIR",
         "GIT_EXTERNAL_DIFF",
@@ -57,6 +58,7 @@ def _git_environment() -> dict[str, str]:
             environment.pop(key, None)
     environment["GIT_CONFIG_NOSYSTEM"] = "1"
     environment["GIT_CONFIG_GLOBAL"] = os.devnull
+    environment["GIT_ATTR_NOSYSTEM"] = "1"
     environment["GIT_NO_REPLACE_OBJECTS"] = "1"
     environment["GIT_OPTIONAL_LOCKS"] = "0"
     environment["GIT_TERMINAL_PROMPT"] = "0"
@@ -276,6 +278,13 @@ def verify(arguments: argparse.Namespace) -> None:
         graft_path = root / graft_path
     if graft_path.exists() and graft_path.stat().st_size:
         _fail("Git grafts are forbidden")
+    attributes_path = Path(
+        _git(root, "rev-parse", "--git-path", "info/attributes").decode().strip()
+    )
+    if not attributes_path.is_absolute():
+        attributes_path = root / attributes_path
+    if attributes_path.exists() and attributes_path.stat().st_size:
+        _fail("Git info attributes are forbidden")
     protected_ref = arguments.protected_ref
     if (
         re.fullmatch(r"refs/remotes/origin/[A-Za-z0-9][A-Za-z0-9._/-]*", protected_ref)
