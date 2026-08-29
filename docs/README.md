@@ -182,17 +182,16 @@ In addition to the GUI, the package exposes reusable functions:
 - `anytimes.fatigue` – fatigue data structures, damage computation and result aggregation.
 - `anytimes.gui.filename_parser` – parse embedded filename metadata (e.g., `Hs0_3`, `prob0_01`, `exposure12`).
 
-## Command-Line Helpers
+## Command-line launch
 
-A Windows `.bat` launcher can be used to pin the GUI to a specific interpreter:
+Use the installed console entry point or module launcher; neither depends on a
+machine-specific Python path:
 
-```batch
-@echo off
-C:\Python\Python313\python.exe C:\Github\ANYtimeseries\anytimes\anytimes_gui.py
-pause
+```powershell
+anytimes
+python -m anytimes
+python run_gui.py
 ```
-
-Update the paths to match your system.
 
 ## Screenshots
 

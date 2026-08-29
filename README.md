@@ -71,16 +71,10 @@ If you prefer to build the executable yourself, follow the
 
 ## Requirements
 
-- numpy
-- pandas
-- scipy
-- PySide6
-- matplotlib
-
-## Optional Requirements
-- plotly
-- bokeh
-- OrcFxAPI and Orcaflex (licenced or [Demo][1])
+The package metadata is the source of truth. Installation includes numpy,
+pandas, openpyxl, scipy, xarray, netCDF4, PySide6, matplotlib, pyextremes, and
+tqdm. Plotly and Bokeh are optional plotting backends. OrcFxAPI requires a
+licensed OrcaFlex installation or the OrcaFlex [demo][1].
 
 ## Usage
 
@@ -92,10 +86,13 @@ from anytimes import anytimes_gui
 
 The module exposes Qt widgets for building custom time-series exploration tools. 
 
-You can also launch the GUI from the command line using the `anytimes` entry point or via Python's module launcher:
-```cmd
-C:\Python\Python313\Scripts\anytimes
+You can also launch the GUI from the command line using the `anytimes` entry
+point or Python's module launcher:
+
+```powershell
+anytimes
 python -m anytimes
+python run_gui.py
 ```
 
 You can start the GUI programmatically by calling:
@@ -103,19 +100,6 @@ You can start the GUI programmatically by calling:
 ```python
 anytimes_gui.main()
 ```
-
-Another approach is to make <b>some_file.bat</b> and put it on your desktop. The contents should look something like this:
-
-```batch
-@echo off
-REM Run script with specific Python interpreter
-
-C:\Python\Python313\python.exe C:\Github\ANYtimeseries\anytimes\anytimes_gui.py
-pause
-```
-
-Update it with the correct location of your Python environment and the `.py` file.
-
 
 ## License
 

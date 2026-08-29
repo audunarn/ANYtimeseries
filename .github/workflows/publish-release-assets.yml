@@ -1,0 +1,60 @@
+name: Publish ledger-authorized release assets to PyPI
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pypi-${{ github.repository }}-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.event.release.draft == false && github.event.release.prerelease == false
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/anytimes
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out the ledger-only release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - name: Download the complete prebuilt release asset set
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          mkdir release-assets
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir release-assets
+      - name: Verify sole-child ledger authority and exact distributions
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          python tools/verify_release_authority.py \
+            --ledger docs/release/anytimes-1.0.1-ledger.json \
+            --assets release-assets \
+            --output dist \
+            --tag "$RELEASE_TAG" \
+            --protected-ref refs/remotes/origin/main \
+            --expected-terminal ACCEPTED_ANYTIMES_1_0_1_RELEASE \
+            --distribution anytimes \
+            --version 1.0.1 \
+            --artifact anytimes-1.0.1-py3-none-any.whl \
+            --artifact anytimes-1.0.1.tar.gz
+      - name: Publish exact ledger-authorized distributions
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
+        with:
+          packages-dir: dist/

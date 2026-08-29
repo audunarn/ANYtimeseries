@@ -1,56 +1,19 @@
-# Building a standalone executable with PyInstaller
+# Building the Windows executable
 
-This project can be bundled into a single-file Windows executable with
-[PyInstaller](https://pyinstaller.org/) so that end users do not need a
-separate Python installation. The instructions below assume PyInstaller is
-installed in the active Python environment (e.g. `pip install pyinstaller`).
+The repository's maintained PyInstaller configuration is `anytimes.spec`.
+Build from a clean virtual environment so the executable contains only the
+intended runtime dependencies.
 
-## Basic single-file build
-
-From the repository root run:
-
-```bash
-pyinstaller \
-  --onefile \
-  --windowed \
-  --name ANYtimeSeries \
-  anytimes/__main__.py
-```
-
-Key options:
-
-- `--onefile` creates a single self-extracting `ANYtimeSeries.exe`.
-- `--windowed` hides the console window when the GUI is launched.
-- `anytimes/__main__.py` is the entry point that starts the GUI.
-
-After the command completes, the executable is available at
-`dist/ANYtimeSeries.exe`.
-
-## Including additional resources
-
-If you have added local plugins, themes or other data files that are loaded at
-runtime, list them with extra `--collect-data` options, e.g.
-
-```bash
-pyinstaller --onefile --windowed \
-  --collect-data mypackage.resources \
-  anytimes/__main__.py
-```
-
-Alternatively, create a `anytimes.spec` file (generated automatically the first
-run) and edit the `datas` section to point at extra files. Subsequent builds can
-then be triggered with:
-
-```bash
+```powershell
+python -m pip install -e .
+python -m pip install pyinstaller
 pyinstaller anytimes.spec
 ```
 
-## Running the build on Windows
+The windowed executable is written to `dist/ANYtimeSeries.exe`. PyInstaller is
+a packaging tool and is not a runtime dependency of the Python package.
 
-1. Install the project and optional dependencies into a virtual environment.
-2. Install PyInstaller (`pip install pyinstaller`).
-3. Run the command above from a Developer Command Prompt or PowerShell.
-4. Distribute the resulting `dist/ANYtimeSeries.exe`.
-
-Running the executable may require the Microsoft Visual C++ Redistributable if
-it is not already installed on the target machine.
+If resources or hidden imports are added, update `anytimes.spec` and verify the
+result on a Windows machine without the development environment. The release
+artifact should be smoke-tested by launching the GUI and loading a small CSV
+before distribution.
