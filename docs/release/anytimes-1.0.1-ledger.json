@@ -1,0 +1,28 @@
+{
+  "artifact_source": {
+    "commit": "d8094c5259947faf68947c627ede07acd8cd03ec",
+    "tree": "14d3704df7d46468b2705e68cdad4b71866dca14"
+  },
+  "artifacts": [
+    {
+      "bytes": 356001,
+      "filename": "anytimes-1.0.1-py3-none-any.whl",
+      "sha256": "E272BDF22FDA8523FB9EB77729E20D185067E4BCD89258C2A1BE9E63F1FB2445"
+    },
+    {
+      "bytes": 1710420,
+      "filename": "anytimes-1.0.1.tar.gz",
+      "sha256": "D4253C6139F4C413F6F34FF7750318A41358415044ED1F28A1B51CF98EDC6E29"
+    }
+  ],
+  "distribution": "anytimes",
+  "publication_authorized": true,
+  "qualification": {
+    "accepted_terminal": "ACCEPTED_ANYTIMES_1_0_1_RELEASE",
+    "evidence_sha256": "01CC95A5063A851E69080B338585F0425AE42602C7C06ED0F56E65D394332417",
+    "independent_review_sha256": "C33342E16A4FA03B33024ED3F31209E680AF7F735209CF5BA728122C14513421"
+  },
+  "schema": "anyecosystem.release-ledger-v1",
+  "tag": "v1.0.1",
+  "version": "1.0.1"
+}
