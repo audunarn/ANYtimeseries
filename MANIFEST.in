@@ -1,3 +1,7 @@
 include README.md
 include LICENSE
 include ANYtimes_logo.png
+include anytimes.spec
+include pyinstaller_call.txt
+include docs/pyinstaller.md
+include tools/requirements-pyinstaller.txt

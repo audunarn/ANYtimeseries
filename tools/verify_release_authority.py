@@ -366,8 +366,8 @@ def verify(arguments: argparse.Namespace) -> None:
         _fail("release ledger must be a regular Git blob")
 
     expected_names = list(arguments.artifact)
-    if len(expected_names) != 2 or len(set(expected_names)) != 2:
-        _fail("exactly two distinct expected artifacts are required")
+    if len(expected_names) < 2 or len(set(expected_names)) != len(expected_names):
+        _fail("at least two distinct expected artifacts are required")
     rows = ledger["artifacts"]
     if type(rows) is not list or len(rows) != len(expected_names):
         _fail("release artifact rows differ")
@@ -419,7 +419,9 @@ def verify(arguments: argparse.Namespace) -> None:
 
     output = Path(arguments.output).resolve()
     output.mkdir(parents=True, exist_ok=False)
-    for filename in sorted(artifacts):
+    # Desktop executables/specifications remain checksum-bound release assets,
+    # but only Python distributions belong in the PyPI publishing directory.
+    for filename in sorted(wheel_names + sdist_names):
         target = output / filename
         with target.open("xb") as stream:
             stream.write((assets / filename).read_bytes())

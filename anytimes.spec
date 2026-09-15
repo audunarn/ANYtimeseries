@@ -1,43 +1,37 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller build specification for ANYtimeSeries."""
+"""PyInstaller 6 configuration for the standalone Windows application."""
+from pathlib import Path
+from PyInstaller.utils.hooks import collect_all, collect_submodules, copy_metadata
 
-block_cipher = None
-
+root = Path(SPECPATH)
+datas = [(str(root / "ANYtimes_logo.png"), ".")]
+binaries = []
+hiddenimports = collect_submodules("anyqats.io")
+for package in ("plotly", "bokeh", "pyextremes"):
+    package_data, package_binaries, package_imports = collect_all(package)
+    datas += package_data
+    binaries += package_binaries
+    hiddenimports += package_imports
+datas += copy_metadata("anytimes")
 
 a = Analysis(
-    ['anytimes/__main__.py'],
-    pathex=[],
-    binaries=[],
-    datas=[],
-    hiddenimports=[],
-    hookspath=[],
-    hooksconfig={},
-    runtime_hooks=[],
-    excludes=[],
-    win_no_prefer_redirects=False,
-    win_private_assemblies=False,
-    cipher=block_cipher,
+    [str(root / "anytimes" / "__main__.py")],
+    pathex=[str(root)],
+    binaries=binaries,
+    datas=datas,
+    hiddenimports=hiddenimports,
+    hooksconfig={"matplotlib": {"backends": ["QtAgg", "Agg"]}},
+    excludes=["tkinter", "PyQt5", "PyQt6", "PySide2", "IPython", "pytest"],
     noarchive=False,
 )
-pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
-
+pyz = PYZ(a.pure)
 exe = EXE(
-    pyz,
-    a.scripts,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
-    [],
-    name='ANYtimeSeries',
+    pyz, a.scripts, a.binaries, a.datas, [],
+    name="ANYtimeSeries",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
-    upx_exclude=[],
-    runtime_tmpdir=None,
+    upx=False,
     console=False,
     disable_windowed_traceback=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
 )

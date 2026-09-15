@@ -44,16 +44,18 @@ jobs:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           python tools/verify_release_authority.py \
-            --ledger docs/release/anytimes-1.0.1-ledger.json \
+            --ledger docs/release/anytimes-1.1.0-ledger.json \
             --assets release-assets \
             --output dist \
             --tag "$RELEASE_TAG" \
             --protected-ref refs/remotes/origin/main \
-            --expected-terminal ACCEPTED_ANYTIMES_1_0_1_RELEASE \
+            --expected-terminal ACCEPTED_ANYTIMES_1_1_0_RELEASE \
             --distribution anytimes \
-            --version 1.0.1 \
-            --artifact anytimes-1.0.1-py3-none-any.whl \
-            --artifact anytimes-1.0.1.tar.gz
+            --version 1.1.0 \
+            --artifact anytimes-1.1.0-py3-none-any.whl \
+            --artifact anytimes-1.1.0.tar.gz \
+            --artifact ANYtimeSeries-1.1.0-windows-x64.exe \
+            --artifact anytimes.spec
       - name: Publish exact ledger-authorized distributions
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
         with:

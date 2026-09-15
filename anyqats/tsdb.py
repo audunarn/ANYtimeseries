@@ -594,7 +594,7 @@ class TsDB(object):
 
         return container
 
-    def add(self, ts):
+    def add(self, ts, replace=False):
         """
         Add new TimeSeries object to db
 
@@ -602,6 +602,9 @@ class TsDB(object):
         ----------
         ts : TimeSeries
             added TimeSeries object
+        replace : bool, optional
+            Replace an existing series with the same key, preserving its order.
+            By default, duplicate keys raise KeyError.
 
         Notes
         -----
@@ -620,13 +623,15 @@ class TsDB(object):
 
         key = os.path.join(self.common, ts.name)
 
-        if key in self.register.keys():
+        exists = key in self.register
+        if exists and not replace:
             raise KeyError("The specified key is not unique: %s" % key)
 
         self.register[key] = ts
         self.register_parent[key] = None    # does not have a parent (file)
         self.register_indices[key] = None   # ... and therefore has no index (yet)
-        self.register_keys.append(key)
+        if not exists:
+            self.register_keys.append(key)
 
     def clear(self, names=None, display=True):
         """

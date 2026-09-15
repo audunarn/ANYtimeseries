@@ -1,7 +1,9 @@
 PyInstaller call for ANYtimeSeries:
 
-pyinstaller --onefile --windowed --name ANYtimeSeries anytimes/__main__.py
+python -m pip install -r tools/requirements-pyinstaller.txt
+python -m pip install --no-deps .
+python -m PyInstaller --noconfirm anytimes.spec
 
-Alternative (when using the tracked spec file):
+Verify the frozen executable (writes a JSON result):
 
-pyinstaller anytimes.spec
+dist/ANYtimeSeries.exe --smoke-test build/frozen-smoke.json

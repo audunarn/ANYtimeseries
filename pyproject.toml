@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "anytimes"
-version = "1.0.1"
+version = "1.1.0"
 description = "PySide6-based interface for exploring and editing time-series data."
 readme = "README.md"
 authors = [{name = "AnyTimes Developers"}]
@@ -21,6 +21,9 @@ dependencies = [
     "matplotlib",
     "pyextremes",
     "tqdm",
+    "h5py",
+    "pymatreader",
+    "npTDMS",
 ]
 
 [project.scripts]

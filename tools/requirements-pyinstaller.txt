@@ -1,0 +1,22 @@
+# Runtime/build versions used for the Windows 1.1.0 release (Python 3.13 x64).
+numpy==2.4.6
+scipy==1.17.1
+pandas==2.3.3
+openpyxl==3.1.5
+xarray==2026.2.0
+netCDF4==1.7.4
+PySide6==6.10.1
+matplotlib==3.10.8
+pyextremes==2.5.0
+tqdm==4.67.1
+h5py==3.15.1
+pymatreader==1.1.0
+npTDMS==1.10.0
+plotly==6.5.0
+bokeh==3.8.1
+pyinstaller==6.20.0
+build==1.4.1
+twine==6.2.0
+pytest==9.0.3
+setuptools==82.0.0
+wheel==0.47.0

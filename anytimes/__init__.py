@@ -1,6 +1,6 @@
 """ANYtimes public package interface."""
 
-__version__ = "1.0.1"
+__version__ = "1.1.0"
 
 try:
     from . import anytimes_gui  # noqa: F401

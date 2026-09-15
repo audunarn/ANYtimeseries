@@ -86,6 +86,10 @@ __all__ = [
 
 def main() -> None:
     """Launch the AnytimeSeries GUI."""
+    if len(sys.argv) == 3 and sys.argv[1] == "--smoke-test":
+        from anytimes._smoke import run_smoke_test
+
+        sys.exit(run_smoke_test(Path(sys.argv[2])))
     app = QApplication(sys.argv)
     window = TimeSeriesEditorQt()
     window.show()

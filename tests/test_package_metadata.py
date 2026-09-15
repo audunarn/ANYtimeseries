@@ -23,7 +23,7 @@ def _project_value(name: str) -> str:
 
 
 def test_public_runtime_version_matches_distribution_metadata() -> None:
-    assert anytimes.__version__ == _project_value("version") == "1.0.1"
+    assert anytimes.__version__ == _project_value("version") == "1.1.0"
     assert "__version__" in anytimes.__all__
 
 

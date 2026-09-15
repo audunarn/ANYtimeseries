@@ -57,7 +57,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 import anytimes.gui.editor as editor_module
 from anytimes.gui.editor import TimeSeriesEditorQt
-from anyqats import TimeSeries
+from anyqats import TimeSeries, TsDB
 
 
 class DummyDB:
@@ -67,7 +67,7 @@ class DummyDB:
     def getm(self):
         return self._data
 
-    def add(self, ts):
+    def add(self, ts, replace=False):
         self._data[ts.name] = ts
 
 
@@ -482,77 +482,27 @@ def test_calculate_series_auto_name_shortens_long_equation_tokens(qt_app, messag
     assert not message_spy["warn"]
 
 
-def test_calculate_series_uses_multiprocessing_and_updates_progress(qt_app, message_spy, monkeypatch):
+def test_calculate_series_avoids_process_startup_and_updates_progress(qt_app, message_spy, monkeypatch):
     files = ["file1.ts", "file2.ts", "file3.ts"]
-    tsdbs = []
-    for idx in range(3):
-        t = np.arange(5, dtype=float)
-        x = np.arange(5, dtype=float) + idx
-        tsdbs.append(DummyDB({"CommonVar": TimeSeries("CommonVar", t, x)}))
+    t = np.arange(5, dtype=float)
+    tsdbs = [DummyDB({"CommonVar": TimeSeries("CommonVar", t, t + i)}) for i in range(3)]
 
-    submitted = []
-    tqdm_calls = []
+    def unexpected_pool(*args, **kwargs):
+        pytest.fail("Vector calculator must not spawn a fresh process pool")
 
-    class FakeFuture:
-        def __init__(self, value=None, error=None):
-            self._value = value
-            self._error = error
-
-        def result(self):
-            if self._error is not None:
-                raise self._error
-            return self._value
-
-    class FakeExecutor:
-        def __init__(self, max_workers=None, initializer=None, initargs=()):
-            self.max_workers = max_workers
-            if initializer is not None:
-                initializer(*initargs)
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def submit(self, fn, *args, **kwargs):
-            submitted.append(args[0])
-            try:
-                return FakeFuture(fn(*args, **kwargs))
-            except Exception as exc:
-                return FakeFuture(error=exc)
-
-    monkeypatch.setattr(editor_module, "ProcessPoolExecutor", FakeExecutor)
-    monkeypatch.setattr(editor_module, "as_completed", lambda futures: list(futures))
-
-    class FakeTqdm:
-        def __init__(self, iterable, total=None, desc=None, leave=None):
-            tqdm_calls.append({"total": total, "desc": desc, "leave": leave})
-            self._iterable = iterable
-
-        def __enter__(self):
-            return iter(self._iterable)
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    monkeypatch.setattr(editor_module, "tqdm", FakeTqdm)
-
+    monkeypatch.setattr(editor_module, "ProcessPoolExecutor", unexpected_pool)
     editor = _build_editor(monkeypatch, tsdbs, files)
     editor.calc_entry.setPlainText("c_CommonVar + 2")
-
     editor.calculate_series()
     qt_app.processEvents()
 
-    assert submitted == [0, 1, 2]
-    assert tqdm_calls == [{"total": len(files), "desc": "Calculating", "leave": False}]
     assert editor.progress.maximum() == len(files)
     assert editor.progress.value() == len(files)
-    assert "calc_cc_CommonVar_p_2_f1" in tsdbs[0].getm()
-    assert "calc_cc_CommonVar_p_2_f2" in tsdbs[1].getm()
-    assert "calc_cc_CommonVar_p_2_f3" in tsdbs[2].getm()
+    for i, db in enumerate(tsdbs):
+        np.testing.assert_array_equal(db.getm()[f"calc_cc_CommonVar_p_2_f{i + 1}"].x, t + i + 2)
     assert not message_spy["crit"]
     assert not message_spy["warn"]
+
 
 
 def test_calculate_series_preserves_per_file_lengths(qt_app, message_spy, monkeypatch):
@@ -579,6 +529,329 @@ def test_calculate_series_preserves_per_file_lengths(qt_app, message_spy, monkey
     assert np.allclose(second.x, np.arange(8, dtype=float) + 12.0)
     assert not message_spy["crit"]
     assert not message_spy["warn"]
+
+
+def test_calculator_only_prepares_referenced_channels_and_output_files(qt_app, message_spy, monkeypatch):
+    t = np.arange(6, dtype=float)
+    first = DummyDB({"Unused": TimeSeries("Unused", t, t)})
+    second = DummyDB({"A": TimeSeries("A", t, t), "Unused": TimeSeries("Unused", t, t)})
+    editor = _build_editor(monkeypatch, [first, second], ["first.ts", "second.ts"])
+    monkeypatch.setattr(editor, "refresh_variable_tabs", lambda: None)
+    monkeypatch.setattr(first, "getm", lambda: pytest.fail("Unreferenced file was loaded"))
+    filtered = []
+    monkeypatch.setattr(editor, "apply_filters", lambda ts: filtered.append(ts.name) or ts.x * 3)
+    editor.calc_entry.setPlainText("answer = f2_A + f2_A")
+
+    editor.calculate_series()
+
+    assert filtered == ["A"]
+    np.testing.assert_array_equal(second.getm()["answer_f2"].x, t * 6)
+    assert editor.progress.maximum() == editor.progress.value() == 1
+    assert not message_spy["crit"]
+
+
+@pytest.mark.parametrize("dated", [False, True])
+def test_calculator_cross_file_formula_alignment(qt_app, message_spy, monkeypatch, dated):
+    from datetime import datetime, timedelta
+
+    ref = datetime(2026, 1, 1) if dated else None
+    t1 = np.arange(6, dtype=float)
+    t2 = np.array([0., 2., 4.]) if dated else np.array([1., 3., 5.])
+    ref2 = ref + timedelta(seconds=1) if dated else None
+    first = DummyDB({"X": TimeSeries("X", t1, 10 + t1, dtg_ref=ref)})
+    second = DummyDB({
+        "XPOS": TimeSeries("XPOS", t2, np.array([2., 4., 6.]), dtg_ref=ref2),
+        "YAW": TimeSeries("YAW", t2, np.full(3, 30.), dtg_ref=ref2),
+        "PITCH": TimeSeries("PITCH", t2, np.full(3, 5.), dtg_ref=ref2),
+    })
+    editor = _build_editor(monkeypatch, [first, second], ["first.ts", "second.ts"])
+    editor.calc_entry.setPlainText(
+        "rel = (f1_X - 14.86) - (f2_XPOS - 0.46*radians(f2_YAW) + 38.34*radians(f2_PITCH))"
+    )
+    editor.calculate_series()
+
+    expected = 9. - 14.86 + 0.46*np.deg2rad(30.) - 38.34*np.deg2rad(5.)
+    a, b = first.getm()["rel"], second.getm()["rel"]
+    np.testing.assert_allclose(a.x, [np.nan] + [expected] * 5, equal_nan=True)
+    np.testing.assert_allclose(b.x, np.full(3, expected))
+    np.testing.assert_array_equal(a.t, t1)
+    np.testing.assert_array_equal(b.t, t2)
+    assert a.dtg_ref == ref
+    assert b.dtg_ref == ref2
+    assert not message_spy["crit"]
+
+
+def test_calculator_common_and_user_subtraction_uses_raw_series(qt_app, message_spy, monkeypatch):
+    t = np.arange(5, dtype=float)
+    db = DummyDB({"A": TimeSeries("A", t, t + 5), "B": TimeSeries("B", t, t + 1)})
+    editor = _build_editor(monkeypatch, [db], ["first.ts"])
+    editor.user_variables = {"B"}
+    monkeypatch.setattr(editor, "apply_filters", lambda ts: pytest.fail("Raw common/user input was filtered"))
+    editor.calc_entry.setPlainText("answer = c_A - u_B")
+    editor.calculate_series()
+    np.testing.assert_array_equal(db.getm()["answer_f1"].x, np.full(5, 4.))
+    assert not message_spy["crit"]
+
+
+def test_calculator_repeated_runs_use_current_filters(qt_app, message_spy, monkeypatch):
+    t = np.arange(5, dtype=float)
+    db = DummyDB({"A": TimeSeries("A", t, t)})
+    editor = _build_editor(monkeypatch, [db], ["first.ts"])
+    editor.calc_entry.setPlainText("first = f1_A * 2")
+    editor.calculate_series()
+    monkeypatch.setattr(editor, "apply_filters", lambda ts: ts.x + 10)
+    editor.calc_entry.setPlainText("second = f1_A * 2")
+    editor.calculate_series()
+    np.testing.assert_array_equal(db.getm()["first_f1"].x, t * 2)
+    np.testing.assert_array_equal(db.getm()["second_f1"].x, (t + 10) * 2)
+    np.testing.assert_array_equal(db.getm()["A"].x, t)
+    assert not message_spy["crit"]
+
+
+def test_calculator_reports_empty_time_window(qt_app, message_spy, monkeypatch):
+    t = np.arange(5, dtype=float)
+    db = DummyDB({"A": TimeSeries("A", t, t)})
+    editor = _build_editor(monkeypatch, [db], ["first.ts"])
+    editor.time_start.setText("100")
+    editor.time_end.setText("200")
+    editor.calc_entry.setPlainText("answer = f1_A * 2")
+    editor.calculate_series()
+    assert message_spy["crit"][0][0] == "No Time Window"
+    assert "answer_f1" not in db.getm()
+
+
+def test_calculator_scalar_output_and_time_window(qt_app, message_spy, monkeypatch):
+    t = np.arange(6, dtype=float)
+    db = DummyDB({"A": TimeSeries("A", t, t)})
+    editor = _build_editor(monkeypatch, [db], ["first.ts"])
+    editor.time_start.setText("1")
+    editor.time_end.setText("3")
+    editor.calc_entry.setPlainText("answer = 42")
+    editor.calculate_series()
+    np.testing.assert_array_equal(db.getm()["answer_f1"].t, [1., 2., 3.])
+    np.testing.assert_array_equal(db.getm()["answer_f1"].x, [42., 42., 42.])
+    assert not message_spy["crit"]
+
+
+def test_no_filter_returns_independent_unchanged_data(qt_app, monkeypatch):
+    values = np.array([1., np.nan, 3., np.inf])
+    ts = TimeSeries("A", np.arange(4, dtype=float), values)
+    editor = _build_editor(monkeypatch, [DummyDB({"A": ts})], ["first.ts"])
+    monkeypatch.setattr(editor_module.np, "median", lambda *_: pytest.fail("No-filter path scanned time steps"))
+    result = editor.apply_filters(ts)
+    np.testing.assert_array_equal(result, values)
+    assert not np.shares_memory(result, ts.x)
+
+
+def test_calculator_pasted_xyz_equations_create_all_outputs(qt_app, message_spy, monkeypatch):
+    t = np.arange(8, dtype=float)
+    mocap = {axis: t + offset for axis, offset in zip("xyz", [15., 2., 40.])}
+    motion = {name: t * scale for name, scale in zip(
+        ["XPOS", "YPOS", "ZPOS", "YAW", "PITCH", "ROLL"], [.1, .2, .3, .4, .5, .6]
+    )}
+    first = DummyDB({f"qtm_uv_M1_{axis}pos": TimeSeries(f"qtm_uv_M1_{axis}pos", t, x)
+                     for axis, x in mocap.items()})
+    sixth = DummyDB({name: TimeSeries(name, t, x) for name, x in motion.items()})
+    dbs = [first] + [DummyDB({"unused": TimeSeries("unused", t, t)}) for _ in range(4)] + [sixth]
+    editor = _build_editor(monkeypatch, dbs, [f"file{i}.ts" for i in range(1, 7)])
+    editor.calc_entry.setPlainText(
+        "T5210_M1_Xrel = (f1_qtm_uv_M1_xpos - 14.86) - (f6_XPOS - 0.46*radians(f6_YAW) + 38.34*radians(f6_PITCH))\n"
+        "T5210_M1_Yrel = (f1_qtm_uv_M1_ypos - 0.46) - (f6_YPOS + 14.86*radians(f6_YAW) - 38.34*radians(f6_ROLL))\n"
+        "T5210_M1_Zrel = (f1_qtm_uv_M1_zpos - 38.34) - (f6_ZPOS - 14.86*radians(f6_PITCH) + 0.46*radians(f6_ROLL))"
+    )
+    refreshed, filtered = [], []
+    monkeypatch.setattr(editor, "refresh_variable_tabs", lambda: refreshed.append(True))
+    monkeypatch.setattr(editor, "apply_filters", lambda ts: filtered.append(ts.name) or ts.x.copy())
+    editor.calculate_series()
+
+    yaw, pitch, roll = [np.deg2rad(motion[key]) for key in ("YAW", "PITCH", "ROLL")]
+    expected = {
+        "X": mocap["x"] - 14.86 - (motion["XPOS"] - .46*yaw + 38.34*pitch),
+        "Y": mocap["y"] - .46 - (motion["YPOS"] + 14.86*yaw - 38.34*roll),
+        "Z": mocap["z"] - 38.34 - (motion["ZPOS"] - 14.86*pitch + .46*roll),
+    }
+    for axis, values in expected.items():
+        name = f"T5210_M1_{axis}rel"
+        for db in (first, sixth):
+            np.testing.assert_allclose(db.getm()[name].x, values)
+            np.testing.assert_array_equal(db.getm()[name].t, t)
+        assert name in editor.user_variables
+        assert name in message_spy["info"][0][1]
+    assert all(set(db.getm()) == {"unused"} for db in dbs[1:5])
+    assert len(filtered) == len(set(filtered)) == 9
+    assert refreshed == [True]
+    assert len(message_spy["info"]) == 1
+    assert not message_spy["crit"]
+
+
+def test_calculator_multiline_parentheses_comments_and_blank_lines(qt_app, message_spy, monkeypatch):
+    t = np.arange(5, dtype=float)
+    db = DummyDB({"A": TimeSeries("A", t, t)})
+    editor = _build_editor(monkeypatch, [db], ["first.ts"])
+    editor.calc_entry.setPlainText(
+        "# Ignore this example reference: f99_Missing\n"
+        "first = (\n    f1_A +\n    2\n)\n\n"
+        "second = np.where(f1_A == 2, 10, 20) # equality is not an assignment\n"
+    )
+    editor.calculate_series()
+    np.testing.assert_array_equal(db.getm()["first_f1"].x, t + 2)
+    np.testing.assert_array_equal(db.getm()["second_f1"].x, [20., 20., 10., 20., 20.])
+    assert not message_spy["crit"]
+
+
+def test_calculator_bare_comparison_is_not_an_assignment(qt_app, message_spy, monkeypatch):
+    t = np.arange(5, dtype=float)
+    db = DummyDB({"A": TimeSeries("A", t, t)})
+    editor = _build_editor(monkeypatch, [db], ["first.ts"])
+    editor.calc_entry.setPlainText("f1_A == 2")
+    editor.calculate_series()
+    output = next(ts for key, ts in db.getm().items() if key != "A")
+    np.testing.assert_array_equal(output.x, [0., 0., 1., 0., 0.])
+    assert not message_spy["crit"]
+
+
+def test_calculator_batch_keeps_each_equations_file_scope(qt_app, message_spy, monkeypatch):
+    t1, t2 = np.arange(5, dtype=float), np.arange(8, dtype=float)
+    first = DummyDB({"A": TimeSeries("A", t1, t1)})
+    second = DummyDB({"B": TimeSeries("B", t2, t2)})
+    editor = _build_editor(monkeypatch, [first, second], ["first.ts", "second.ts"])
+    editor.calc_entry.setPlainText("one = f1_A * 2\ntwo = f2_B + 3")
+    editor.calculate_series()
+    assert set(first.getm()) == {"A", "one_f1"}
+    assert set(second.getm()) == {"B", "two_f2"}
+    np.testing.assert_array_equal(first.getm()["one_f1"].x, t1 * 2)
+    np.testing.assert_array_equal(second.getm()["two_f2"].x, t2 + 3)
+    assert not message_spy["crit"]
+
+
+@pytest.mark.parametrize("reference", ["u_first_f1", "f1_first_f1"])
+def test_calculator_batch_can_reference_staged_output(qt_app, message_spy, monkeypatch, reference):
+    t = np.arange(5, dtype=float)
+    db = DummyDB({"A": TimeSeries("A", t, t)})
+    editor = _build_editor(monkeypatch, [db], ["first.ts"])
+    editor.calc_entry.setPlainText(f"first = f1_A + 2\nsecond = {reference} * 3")
+    editor.calculate_series()
+    np.testing.assert_array_equal(db.getm()["second_f1"].x, (t + 2) * 3)
+    assert not message_spy["crit"]
+
+
+@pytest.mark.parametrize("last_equation", [
+    "second = (f1_A +",  # syntax error
+    "second = f1_Missing * 2",  # unknown channel
+    "second = np.array([1., 2.])",  # result length mismatch
+    "second = missing_name",  # evaluation error
+])
+def test_calculator_batch_failure_does_not_publish_partial_outputs(qt_app, message_spy, monkeypatch, last_equation):
+    t = np.arange(5, dtype=float)
+    db = DummyDB({"A": TimeSeries("A", t, t), "existing_f1": TimeSeries("existing_f1", t, t + 10)})
+    editor = _build_editor(monkeypatch, [db], ["first.ts"])
+    editor.calc_entry.setPlainText("first = f1_A * 2\n" + last_equation)
+    editor.calculate_series()
+    assert set(db.getm()) == {"A", "existing_f1"}
+    np.testing.assert_array_equal(db.getm()["existing_f1"].x, t + 10)
+    assert editor.user_variables == set()
+    assert not message_spy["info"]
+    assert len(message_spy["crit"]) == 1
+
+
+def test_calculator_rerun_overwrites_result_and_time_window(qt_app, message_spy, monkeypatch):
+    t = np.arange(5, dtype=float)
+    db = TsDB()
+    db.add(TimeSeries("A", t, t))
+    editor = _build_editor(monkeypatch, [db], ["first.ts"])
+    editor.calc_entry.setPlainText("answer = f1_A * 2")
+    editor.calculate_series()
+    original = db.get(name="answer_f1")
+    keys = list(db.register_keys)
+
+    editor.time_start.setText("1")
+    editor.time_end.setText("3")
+    editor.calc_entry.setPlainText("answer = f1_A * 3")
+    editor.calculate_series()
+
+    result = db.get(name="answer_f1")
+    assert result is not original
+    np.testing.assert_array_equal(result.t, [1., 2., 3.])
+    np.testing.assert_array_equal(result.x, [3., 6., 9.])
+    np.testing.assert_array_equal(original.x, t * 2)
+    np.testing.assert_array_equal(db.get(name="A").x, t)
+    assert db.register_keys == keys
+    assert editor.user_variables == {"answer_f1"}
+    assert len(message_spy["info"]) == 2
+    assert not message_spy["crit"]
+
+
+def test_calculator_duplicate_batch_name_uses_latest_value(qt_app, message_spy, monkeypatch):
+    t = np.arange(5, dtype=float)
+    db = TsDB()
+    db.add(TimeSeries("A", t, t))
+    editor = _build_editor(monkeypatch, [db], ["first.ts"])
+    editor.calc_entry.setPlainText(
+        "answer = f1_A + 1\n"
+        "before = f1_answer_f1 * 2\n"
+        "answer = f1_A + 5\n"
+        "after = f1_answer_f1 * 2\n"
+        "user_after = u_answer_f1 * 3"
+    )
+    editor.calculate_series()
+    np.testing.assert_array_equal(db.get(name="answer_f1").x, t + 5)
+    np.testing.assert_array_equal(db.get(name="before_f1").x, (t + 1) * 2)
+    np.testing.assert_array_equal(db.get(name="after_f1").x, (t + 5) * 2)
+    np.testing.assert_array_equal(db.get(name="user_after_f1").x, (t + 5) * 3)
+    assert len(db.register_keys) == len(set(db.register_keys)) == 5
+    assert not message_spy["crit"]
+
+
+def test_calculator_failed_batch_preserves_existing_output(qt_app, message_spy, monkeypatch):
+    t = np.arange(5, dtype=float)
+    db = TsDB()
+    db.add(TimeSeries("A", t, t))
+    original = TimeSeries("answer_f1", t, t + 10)
+    db.add(original)
+    editor = _build_editor(monkeypatch, [db], ["first.ts"])
+    editor.user_variables = {"answer_f1"}
+    editor.calc_entry.setPlainText("answer = f1_A * 2\nnew = f1_A + 1\nbroken = unknown")
+    editor.calculate_series()
+    assert db.get(name="answer_f1") is original
+    np.testing.assert_array_equal(original.x, t + 10)
+    assert set(db.getm()) == {"A", "answer_f1"}
+    assert editor.user_variables == {"answer_f1"}
+    assert not message_spy["info"]
+    assert len(message_spy["crit"]) == 1
+
+
+def test_calculator_rerun_overwrites_common_outputs_in_each_file(qt_app, message_spy, monkeypatch):
+    t = np.arange(5, dtype=float)
+    dbs = [TsDB(), TsDB()]
+    for i, db in enumerate(dbs):
+        db.add(TimeSeries("A", t, t + i))
+    editor = _build_editor(monkeypatch, dbs, ["first.ts", "second.ts"])
+    editor.calc_entry.setPlainText("answer = f1_A + f2_A")
+    editor.calculate_series()
+    editor.calc_entry.setPlainText("answer = f1_A - f2_A")
+    editor.calculate_series()
+    for db in dbs:
+        assert set(db.getm()) == {"A", "answer"}
+        np.testing.assert_array_equal(db.get(name="answer").x, -np.ones(5))
+        assert len(db.register_keys) == 2
+    assert not message_spy["crit"]
+
+
+def test_tsdb_add_replace_is_explicit_and_preserves_registration_order():
+    t = np.arange(3, dtype=float)
+    db = TsDB()
+    first, second = TimeSeries("A", t, t), TimeSeries("B", t, t)
+    db.add(first)
+    db.add(second)
+    replacement = TimeSeries("A", t, t + 10)
+    with pytest.raises(KeyError):
+        db.add(replacement)
+    assert db.get(name="A") is first
+    db.add(replacement, replace=True)
+    assert db.get(name="A") is replacement
+    assert db.get(ind=1) is second
+    assert db.register_keys == list(db.register) == ["A", "B"]
+    assert set(db.register_parent) == set(db.register_indices) == {"A", "B"}
 
 
 def test_quick_transformation_uses_multiprocessing_and_updates_progress(qt_app, message_spy, monkeypatch):

@@ -105,6 +105,40 @@ result_name = f1_varA + 0.5 * f2_varB
 
 where `f1`, `f2`, etc. refer to loaded file IDs. In the **Loaded Files** panel, each file is shown with its number prefix (for example `1. fileA.csv`, `2. fileB.csv`) so the list is always in sync with Calculator references. It includes autocomplete and helper guidance (`?`) for syntax.
 
+Paste multiple named equations into the same input field and click **Calculate**
+once. Start each equation on a new line:
+
+```text
+Xrel = f1_xpos - f2_XPOS
+Yrel = f1_ypos - f2_YPOS
+Zrel = f1_zpos - f2_ZPOS
+```
+
+Each assignment creates its own output, using that equation's file references
+and the existing output naming rules. Blank lines and `#` comments are allowed.
+To wrap a long equation across lines, enclose its expression in parentheses:
+
+```text
+Xrel = (
+    f1_xpos - 14.86
+    - (f2_XPOS - 0.46*radians(f2_YAW) + 38.34*radians(f2_PITCH))
+)
+```
+
+Later equations can reference earlier outputs with the usual `u_` or `fN_`
+prefixes (for example, `first = f1_xpos * 2` followed by
+`second = u_first_f1 + 1`). Reusing an output name overwrites its previous
+result. Within a batch, the last equation with that output name wins.
+If an equation fails, existing results remain unchanged and none of the batch's
+new outputs are added. A single expression without an assignment still receives
+an automatic output name.
+
+Cross-file equations interpolate each source onto the destination file's time
+axis. Samples inside the source time range remain valid, including the edges
+of a selected window; samples outside that range become NaN. Raw plots show
+the stored calculated values. When exporting a result present in several
+files, CSV columns include the source filename so each output is retained.
+
 ## Analysis Tools
 
 ### Statistics window

@@ -19,9 +19,9 @@ ROOT = Path(__file__).resolve().parents[1]
 VERIFIER = ROOT / "tools" / "verify_release_authority.py"
 DISTRIBUTION = "anytimes"
 NORMALIZED = "anytimes"
-VERSION = "1.0.1"
+VERSION = "1.1.0"
 TAG = f"v{VERSION}"
-EXPECTED_TERMINAL = "ACCEPTED_ANYTIMES_1_0_1_RELEASE"
+EXPECTED_TERMINAL = "ACCEPTED_ANYTIMES_1_1_0_RELEASE"
 WRONG_TAG = "v1.0.0"
 WHEEL = f"{NORMALIZED}-{VERSION}-py3-none-any.whl"
 SDIST = f"{NORMALIZED}-{VERSION}.tar.gz"
@@ -93,15 +93,15 @@ def _write_sdist(path: Path) -> None:
         archive.addfile(info, io.BytesIO(metadata))
 
 
-def _write_checksums(assets: Path) -> None:
+def _write_checksums(assets: Path, names=(WHEEL, SDIST)) -> None:
     text = "".join(
         f"{hashlib.sha256((assets / name).read_bytes()).hexdigest()}  {name}\n"
-        for name in sorted((WHEEL, SDIST))
+        for name in sorted(names)
     )
     (assets / "SHA256SUMS").write_text(text, encoding="ascii", newline="\n")
 
 
-def _run_verifier(tmp_path: Path, mutation: str = "") -> subprocess.CompletedProcess[str]:
+def _run_verifier(tmp_path: Path, mutation: str = "", desktop: bool = False) -> subprocess.CompletedProcess[str]:
     repository = tmp_path / "repository"
     remote = tmp_path / "origin.git"
     assets = tmp_path / "release-assets"
@@ -146,8 +146,13 @@ def _run_verifier(tmp_path: Path, mutation: str = "") -> subprocess.CompletedPro
             distribution="DifferentDistribution",
         )
     _write_sdist(assets / SDIST)
+    names = [WHEEL, SDIST]
+    if desktop:
+        names += ["ANYtimeSeries-1.1.0-windows-x64.exe", "anytimes.spec"]
+        for name in names[2:]:
+            (assets / name).write_bytes(b"test desktop release asset")
     artifact_rows = []
-    for name in sorted((WHEEL, SDIST)):
+    for name in sorted(names):
         raw = (assets / name).read_bytes()
         artifact_rows.append(
             {
@@ -229,7 +234,7 @@ def _run_verifier(tmp_path: Path, mutation: str = "") -> subprocess.CompletedPro
             encoding="utf-8",
         )
 
-    _write_checksums(assets)
+    _write_checksums(assets, names)
     invoked_tag = f"{TAG}^{{commit}}" if mutation == "noncanonical-tag-ref" else TAG
     verifier_environment = os.environ.copy()
     attacker_marker = tmp_path / "attacker.marker"
@@ -357,6 +362,7 @@ def _run_verifier(tmp_path: Path, mutation: str = "") -> subprocess.CompletedPro
             WHEEL,
             "--artifact",
             SDIST,
+            *[value for name in names[2:] for value in ("--artifact", name)],
         ],
         cwd=repository,
         check=False,
@@ -384,6 +390,8 @@ def test_production_workflow_uses_immutable_ledger_authority() -> None:
     assert LEDGER.as_posix() in production
     assert "--artifact " + WHEEL in production
     assert "--artifact " + SDIST in production
+    assert "--artifact ANYtimeSeries-1.1.0-windows-x64.exe" in production
+    assert "--artifact anytimes.spec" in production
     assert "python -m build" not in production
     assert "id-token: write" in production
 
@@ -419,6 +427,12 @@ def test_all_workflow_actions_are_exactly_pinned() -> None:
 def test_release_authority_accepts_exact_ledger_bound_artifacts(tmp_path: Path) -> None:
     completed = _run_verifier(tmp_path)
     assert completed.returncode == 0, completed.stderr
+
+
+def test_desktop_assets_are_verified_but_not_sent_to_pypi(tmp_path: Path) -> None:
+    completed = _run_verifier(tmp_path, desktop=True)
+    assert completed.returncode == 0, completed.stderr
+    assert {path.name for path in (tmp_path / "dist").iterdir()} == {WHEEL, SDIST}
 
 
 @pytest.mark.parametrize(

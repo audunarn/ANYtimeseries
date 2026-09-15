@@ -1,6 +1,7 @@
 """Main Qt window for the AnytimeSeries application."""
 from __future__ import annotations
 
+import ast
 import datetime
 import json
 import multiprocessing
@@ -119,6 +120,23 @@ def _evaluate_calculator_task(file_idx, task):
     if len(y) != len(time_window):
         raise ValueError("Result length mismatch with time vector")
     return file_idx, y
+
+
+def _parse_calculator_equations(text):
+    """Split assignments using Python syntax, preserving parenthesized continuations."""
+    tree = ast.parse(text, mode="exec")
+    equations = []
+    for statement in tree.body:
+        is_assignment = (isinstance(statement, ast.Assign) and len(statement.targets) == 1
+                         and isinstance(statement.targets[0], ast.Name))
+        if not is_assignment and not (len(tree.body) == 1 and isinstance(statement, ast.Expr)):
+            raise ValueError(
+                f"Line {statement.lineno}: enter one named equation per line (name = expression)."
+            )
+        equations.append((ast.get_source_segment(text, statement), statement.lineno))
+    if not equations:
+        raise ValueError("Please enter a formula.")
+    return equations
 
 
 def _init_transform_worker(transform_spec):
@@ -982,7 +1000,8 @@ class TimeSeriesEditorQt(QMainWindow):
         self.calc_group.setMaximumHeight(top_input_group_max_height)
         calc_layout = QVBoxLayout(self.calc_group)
         calc_help_label = QLabel(
-            "Define a new variable (e.g., result_name = f1_var1 + f2_var2) "
+            "Paste one or more equations, one name = expression per line. "
+            "For example, result_name = f1_var1 + f2_var2, "
             "where f1 and f2 refer to file IDs in the loaded list "
             "(c_ common var, u_ user var)."
         )
@@ -1616,12 +1635,7 @@ class TimeSeriesEditorQt(QMainWindow):
         return f"{candidate}_{idx}"
 
     def calculate_series(self):
-        """Evaluate the Calculator expression and create new series."""
-        import traceback
-
-        self.progress.setFormat("Calculating %v/%m files")
-        self.update_progressbar(0, max(len(self.tsdbs), 1))
-
+        """Evaluate all pasted equations and publish their outputs together."""
         expr = self.calc_entry.toPlainText().strip()
         if not expr:
             self.progress.reset()
@@ -1629,7 +1643,61 @@ class TimeSeriesEditorQt(QMainWindow):
             QMessageBox.warning(self, "No Formula", "Please enter a formula.")
             return
 
-        m_out = re.match(r"\s*([A-Za-z_]\w*)\s*=", expr)
+        try:
+            equations = _parse_calculator_equations(expr)
+        except (SyntaxError, ValueError) as exc:
+            self.progress.reset()
+            self.progress.setFormat("%p%")
+            message = f"Line {exc.lineno}: {exc.msg}" if isinstance(exc, SyntaxError) else str(exc)
+            QMessageBox.critical(self, "Calculation Error", message)
+            return
+
+        cache = {}
+        results = {}
+        names = []
+        descriptions = []
+        for index, (equation, line) in enumerate(equations, start=1):
+            prefix = f"Equation {index}/{len(equations)}: " if len(equations) > 1 else "Calculating "
+            self.progress.setFormat(prefix + "%v/%m files")
+            try:
+                prepared = self._calculate_series_equation(equation, cache)
+            except Exception as exc:
+                self.progress.reset()
+                self.progress.setFormat("%p%")
+                QMessageBox.critical(self, "Calculation Error", f"Equation {index}, line {line}: {exc}")
+                return
+            if prepared is None:
+                return
+            equation_results, output_names, description = prepared
+            for file_idx, ts in equation_results:
+                series = cache["series_by_file"][file_idx]
+                previous = series.get(ts.name)
+                if previous is not None:
+                    cache["coordinate_cache"].pop(id(previous), None)
+                cache["filtered_series_cache"].pop((file_idx, ts.name), None)
+                # Staged outputs can be referenced by subsequent equations with
+                # the usual u_ or fN_ prefixes, without modifying loaded databases.
+                series[ts.name] = ts
+                cache["known_user"].add(ts.name)
+                results[file_idx, ts.name] = ts
+            names.extend(output_names)
+            descriptions.append(description)
+
+        for (file_idx, _), ts in results.items():
+            self.tsdbs[file_idx].add(ts, replace=True)
+            self.user_variables = getattr(self, "user_variables", set())
+            self.user_variables.add(ts.name)
+        self.progress.setFormat("%p%")
+        self.refresh_variable_tabs()
+        heading = "Equation used:" if len(equations) == 1 else "Equations used:"
+        equation_text = "\n\n".join(descriptions)
+        QMessageBox.information(
+            self, "Success", f"New variable(s): {', '.join(dict.fromkeys(names))}\n\n{heading}\n{equation_text}"
+        )
+
+    def _calculate_series_equation(self, expr, cache):
+        """Prepare one equation without adding outputs or rebuilding the GUI."""
+        m_out = re.match(r"\s*([A-Za-z_]\w*)\s*=(?!=)", expr)
         if m_out:
             base_output = m_out.group(1)
             exec_expr = expr
@@ -1639,9 +1707,36 @@ class TimeSeriesEditorQt(QMainWindow):
             exec_expr = f"{base_output} = {expr}"
             display_expr = exec_expr
 
-        file_windows = []
-        file_window_coords = []
-        file_window_dtg_refs = []
+        references = " ".join(
+            node.id for node in ast.walk(ast.parse(exec_expr))
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+        )
+        common_tokens = {m.group(1) for m in re.finditer(r"\bc_([A-Za-z_]\w*)\b", references)}
+        user_tokens = {m.group(1) for m in re.finditer(r"\bu_([A-Za-z_]\w*)\b", references)}
+        explicit_file_refs = list(re.finditer(r"\bf(\d+)_([A-Za-z_]\w*)\b", references))
+        explicit_file_tags = {int(m.group(1)) for m in explicit_file_refs}
+        file_tags_used = explicit_file_tags or set(range(1, len(self.tsdbs) + 1))
+        for tag in sorted(explicit_file_tags):
+            if not 1 <= tag <= len(self.tsdbs):
+                self.progress.reset()
+                self.progress.setFormat("%p%")
+                QMessageBox.critical(self, "Calculation Error", f"File #{tag} does not exist.")
+                return
+        target_indices = [tag - 1 for tag in sorted(file_tags_used)]
+        self.update_progressbar(0, max(len(target_indices), 1))
+
+        # Keep caches local to this calculation so edits and filter changes are
+        # visible on the next run. getm() rebuilds the database mapping each time.
+        series_by_file = cache.setdefault("series_by_file", {})
+        coordinate_cache = cache.setdefault("coordinate_cache", {})
+        file_windows = cache.setdefault("file_windows", {})
+        file_window_coords = cache.setdefault("file_window_coords", {})
+        file_window_dtg_refs = cache.setdefault("file_window_dtg_refs", {})
+
+        def _series_for_file(file_index):
+            if file_index not in series_by_file:
+                series_by_file[file_index] = dict(self.tsdbs[file_index].getm())
+            return series_by_file[file_index]
 
         def _time_coordinates(ts):
             """Return alignment coordinates for a series.
@@ -1649,9 +1744,14 @@ class TimeSeriesEditorQt(QMainWindow):
             Uses absolute datetimes when available, otherwise falls back to
             the native numeric time axis.
             """
-            if ts.dtg_time is not None:
-                return np.array(ts.dtg_time, dtype="datetime64[us]")
-            return np.asarray(ts.t)
+            key = id(ts)
+            if key not in coordinate_cache:
+                dtg_time = ts.dtg_time
+                coordinate_cache[key] = (
+                    np.array(dtg_time, dtype="datetime64[us]")
+                    if dtg_time is not None else np.asarray(ts.t)
+                )
+            return coordinate_cache[key]
 
         def _coord_to_numeric(coord):
             coord = np.asarray(coord)
@@ -1661,22 +1761,19 @@ class TimeSeriesEditorQt(QMainWindow):
 
         def _align_to_window(ts, x_values, target_time, target_coord):
             coord = _time_coordinates(ts)
-            idx = (coord >= target_coord[0]) & (coord <= target_coord[-1])
-            if not np.any(idx):
-                return np.full_like(target_time, np.nan, dtype=float)
+            x_part = np.asarray(x_values, dtype=float)
+            if np.array_equal(coord, target_coord):
+                return x_part.copy()
 
-            coord_part = coord[idx]
-            x_part = np.asarray(x_values[idx], dtype=float)
-            if np.array_equal(coord_part, target_coord):
-                return x_part
-
-            overlap = (target_coord >= coord_part[0]) & (target_coord <= coord_part[-1])
+            # Keep the source samples that bracket the target window. Cropping
+            # them first loses valid interpolation at its first/last sample.
+            overlap = (target_coord >= coord[0]) & (target_coord <= coord[-1])
             if not np.any(overlap):
                 return np.full_like(target_time, np.nan, dtype=float)
 
             full = np.full_like(target_time, np.nan, dtype=float)
             target_numeric = _coord_to_numeric(target_coord[overlap])
-            source_numeric = _coord_to_numeric(coord_part)
+            source_numeric = _coord_to_numeric(coord)
 
             if source_numeric.size == 1:
                 full[overlap] = x_part[0]
@@ -1684,13 +1781,15 @@ class TimeSeriesEditorQt(QMainWindow):
                 full[overlap] = np.interp(target_numeric, source_numeric, x_part)
             return full
 
-        for tsdb in self.tsdbs:
+        for file_idx in target_indices:
+            if file_idx in file_windows:
+                continue
             file_t_window = None
             file_t_window_coord = None
             file_t_window_dtg_ref = None
-            for ts in tsdb.getm().values():
+            for ts in _series_for_file(file_idx).values():
                 mask = self.get_time_window(ts)
-                if mask is not None and np.any(mask):
+                if mask is not None and ts.t[mask].size:
                     file_t_window = ts.t[mask]
                     file_t_window_coord = _time_coordinates(ts)[mask]
                     file_t_window_dtg_ref = ts.dtg_ref
@@ -1700,20 +1799,14 @@ class TimeSeriesEditorQt(QMainWindow):
                 self.progress.setFormat("%p%")
                 QMessageBox.critical(self, "No Time Window", "Could not infer a valid time window for one or more files.")
                 return
-            file_windows.append(file_t_window)
-            file_window_coords.append(file_t_window_coord)
-            file_window_dtg_refs.append(file_t_window_dtg_ref)
-
-        common_tokens = {m.group(1) for m in re.finditer(r"\bc_([\w\- ]+)\b", exec_expr)}
-        user_tokens = {m.group(1) for m in re.finditer(r"\bu_([\w\- ]+)", exec_expr)}
-        explicit_file_refs = list(re.finditer(r"\bf(\d+)_([A-Za-z_]\w*)\b", exec_expr))
-        explicit_file_tags = {int(m.group(1)) for m in explicit_file_refs}
-        file_tags_used = explicit_file_tags or set(range(1, len(self.tsdbs) + 1))
+            file_windows[file_idx] = file_t_window
+            file_window_coords[file_idx] = file_t_window_coord
+            file_window_dtg_refs[file_idx] = file_t_window_dtg_ref
 
         u_global = {u for u in user_tokens if not re.search(r"_f\d+$", u)}
         u_perfile = {u for u in user_tokens if re.search(r"_f\d+$", u)}
 
-        known_user = getattr(self, "user_variables", set())
+        known_user = cache.setdefault("known_user", set(getattr(self, "user_variables", set())))
         missing = u_global - known_user
         if missing:
             self.progress.reset()
@@ -1722,29 +1815,29 @@ class TimeSeriesEditorQt(QMainWindow):
             return
 
         def _resolve_series(file_index, name, name_by_file=None):
-            tsdb = self.tsdbs[file_index]
+            series = _series_for_file(file_index)
             lookup = None
             if name_by_file and file_index < len(name_by_file):
                 lookup = name_by_file[file_index]
-            ts = tsdb.getm().get(lookup or name)
+            ts = series.get(lookup or name)
             if ts is None and not name_by_file:
                 alt = next(
-                    (key for key in tsdb.getm() if re.sub(r"^f\d+_", "", key) == name),
+                    (key for key in series if re.sub(r"^f\d+_", "", key) == name),
                     None,
                 )
                 if alt:
-                    ts = tsdb.getm().get(alt)
+                    ts = series.get(alt)
                     lookup = alt
             return ts, lookup or name
 
         explicit_var_names: dict[int, set[str]] = {}
         if explicit_file_refs:
-            db_safe_name_maps = []
-            for db in self.tsdbs:
+            db_safe_name_maps = {}
+            for src_idx in sorted(tag - 1 for tag in explicit_file_tags):
                 safe_name_map = {}
-                for key in db.getm().keys():
+                for key in _series_for_file(src_idx):
                     safe_name_map.setdefault(_safe(key), set()).add(key)
-                db_safe_name_maps.append(safe_name_map)
+                db_safe_name_maps[src_idx] = safe_name_map
 
             for match in explicit_file_refs:
                 src_idx = int(match.group(1)) - 1
@@ -1766,33 +1859,26 @@ class TimeSeriesEditorQt(QMainWindow):
                     return
                 explicit_var_names.setdefault(src_idx, set()).update(matches)
 
-        filtered_series_cache = []
-        for db in self.tsdbs:
-            cache = {}
-            for key, ts in db.getm().items():
-                cache[key] = np.asarray(self.apply_filters(ts), dtype=float)
-            filtered_series_cache.append(cache)
+        filtered_series_cache = cache.setdefault("filtered_series_cache", {})
 
-        calculator_tasks = []
+        def _filtered_series(src_idx, key, ts):
+            cache_key = (src_idx, key)
+            if cache_key not in filtered_series_cache:
+                filtered_series_cache[cache_key] = np.asarray(self.apply_filters(ts), dtype=float)
+            return filtered_series_cache[cache_key]
+
+        calculator_tasks = {}
         current_file_idx = 0
-        for file_idx, tsdb in enumerate(self.tsdbs):
+        for file_idx in target_indices:
             target_time = file_windows[file_idx]
             target_coord = file_window_coords[file_idx]
             shared_ctx = {}
-            for src_idx, db in enumerate(self.tsdbs):
+            for src_idx, source_names in explicit_var_names.items():
                 tag = f"f{src_idx + 1}"
-                source_names = explicit_var_names.get(src_idx)
-                keep_empty_alignment = source_names is not None
-                items = (
-                    ((name, db.getm()[name]) for name in source_names)
-                    if source_names is not None
-                    else db.getm().items()
-                )
-                for key, ts in items:
-                    x_part = _align_to_window(ts, filtered_series_cache[src_idx][key], target_time, target_coord)
-                    if np.all(np.isnan(x_part)) and not keep_empty_alignment:
-                        continue
-                    shared_ctx[f"{tag}_{_safe(key)}"] = x_part.astype(float)
+                for key in source_names:
+                    ts = _series_for_file(src_idx)[key]
+                    x_part = _align_to_window(ts, _filtered_series(src_idx, key, ts), target_time, target_coord)
+                    shared_ctx[f"{tag}_{_safe(key)}"] = x_part
 
             file_ctx = {}
             for k in common_tokens:
@@ -1823,12 +1909,12 @@ class TimeSeriesEditorQt(QMainWindow):
                 if not m:
                     continue
                 src_idx = int(m.group(2)) - 1
-                if src_idx >= len(self.tsdbs):
+                if not 0 <= src_idx < len(self.tsdbs):
                     self.progress.reset()
                     self.progress.setFormat("%p%")
                     QMessageBox.critical(self, "User variable error", f"File #{m.group(2)} does not exist.")
                     return
-                ts = self.tsdbs[src_idx].getm().get(tok)
+                ts = _series_for_file(src_idx).get(tok)
                 if ts is None:
                     self.progress.reset()
                     self.progress.setFormat("%p%")
@@ -1836,41 +1922,27 @@ class TimeSeriesEditorQt(QMainWindow):
                     return
                 file_ctx[f"u_{tok}"] = _align_to_window(ts, ts.x, target_time, target_coord)
 
-            calculator_tasks.append({
+            calculator_tasks[file_idx] = {
                 "time_window": target_time,
                 "dtg_ref": file_window_dtg_refs[file_idx],
                 "shared_ctx": shared_ctx,
                 "file_ctx": file_ctx,
                 "exec_expr": exec_expr,
                 "base_output": base_output,
-            })
+            }
 
         evaluated_results = {}
         completed = 0
-        use_multiprocessing = len(self.tsdbs) > 1
-
         current_file_idx = 0
         try:
-            if use_multiprocessing:
-                max_workers = min(len(self.tsdbs), max(1, multiprocessing.cpu_count()))
-                with ProcessPoolExecutor(max_workers=max_workers) as executor:
-                    futures = {
-                        executor.submit(_evaluate_calculator_task, file_idx, task): file_idx
-                        for file_idx, task in enumerate(calculator_tasks)
-                    }
-                    with _tqdm_progress(as_completed(futures), len(self.tsdbs), "Calculating") as progress_iter:
-                        for future in progress_iter:
-                            file_idx = futures[future]
-                            current_file_idx = file_idx
-                            evaluated_results[file_idx] = future.result()[1]
-                            completed += 1
-                            self.update_progressbar(completed, len(self.tsdbs))
-            else:
-                for file_idx, task in enumerate(calculator_tasks):
-                    current_file_idx = file_idx
-                    evaluated_results[file_idx] = _evaluate_calculator_task(file_idx, task)[1]
-                    completed += 1
-                    self.update_progressbar(completed, len(self.tsdbs))
+            # Expressions already operate on NumPy arrays. Starting fresh Python
+            # processes and serializing entire contexts costs more than typical
+            # vector arithmetic, particularly with Windows process spawning.
+            for file_idx, task in calculator_tasks.items():
+                current_file_idx = file_idx
+                evaluated_results[file_idx] = _evaluate_calculator_task(file_idx, task)[1]
+                completed += 1
+                self.update_progressbar(completed, len(calculator_tasks))
         except Exception as e:
             self.progress.reset()
             self.progress.setFormat("%p%")
@@ -1883,12 +1955,9 @@ class TimeSeriesEditorQt(QMainWindow):
 
         create_common_output = len(explicit_file_tags) >= 2
         results = []
-        for file_idx, tsdb in enumerate(self.tsdbs):
+        for file_idx in target_indices:
             f_no = file_idx + 1
             y = evaluated_results[file_idx]
-            must_write_here = f_no in file_tags_used
-            if not must_write_here:
-                continue
 
             filt_tag = self._filter_tag()
             suffix = "" if create_common_output else f"_f{f_no}"
@@ -1900,27 +1969,11 @@ class TimeSeriesEditorQt(QMainWindow):
             dtg_ref = calculator_tasks[file_idx]["dtg_ref"]
             ts_new = qats.TimeSeries(out_name, time_window, y, dtg_ref=dtg_ref)
 
-            tsdb.add(ts_new)
+            results.append((file_idx, ts_new))
 
-            self.user_variables = getattr(self, "user_variables", set())
-            self.user_variables.add(out_name)
-            results.append((tsdb, ts_new))
-
-        self.progress.setFormat("%p%")
-        self.refresh_variable_tabs()
-
-        if create_common_output:
-            msg = base_output
-            output_names = [base_output]
-        else:
-            output_names = [f"{base_output}_f{n}" for n in sorted(file_tags_used)]
-            msg = ", ".join(output_names)
+        output_names = list(dict.fromkeys(ts.name for _, ts in results))
         equation_text = self._format_calculator_equation(display_expr, output_names=output_names)
-        QMessageBox.information(
-            self,
-            "Success",
-            f"New variable(s): {msg}\n\nEquation used:\n{equation_text}",
-        )
+        return results, output_names, equation_text
 
     def show_calc_help(self):
         """Display calculator usage help in a message box."""
@@ -1963,6 +2016,11 @@ class TimeSeriesEditorQt(QMainWindow):
                 "     abs, min, max, power, radians, degrees",
                 "",
                 "💡  Tips",
+                "  •  Paste several name = expression equations, one per line, then Calculate.",
+                "     Every named equation creates its own output; blank lines are allowed.",
+                "  •  Reusing an output name overwrites its previous result. The last equation wins.",
+                "  •  Wrap a long expression in parentheses to continue it across lines.",
+                "  •  Later equations can use earlier outputs with the usual u_ or fN_ prefixes.",
                 "  •  Any valid Python / NumPy expression works (np.mean, np.std, …).",
                 "  •  You can give the left-hand side any name you like, or omit it",
                 "     and let the Calculator create an automatic name from the equation.",
@@ -7416,6 +7474,8 @@ class TimeSeriesEditorQt(QMainWindow):
             mode = "bandblock"
 
         x = ts.x.copy()
+        if mode == "none":
+            return x
         t = ts.t
         nanmask = ~np.isnan(x)
         if not np.any(nanmask):
@@ -7620,7 +7680,8 @@ class TimeSeriesEditorQt(QMainWindow):
             return
 
         series_items = []
-        for tsdb, fp in zip(self.tsdbs, self.file_paths):
+        seen_series = set()
+        for file_idx, (tsdb, fp) in enumerate(zip(self.tsdbs, self.file_paths)):
             fname = os.path.basename(fp)
             tsdb_map = tsdb.getm()
             for key in sel_keys:
@@ -7633,8 +7694,9 @@ class TimeSeriesEditorQt(QMainWindow):
                 else:
                     continue
                 ts = tsdb_map.get(var)
-                if ts is None:
+                if ts is None or (file_idx, var) in seen_series:
                     continue
+                seen_series.add((file_idx, var))
                 mask = self.get_time_window(ts)
                 if isinstance(mask, slice):
                     t = ts.t[mask]
@@ -7645,16 +7707,34 @@ class TimeSeriesEditorQt(QMainWindow):
                     t = ts.t[mask]
                     y = self.apply_filters(ts)[mask]
 
+                if t.size == 0:
+                    continue
                 if dt > 0:
                     start = t_start if t_start is not None else t[0]
                     stop = t_stop if t_stop is not None else t[-1]
                     t, y = self._resample(t, y, dt, start=start, stop=stop)
 
-                series_items.append((key, np.asarray(t), np.asarray(y)))
+                series_items.append((file_idx, var, key, np.asarray(t), np.asarray(y)))
 
         if not series_items:
             QMessageBox.warning(self, "No data", "No data found for the selected variables.")
             return
+
+        # Common/user selections can resolve to one result in several files.
+        # Distinguish them before building a dict, which would drop duplicates.
+        from collections import Counter
+
+        key_counts = Counter(var for _, var, _, _, _ in series_items)
+        file_counts = Counter(os.path.basename(fp) for fp in self.file_paths)
+        named_items = []
+        for file_idx, var, key, t, y in series_items:
+            if key_counts[var] > 1:
+                fname = os.path.basename(self.file_paths[file_idx])
+                if file_counts[fname] > 1:
+                    fname = f"{fname} (f{file_idx + 1})"
+                key = f"{fname}::{var}"
+            named_items.append((key, t, y))
+        series_items = named_items
 
         shared_time = series_items[0][1]
         has_common_time = all(self._time_vectors_match(shared_time, t) for _, t, _ in series_items)
@@ -7671,7 +7751,7 @@ class TimeSeriesEditorQt(QMainWindow):
             df = pd.concat(series_list, axis=1)
 
         df.to_csv(path, index=False)
-        QMessageBox.information(self, "Exported", f"Exported {len(sel_keys)} series to\n{os.path.basename(path)}")
+        QMessageBox.information(self, "Exported", f"Exported {len(series_items)} series to\n{os.path.basename(path)}")
 
     def open_evm_tool(self):
         """Launch the Extreme Value Analysis tool for the first checked variable."""
