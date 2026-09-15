@@ -1,0 +1,38 @@
+{
+  "artifact_source": {
+    "commit": "2863369cfcffb9d7720fb306e2d2818583b15b67",
+    "tree": "2bdc02016c96943f16b2939e78c336f48669f9ee"
+  },
+  "artifacts": [
+    {
+      "bytes": 337329613,
+      "filename": "ANYtimeSeries-1.1.0-windows-x64.exe",
+      "sha256": "DA527C2A3E0BE7837E9235A7DD8A422DA59073A57D7F7F3595841B1EF1542AD5"
+    },
+    {
+      "bytes": 360045,
+      "filename": "anytimes-1.1.0-py3-none-any.whl",
+      "sha256": "8C4629B9BAEE1E01C9ABB63B5C26AAE52647D099EECA994247C05F33DE47BBDA"
+    },
+    {
+      "bytes": 1723606,
+      "filename": "anytimes-1.1.0.tar.gz",
+      "sha256": "00FFC721F971AC886E80A89BEC838C68F36B3D2A78BBA0B5144BB9F3D3DF8295"
+    },
+    {
+      "bytes": 1580,
+      "filename": "anytimes.spec",
+      "sha256": "61AACB075967E249FDD22C31798E0942324415A73C5DAEF1A573FD18C9A529D4"
+    }
+  ],
+  "distribution": "anytimes",
+  "publication_authorized": true,
+  "qualification": {
+    "accepted_terminal": "ACCEPTED_ANYTIMES_1_1_0_RELEASE",
+    "evidence_sha256": "FB4B2A74BE15CDF901AC978C6E55878C70A42685A5701787F0B431A94AF806B8",
+    "independent_review_sha256": "03A9C2BC5C6AB2BE7A6774349D77C518ACB8038863413CCECD7A654ED3A0E485"
+  },
+  "schema": "anyecosystem.release-ledger-v1",
+  "tag": "v1.1.0",
+  "version": "1.1.0"
+}
