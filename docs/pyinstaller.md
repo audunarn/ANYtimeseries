@@ -20,7 +20,9 @@ artifact should be smoke-tested by launching the GUI and loading a small CSV
 before distribution.
 
 The pinned configuration uses Python 3.13 x64 and bundles Plotly/Bokeh resources,
-QtWebEngine and the file-reader dependencies. Run the built-in smoke test from
+QtWebEngine and the file-reader dependencies. The spec limits DLL lookup to the
+build environment and Windows so unrelated tools on PATH cannot supply
+incompatible libraries. Run the built-in smoke test from
 an unrelated working directory to verify the executable without source imports:
 
 ```powershell

@@ -1,9 +1,18 @@
 # -*- mode: python ; coding: utf-8 -*-
 """PyInstaller 6 configuration for the standalone Windows application."""
 from pathlib import Path
+import os
+import sys
 from PyInstaller.utils.hooks import collect_all, collect_submodules, copy_metadata
 
 root = Path(SPECPATH)
+# Resolve DLLs from the build environment and Windows, not unrelated tools on
+# the caller's PATH (for example, an incompatible Poppler ICU library).
+windows_root = Path(os.environ["SystemRoot"])
+os.environ["PATH"] = os.pathsep.join([
+    str(Path(sys.executable).parent), sys.base_prefix,
+    str(windows_root / "System32"), str(windows_root),
+])
 datas = [(str(root / "ANYtimes_logo.png"), ".")]
 binaries = []
 hiddenimports = collect_submodules("anyqats.io")
