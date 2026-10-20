@@ -1,0 +1,33 @@
+name: indexed rainflow source snapshot
+on:
+  push:
+    branches: [feat/indexed-rainflow]
+    paths: [.github/workflows/indexed-snapshot.yml]
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          path: ANYtimeseries
+      - uses: actions/checkout@v4
+        with:
+          repository: audunarn/ANYfatigue
+          ref: 84fcfa25882236069a91bd3b6c2d34d39f283d9f
+          persist-credentials: false
+          path: ANYfatigue
+      - name: Archive tracked public source only
+        run: |
+          mkdir snapshots
+          git -C ANYtimeseries archive --format=zip HEAD -o "$PWD/snapshots/ANYtimeseries.zip"
+          git -C ANYfatigue archive --format=zip HEAD -o "$PWD/snapshots/ANYfatigue.zip"
+          git -C ANYtimeseries rev-parse HEAD > snapshots/ANYtimeseries.commit.txt
+          git -C ANYfatigue rev-parse HEAD > snapshots/ANYfatigue.commit.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: indexed-source-snapshots
+          path: snapshots/
+          retention-days: 3
