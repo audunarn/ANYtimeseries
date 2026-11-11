@@ -28,7 +28,7 @@
 | Material definitions and material provenance | `ANYmaterial` |
 | Interchange and file semantics | `ANYfileIO` / `ANYio` during their migration |
 | Optional OCCT interchange backend | `ANYfileio-occt` |
-| Solver mathematics, elements, assembly and numerical results | `ANYsolver` |
+| Solver mathematics, elements, assembly and numerical results | `ANYfeSolver` |
 | Prescriptive and semi-analytical buckling rules | `ANYbuckling` |
 | FEM projects, jobs, orchestration and result artifacts | `ANYfem` |
 | Engineering application consuming the public owners above | `ANYstructure` |
