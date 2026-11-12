@@ -3,12 +3,13 @@
 """
 Rainflow cycle counting algorithm according to ASTM E1049-85 (2011), section 5.4.4.
 """
-from collections import deque
 from itertools import chain
 
 import numpy as np
 
-# TODO: Evaluate from-to counting which stores the "orientation" of each cycle. Enables reconstruction of a time history
+from .indexed import (INDEXED_CYCLES_VERSION, IndexedCycle, IndexedRainflowCounter, count_cycles_indexed)
+
+# The shared indexed core retains reversal and closing indices for companion channels.
 
 
 def reversals(series, endpoints=False):
@@ -52,7 +53,7 @@ def reversals(series, endpoints=False):
         if x_next == x:
             continue
         d_next = x_next - x
-        if d_last * d_next < 0:
+        if (d_last < 0 < d_next) or (d_next < 0 < d_last):
             yield x
         x_last, x = x, x_next
         d_last = d_next
@@ -98,40 +99,11 @@ def cycles(series, endpoints=False):
     [(3, -0.5), (4, -1.0), (8, 1.0), (6, 1.0), (8, 0.0), (9, 0.5)]
 
     """
-    points = deque()
-    full, half = list(), list()
-
-    for r in reversals(series, endpoints=endpoints):
-        points.append(r)
-        while len(points) >= 3:
-            # Form ranges X and Y from the three most recent points
-            x = abs(points[-2] - points[-1])
-            y = abs(points[-3] - points[-2])        # cycle range
-            m = 0.5 * (points[-2] + points[-3])     # cycle mean
-            # fromto = (points[-2], points[-3])     # cycle start and end points (not currently in use)
-
-            if x < y:
-                # Read the next point
-                break
-            elif len(points) == 3:
-                # Y contains the starting point
-                # Count Y as half cycle and discard the first point
-                half.append((y, m))
-                points.popleft()
-            else:
-                # Count Y as one cycle and discard the peak and the valley of Y
-                full.append((y, m))
-                last = points.pop()
-                points.pop()
-                points.pop()
-                points.append(last)
-    else:
-        # Count the remaining ranges as half cycles
-        while len(points) > 1:
-            half.append((abs(points[-2] - points[-1]), 0.5 * (points[-1] + points[-2])))
-            points.pop()
-
+    records = count_cycles_indexed(series, endpoints=endpoints)
+    full = [(c.range, c.mean) for c in records if c.count == 1.0]
+    half = [(c.range, c.mean) for c in records if c.count == 0.5]
     return full, half
+
 
 
 def count_cycles(series, endpoints=False):
@@ -197,7 +169,8 @@ def count_cycles(series, endpoints=False):
 
     # initiate and populate array with cycle counts
     cycles_ = np.zeros((n, 3))
-    cycles_[:, :2] = full + half  # full and half are lists
+    if n:
+        cycles_[:, :2] = full + half  # full and half are lists
     cycles_[:nf, 2] = 1.0  # full cycles count 1.0
     cycles_[nf:, 2] = 0.5  # half cycles count 0.5
 

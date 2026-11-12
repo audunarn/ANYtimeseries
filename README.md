@@ -108,3 +108,13 @@ Released under the MIT License. See [LICENSE](LICENSE) for details.
 [1]: <https://www.orcina.com/orcaflex/demo/> "Demo version of Orcaflex"
 [2]: <https://github.com/audunarn/ANYtimeseries/releases> "ANYtimes releases"
 
+
+
+## Indexed rainflow (development addition)
+
+`anyqats.fatigue.rainflow.count_cycles_indexed` returns individual normal cycles
+with original reversal and closing-reversal indices. `IndexedRainflowCounter`
+accepts successive chunks of one finite record; finalize only at the record end.
+The existing `count_cycles` result format and defaults remain available through
+the same counting core. See [the contract and checks](docs/INDEXED_RAINFLOW.md).
+This addition is not a new published package release.

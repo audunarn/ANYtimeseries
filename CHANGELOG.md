@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Add indexed individual rainflow cycles and a chunkable counter with explicit finalization.
+- Route legacy counting through the same core; retain ordinary-scale range/mean/count output.
+- Fix empty-cycle table construction and avoid underflow from multiplying reversal slopes.
+- Reject non-finite/complex input before mutating indexed state; see docs/INDEXED_RAINFLOW.md.
+
 ## 1.1.0 - 2026-09-15
 
 - Calculate multiple pasted equations together and overwrite previous named results.
